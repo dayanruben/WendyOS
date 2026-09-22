@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { logSeverity, meetsLogLevel } from "@/lib/telemetry";
 import {
   Activity,
   ArrowDownToLine,
@@ -407,7 +408,7 @@ export default function Home() {
   const [deviceFilter, setDeviceFilter] = useState("all");
   const [logDevice, setLogDevice] = useState("");
   const [logApp, setLogApp] = useState("all");
-  const [severity, setSeverity] = useState("all");
+  const [severity, setSeverity] = useState("INFO");
   const [logSearch, setLogSearch] = useState("");
   const [paused, setPaused] = useState(false);
   const [logError, setLogError] = useState("");
@@ -717,10 +718,7 @@ export default function Home() {
     (l) =>
       l.deviceId === logDevice &&
       (logApp === "all" || l.app === logApp) &&
-      (severity === "all" ||
-        (severity === "WARN"
-          ? ["WARN", "ERROR", "FATAL"].includes(l.level)
-          : ["ERROR", "FATAL"].includes(l.level))) &&
+      meetsLogLevel(l.level, severity) &&
       (l.message + " " + l.app).toLowerCase().includes(logSearch.toLowerCase()),
   );
   function appMenu(a: App) {
@@ -1338,6 +1336,7 @@ export default function Home() {
                         label="Log severity"
                         items={[
                           { id: "all", name: "All levels" },
+                          { id: "INFO", name: "Info & above" },
                           { id: "WARN", name: "Warning & above" },
                           { id: "ERROR", name: "Errors only" },
                         ]}
@@ -1832,13 +1831,7 @@ function parseLogs(data: unknown, deviceId: string): Log[] {
         return {
           id: deviceId + ":" + nano + ":" + app + ":" + message,
           time: new Date(millis).toISOString(),
-          level:
-            l.severityText?.toUpperCase() ||
-            (Number(l.severityNumber) >= 17
-              ? "ERROR"
-              : Number(l.severityNumber) >= 13
-                ? "WARN"
-                : "INFO"),
+          level: logSeverity(l).toUpperCase(),
           app,
           deviceId,
           message,

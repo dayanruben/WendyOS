@@ -166,7 +166,7 @@ function hex(id?: string) {
   }
 }
 type LogSeverity = "trace" | "debug" | "info" | "warn" | "error" | "fatal" | "unknown";
-function logSeverity(record: Record): LogSeverity {
+export function logSeverity(record: Record): LogSeverity {
   const levels: LogSeverity[] = ["trace", "debug", "info", "warn", "error", "fatal"];
   const number = Number(record.severityNumber);
   if (Number.isInteger(number) && number >= 1 && number <= 24)
@@ -180,6 +180,11 @@ function logSeverity(record: Record): LogSeverity {
   const text = record.severityText?.trim().toLowerCase();
   if (text && text !== name) return logSeverity({ severityText: text });
   return "unknown";
+}
+export function meetsLogLevel(level: string | undefined, minimum: string): boolean {
+  if (minimum === "all") return true;
+  const levels = ["trace", "debug", "info", "warn", "error", "fatal"];
+  return levels.indexOf(level?.toLowerCase() || "") >= levels.indexOf(minimum.toLowerCase());
 }
 export function telemetryRows(kind: string, batch: OTelBatch): TelemetryRow[] {
   const resources =

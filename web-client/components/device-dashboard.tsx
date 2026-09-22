@@ -14,6 +14,7 @@ import { WendyClient, formatBytes } from "@/lib/client";
 import {
   usage,
   telemetryRows,
+  meetsLogLevel,
   type Sample,
   type Reading,
   type OTelBatch,
@@ -46,6 +47,7 @@ export default function DeviceDashboard({
   const [streamError, setStreamError] = useState("");
   const [app, setApp] = useState("");
   const [search, setSearch] = useState("");
+  const [severity, setSeverity] = useState("info");
   const [sort, setSort] = useState<"cpu" | "memory">("cpu");
   const [acting, setActing] = useState("");
   const previous = useRef<Reading | null>(null);
@@ -136,6 +138,11 @@ export default function DeviceDashboard({
       void client.call("telemetry-stop").catch(() => {});
     };
   }, [client, connected, tab, app]);
+  const shownRows = rows.filter((r) =>
+    (tab !== "logs" || meetsLogLevel(r.severity, severity)) &&
+    `${r.name} ${r.value} ${r.service} ${r.trace || ""}`
+      .toLowerCase().includes(search.toLowerCase()),
+  );
   const sample = reading?.sample,
     host = sample?.stats?.host;
   const disk =
@@ -472,6 +479,18 @@ export default function DeviceDashboard({
               </p>
             </div>
             <div className="telemetry-controls">
+              {tab === "logs" && (
+                <select
+                  aria-label="Log severity"
+                  value={severity}
+                  onChange={(e) => setSeverity(e.target.value)}
+                >
+                  <option value="all">All levels</option>
+                  <option value="info">Info &amp; above</option>
+                  <option value="warn">Warning &amp; above</option>
+                  <option value="error">Errors only</option>
+                </select>
+              )}
               <select
                 aria-label="Filter by application"
                 value={app}
@@ -498,12 +517,7 @@ export default function DeviceDashboard({
             </div>
           )}
           <div className="telemetry-rows">
-            {rows
-              .filter((r) =>
-                `${r.name} ${r.value} ${r.service} ${r.trace || ""}`
-                  .toLowerCase()
-                  .includes(search.toLowerCase()),
-              )
+            {shownRows
               .map((r) => (
                 <details key={r.key} className="telemetry-row" data-severity={r.severity}>
                   <summary>
@@ -523,16 +537,16 @@ export default function DeviceDashboard({
                 </details>
               ))}
           </div>
-          {!rows.length && (
+          {!shownRows.length && (
             <div className="device-wait">
               <Activity />
               <h3>
-                {streamError ? "Stream unavailable" : `Waiting for ${tab}`}
+                {streamError ? "Stream unavailable" : rows.length ? "No matching entries" : `Waiting for ${tab}`}
               </h3>
               <p className="subtle">
                 {streamError
                   ? "The device may be offline or its agent may need an update."
-                  : `Applications on this device must emit OpenTelemetry ${tab}. New data appears here automatically.`}
+                  : rows.length ? "Adjust your search or log severity filter." : `Applications on this device must emit OpenTelemetry ${tab}. New data appears here automatically.`}
               </p>
             </div>
           )}
