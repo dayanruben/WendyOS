@@ -60,7 +60,7 @@ func TestEnrollLocalPickerDeviceUsesHighlightedDevice(t *testing.T) {
 				}
 				calls = append(calls, "wifi")
 			}
-			runPickerEnrollmentFn = func(gotCtx context.Context, gotConn *grpcclient.AgentConnection, gotAuth *config.AuthConfig, name string, orgOverride int32) error {
+			runPickerEnrollmentFn = func(gotCtx context.Context, gotConn *grpcclient.AgentConnection, gotAuth *config.AuthConfig, name string, orgOverride int32, _ ...string) error {
 				if gotCtx != ctx || gotConn != conn || gotAuth != auth || name != "" || orgOverride != 0 || closed {
 					t.Fatal("enrollment did not receive the live highlighted connection and selected cloud session with normal name/org prompts")
 				}
@@ -110,7 +110,7 @@ func TestEnrollLocalPickerDeviceRejectsBluetoothFallback(t *testing.T) {
 	promptPickerEnrollmentWifiFn = func(context.Context, *grpcclient.AgentConnection) {
 		t.Fatal("prompted for WiFi on an unsupported enrollment transport")
 	}
-	runPickerEnrollmentFn = func(context.Context, *grpcclient.AgentConnection, *config.AuthConfig, string, int32) error {
+	runPickerEnrollmentFn = func(context.Context, *grpcclient.AgentConnection, *config.AuthConfig, string, int32, ...string) error {
 		t.Fatal("attempted enrollment on an unsupported transport")
 		return nil
 	}

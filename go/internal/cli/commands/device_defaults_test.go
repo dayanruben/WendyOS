@@ -12,6 +12,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 )
 
 func defaultKey(t *testing.T) string {
@@ -106,7 +107,7 @@ func TestCloudDefaultResolvesExactCloudOrgAndAsset(t *testing.T) {
 		}
 		return &grpcclient.AgentConnection{Host: asset.Name}, nil
 	}
-	selector := cloudDeviceSelector{auth7.CloudGRPC, 7, 42}
+	selector := cloudDeviceSelector{Endpoint: auth7.CloudGRPC, OrgID: 7, AssetID: 42}
 	selected, err := connectCloudDeviceSelector(context.Background(), selector)
 	if err != nil {
 		t.Fatal(err)
@@ -183,5 +184,64 @@ func TestCloudDeviceSelectorValidationAndMCPAddress(t *testing.T) {
 	}
 	if mcpStartupAddress("robot.local") != "robot.local:50051" {
 		t.Fatal("LAN default changed")
+	}
+}
+
+func TestCloudV2DefaultPreservesTenantAndAssetAcrossRename(t *testing.T) {
+	const tenant = "8a53be77-2a69-464f-8f73-83643fe0beaa"
+	const assetID = "7791d76e-a942-4a8e-b582-063d063b5623"
+	auth := &config.AuthConfig{CloudGRPC: "cloud.example:443", Certificates: []config.CertificateInfo{{
+		PrincipalURI: "spiffe://wendy.sh/tenant/" + tenant + "/operator/test",
+	}}}
+	otherTenant := *auth
+	otherTenant.Certificates = []config.CertificateInfo{{PrincipalURI: "spiffe://wendy.sh/tenant/ed6e09f3-d287-450b-a053-e4554f3c70ed/operator/test"}}
+	otherCloud := *auth
+	otherCloud.CloudGRPC = "other.example:443"
+	setTempConfig(t, &config.Config{Auth: []config.AuthConfig{otherTenant, otherCloud, *auth}})
+	asset := &cloudpbv2.Asset{Id: assetID, Name: "original"}
+	m := newCloudDiscoverModel(context.Background(), auth, "", false, true, nil)
+	updated, _ := m.Update(cloudScanMsg{devices: []cloudDiscoveryDevice{{cloudAssetMetadata: asset, v2: asset, key: assetID}}})
+	updated, _ = updated.(cloudDiscoverModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	want := "cloud://cloud.example:443/tenant/" + tenant + "/asset/" + assetID
+	if defaultKey(t) != want || !strings.Contains(updated.(cloudDiscoverModel).table.View(), "✦") {
+		t.Fatalf("UUID default was not persisted and marked: %q", defaultKey(t))
+	}
+	selector, matched, err := parseCloudDeviceSelector(want)
+	if err != nil || !matched || selector.String() != want {
+		t.Fatalf("selector round trip: %+v, %v", selector, err)
+	}
+	oldFetch, oldConnect := fetchDefaultCloudAssetsV2Fn, connectDefaultCloudAssetV2Fn
+	t.Cleanup(func() { fetchDefaultCloudAssetsV2Fn, connectDefaultCloudAssetV2Fn = oldFetch, oldConnect })
+	fetchDefaultCloudAssetsV2Fn = func(_ context.Context, selected *config.AuthConfig, onlineOnly bool) ([]*cloudpbv2.Asset, error) {
+		if selected.CloudGRPC != auth.CloudGRPC || selected.Certificates[0].TenantUUID() != tenant || !onlineOnly {
+			t.Fatal("default resolved the wrong cloud or tenant")
+		}
+		return []*cloudpbv2.Asset{{Id: "a20403ae-9251-4937-aa9b-bb1d773df071", Name: "original"}, {Id: assetID, Name: "renamed"}}, nil
+	}
+	connectDefaultCloudAssetV2Fn = func(_ context.Context, _ *config.AuthConfig, selected *cloudpbv2.Asset, _ string) (*grpcclient.AgentConnection, error) {
+		if selected.Id != assetID || selected.Name != "renamed" {
+			t.Fatal("default resolved by display name instead of UUID")
+		}
+		return &grpcclient.AgentConnection{Host: selected.Name}, nil
+	}
+	selected, err := connectCloudDeviceSelector(context.Background(), selector)
+	if err != nil || selected.DefaultSelector != want {
+		t.Fatalf("connect default: %v, %v", selected, err)
+	}
+	selector.AssetUUID = "ede01a43-7ef8-49d9-bfaf-88192b5124af"
+	if _, err := connectCloudDeviceSelector(context.Background(), selector); err == nil {
+		t.Fatal("missing asset selected another device")
+	}
+	selector.TenantUUID = "4d344658-f8f6-4c1e-aa14-9d96c2d56963"
+	if _, err := selector.auth(&config.Config{Auth: []config.AuthConfig{*auth}}); err == nil {
+		t.Fatal("missing tenant selected another login")
+	}
+	for _, key := range []string{
+		"cloud://cloud.example:443/tenant/not-a-uuid/asset/" + assetID,
+		"cloud://cloud.example:443/tenant/" + tenant + "/asset/00000000-0000-0000-0000-000000000000",
+	} {
+		if _, matched, err := parseCloudDeviceSelector(key); !matched || err == nil {
+			t.Fatalf("invalid UUID selector accepted: %s", key)
+		}
 	}
 }

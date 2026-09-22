@@ -4014,6 +4014,18 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 	}
 	switch choice.Tab {
 	case devicePickerCloudTab:
+		if choice.CloudV2 != nil {
+			selector, err := cloudDiscoveryDeviceDefault(cloudAuth, cloudDiscoveryDevice{v2: choice.CloudV2})
+			if err != nil {
+				return nil, err
+			}
+			cliLogln("Connecting to %s via cloud tunnel...", choice.CloudV2.GetName())
+			conn, err := connectCloudAssetV2(ctx, cloudAuth, choice.CloudV2, dm.cloud.brokerURL)
+			if err != nil {
+				return nil, err
+			}
+			return &SelectedDevice{Agent: conn, DefaultSelector: selector}, nil
+		}
 		selector, err := cloudDeviceDefault(cloudAuth, choice.Cloud)
 		if err != nil {
 			return nil, err

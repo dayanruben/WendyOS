@@ -15,7 +15,34 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"google.golang.org/grpc/metadata"
 )
+
+func TestCloudContextSupportsFreshTokenOnlySession(t *testing.T) {
+	auth := &config.AuthConfig{
+		APIKey:         "access-token",
+		OAuthIssuer:    "https://auth.dev.wendy.sh/realms/acme",
+		OAuthExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}
+	ctx, err := cloudContext(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("cloudContext: %v", err)
+	}
+	md, ok := metadata.FromOutgoingContext(ctx)
+	if !ok || len(md.Get("authorization")) != 1 || md.Get("authorization")[0] != "Bearer access-token" {
+		t.Fatalf("authorization metadata = %v", md.Get("authorization"))
+	}
+}
+
+func TestDialCloudGRPCSupportsTokenOnlyPublicTLS(t *testing.T) {
+	conn, err := dialCloudGRPC(&config.AuthConfig{CloudGRPC: "api.dev.wendy.sh:443", APIKey: "access-token"})
+	if err != nil {
+		t.Fatalf("dialCloudGRPC: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
 
 func TestCloudHILPickerShowsSingletonAndPreservesExplicitSelection(t *testing.T) {
 	previousInteractive, previousPicker := isInteractiveTerminalFn, runCloudDevicePicker
@@ -28,10 +55,10 @@ func TestCloudHILPickerShowsSingletonAndPreservesExplicitSelection(t *testing.T)
 		if m.purpose != hilInferencePicker || !strings.Contains(m.View(), "HIL INFERENCE") {
 			t.Fatal("HIL picker lost its purpose")
 		}
-		if !m.pickerMode || len(m.assets) != 1 {
+		if !m.pickerMode || len(m.devices) != 1 {
 			t.Fatal("picker lost its roster")
 		}
-		m.selected = m.assets[0]
+		m.selected = m.devices[0].legacy
 		return m, nil
 	}
 	for _, name := range []string{"", "jetson"} {

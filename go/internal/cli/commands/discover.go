@@ -301,7 +301,7 @@ func defaultOrgForCloudAuth(cfg *config.Config, auth *config.AuthConfig) int32 {
 	if cfg.DefaultOrgID != 0 {
 		return cfg.DefaultOrgID
 	}
-	if auth != nil && cfg.DefaultCloudGRPC == auth.CloudGRPC {
+	if auth != nil && auth.Name != "" && cfg.CurrentContext == auth.Name {
 		return cloudAuthOrgID(auth)
 	}
 	return 0
@@ -457,9 +457,10 @@ type flashClearMsg struct{}
 
 // discoverUpdateDoneMsg is sent when a background device update completes.
 type discoverUpdateDoneMsg struct {
-	deviceName string
-	assetID    int32
-	err        error
+	deviceName    string
+	assetID       int32
+	cloudAssetKey string
+	err           error
 	// note carries a non-error outcome that is not a successful update, e.g.
 	// the device already running the release we would install.
 	note string

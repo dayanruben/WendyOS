@@ -49,7 +49,7 @@ func TestPumpEncodedStreamDeliversEveryByteOfABurst(t *testing.T) {
 	}
 
 	var got []byte
-	broadcast := func(data []byte, _ uint64, _ agentpb.VideoCodec) bool {
+	broadcast := func(data []byte, _ frameTimestamp, _ agentpb.VideoCodec) bool {
 		got = append(got, data...)
 		return true
 	}
@@ -116,7 +116,7 @@ func TestGstStreamEndClassifiesTheOtherOutcomes(t *testing.T) {
 func TestPumpEncodedStreamSignalsTheFirstChunkExactlyOnce(t *testing.T) {
 	chunks := [][]byte{{1}, {2}, {3}}
 	calls := 0
-	broadcast := func([]byte, uint64, agentpb.VideoCodec) bool { return true }
+	broadcast := func([]byte, frameTimestamp, agentpb.VideoCodec) bool { return true }
 
 	err := pumpEncodedStream(context.Background(), &burstReader{chunks: chunks},
 		agentpb.VideoCodec_VIDEO_CODEC_H264, broadcast, func() { calls++ })
@@ -134,7 +134,7 @@ func TestPumpEncodedStreamSignalsTheFirstChunkExactlyOnce(t *testing.T) {
 func TestPumpEncodedStreamForwardsTheTailThatArrivesWithAnError(t *testing.T) {
 	want := errors.New("pipe broke")
 	var got []byte
-	broadcast := func(data []byte, _ uint64, _ agentpb.VideoCodec) bool {
+	broadcast := func(data []byte, _ frameTimestamp, _ agentpb.VideoCodec) bool {
 		got = append(got, data...)
 		return true
 	}
@@ -162,7 +162,7 @@ func (r *dyingReader) Read(p []byte) (int, error) {
 func TestPumpEncodedStreamStopsWhenTheHubHasNoSubscribers(t *testing.T) {
 	chunks := [][]byte{{1}, {2}, {3}}
 	sent := 0
-	broadcast := func([]byte, uint64, agentpb.VideoCodec) bool {
+	broadcast := func([]byte, frameTimestamp, agentpb.VideoCodec) bool {
 		sent++
 		return false // no subscribers left
 	}
@@ -180,7 +180,7 @@ func TestPumpEncodedStreamStopsWhenTheHubHasNoSubscribers(t *testing.T) {
 func TestPumpEncodedStreamReturnsTheContextError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	broadcast := func([]byte, uint64, agentpb.VideoCodec) bool { return true }
+	broadcast := func([]byte, frameTimestamp, agentpb.VideoCodec) bool { return true }
 
 	err := pumpEncodedStream(ctx, &burstReader{chunks: [][]byte{{1}}},
 		agentpb.VideoCodec_VIDEO_CODEC_H264, broadcast, func() {})

@@ -2,8 +2,10 @@
 package certs
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -34,16 +36,49 @@ func GenerateKeyPair() (privateKeyPEM string, err error) {
 	return string(pem.EncodeToMemory(block)), nil
 }
 
+// GenerateMLDSAKeyPair generates a new ML-DSA-65 private key and returns it as
+// a PKCS#8 PEM string.
+//
+// ML-DSA-65 is the operator credential (WDY-3032): the same key signs the DPoP
+// proof, the CSR, and — once pki-core has minted the leaf — every request the
+// operator signs. GenerateKeyPair's P-256 output remains for the device and
+// legacy paths that have not moved.
+//
+// The encoding is PKCS#8 carrying the 32-byte seed (RFC 9881), which is why the
+// PEM is ~128 bytes rather than the multi-kilobyte expanded key. That matters
+// because it is stored inline in config.json.
+func GenerateMLDSAKeyPair() (privateKeyPEM string, err error) {
+	key, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		return "", fmt.Errorf("generating ML-DSA-65 key: %w", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", fmt.Errorf("marshaling ML-DSA private key: %w", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})), nil
+}
+
 // GenerateCSR creates a PKCS#10 certificate signing request using the provided
 // PEM-encoded private key (as bytes, so callers can zero the slice after use),
-// common name, and identity URN. The CSR is returned as a PEM string.
+// common name, and identity URIs. The CSR is returned as a PEM string.
 //
-// identityURN, when non-empty, is placed in the CSR as a URI Subject
-// Alternative Name. Callers pass the canonical Wendy identity URN — build it
-// with UserURN ("urn:wendy:org:<org>:user:<userID>") for CLI/user certificates
-// and AssetURN ("urn:wendy:org:<org>:asset:<assetID>") for device/agent
-// certificates. This is the authoritative identity IdentityFromCert prefers
-// over the legacy CommonName. Pass "" to omit the SAN (e.g. test fixtures).
+// identityURIs are placed in the CSR as URI Subject Alternative Names; empty
+// strings are skipped, so passing none (or only "") omits the SAN entirely
+// (e.g. test fixtures).
+//
+// Callers pass the tenant SPIFFE principal — AssetSPIFFEURI/UserSPIFFEURI —
+// which cloud requires the CSR to carry before it will sign a relay grant
+// (WDY-2498) and which is the identity IdentityFromCert resolves first.
+//
+// A legacy urn:wendy URN (UserURN/AssetURN) still travels alongside it on the
+// cloud-relayed path, so a peer running an older agent — one that reads nothing
+// but the URN — can still identify the holder. It is inert on anything pki-core
+// renews, which strips it; nothing should be built to depend on it.
+//
+// Only URI SANs are ever emitted. Never add a dNSName here: "service-identity"
+// is the one pki-core profile that consults the tenant domain allow-list, and
+// any DNS SAN outside it fails the mint with ErrDNSSANNotAuthorized.
 //
 // The CSR requests digitalSignature key usage and the supplied extended key
 // usages so that CAs honoring CSR extensions issue certs the wendy-agent mTLS
@@ -54,8 +89,8 @@ func GenerateKeyPair() (privateKeyPEM string, err error) {
 // as a TLS client to the cloud and a TLS server for the agent's gRPC and tunnel
 // endpoints. The Wendy cloud backends set key usages server-side and ignore
 // these, so this only matters for CAs that derive extensions from the CSR.
-func GenerateCSR(privateKeyPEM []byte, commonName, identityURN string, extKeyUsages ...x509.ExtKeyUsage) (csrPEM string, err error) {
-	key, err := parseECPrivateKey(privateKeyPEM)
+func GenerateCSR(privateKeyPEM []byte, commonName string, identityURIs []string, extKeyUsages ...x509.ExtKeyUsage) (csrPEM string, err error) {
+	key, err := ParseSigningPrivateKeyPEM(privateKeyPEM)
 	if err != nil {
 		return "", err
 	}
@@ -83,10 +118,13 @@ func GenerateCSR(privateKeyPEM []byte, commonName, identityURN string, extKeyUsa
 	}
 
 	var uris []*url.URL
-	if identityURN != "" {
-		u, err := url.Parse(identityURN)
+	for _, raw := range identityURIs {
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
 		if err != nil {
-			return "", fmt.Errorf("parsing identity URN %q: %w", identityURN, err)
+			return "", fmt.Errorf("parsing identity URI %q: %w", raw, err)
 		}
 		uris = append(uris, u)
 	}
@@ -223,6 +261,33 @@ func LeafCertificatePEM(certPEM string) (string, error) {
 }
 
 // parseECPrivateKey decodes a PEM-encoded EC private key from a byte slice.
+// ParseSigningPrivateKeyPEM decodes a private key PEM into a crypto.Signer,
+// accepting both key generations: SEC1 "EC PRIVATE KEY" from GenerateKeyPair
+// and PKCS#8 "PRIVATE KEY" (which is how an ML-DSA-65 operator key is stored,
+// and how some EC keys arrive too).
+//
+// It exists so GenerateCSR does not have to care which algorithm the caller
+// holds: x509.CreateCertificateRequest picks the signature algorithm from the
+// key itself, so one parse covers EC device CSRs and ML-DSA operator CSRs alike.
+func ParseSigningPrivateKeyPEM(pemData []byte) (crypto.Signer, error) {
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parsing private key: %w", err)
+	}
+	signer, ok := parsed.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("private key of type %T cannot sign", parsed)
+	}
+	return signer, nil
+}
+
 func parseECPrivateKey(pemData []byte) (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -31,10 +32,12 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/configpartition"
 	"github.com/wendylabsinc/wendy/go/internal/agent/container"
 	agentcontainerd "github.com/wendylabsinc/wendy/go/internal/agent/containerd"
+	agentdata "github.com/wendylabsinc/wendy/go/internal/agent/data"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hardware"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostexec"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
+	"github.com/wendylabsinc/wendy/go/internal/agent/inference"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mcusource"
@@ -50,6 +53,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/rtps"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -301,11 +305,31 @@ func main() {
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
 	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster, telemetryBuf)
+	dataRoot := os.Getenv("WENDY_DATA_DIR")
+	dataManager, err := agentdata.NewManager(dataRoot)
+	if err != nil {
+		logger.Fatal("Failed to initialize episode data manager", zap.Error(err))
+	}
+	dataManager.SetConsensusProvider(func(ctx context.Context) (timesync.Consensus, error) {
+		return timesync.QueryConsensus(ctx, timesync.Servers)
+	})
+	dataManager.SetWarnLogger(func(msg string) { logger.Warn(msg) })
+	// Episode store bounds. The enforced quota is the smaller of a fifth of the
+	// data filesystem and this cap, and eviction preserves the reserve as free
+	// space. A device whose data partition wants different bounds sets these
+	// rather than being stuck with the built-in numbers.
+	dataManager.SetQuota(
+		envBytes(logger, "WENDY_DATA_MAX_BYTES", agentdata.DefaultMaxQuotaBytes, 1),
+		envBytes(logger, "WENDY_DATA_RESERVE_BYTES", agentdata.DefaultReserveBytes, 0),
+	)
+	dataSvc := services.NewDataService(dataManager)
+	dataSvc.SetAudioService(audioSvc)
 	// ROS 2 inspection requires the containerd-backed sidecar runtime; the
 	// service is only registered when containerd connected (WDY-1332).
 	var ros2Svc *services.ROS2Service
 	if ctrdClient != nil {
 		ros2Svc = services.NewROS2Service(logger, ctrdClient, agentcontainerd.ROS2BagDir)
+		dataSvc.SetROS2Service(ros2Svc)
 	}
 
 	// OTEL receivers.
@@ -316,26 +340,39 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The video service is constructed before the app socket managers because it
+	// owns the camera producer shared by capture, inference, and app loopback
+	// nodes, so it must exist before the capture adapters are registered.
+	discoveryPool := rtps.NewPool()
+	defer discoveryPool.Close()
+	var videoROSRuntime []services.ROS2Runtime
+	if ctrdClient != nil {
+		videoROSRuntime = append(videoROSRuntime, ctrdClient)
+	}
+	videoSvc := services.NewVideoService(ctx, logger, discoveryPool, videoROSRuntime...)
+	dataSvc.SetVideoService(videoSvc)
+	// Arm pre-roll for campaigns deployed in a previous agent lifetime so their
+	// next trigger opens BEFORE the trigger instant, not only campaigns deployed
+	// during this run.
+	dataSvc.ReconcileArming(ctx)
+	defer videoSvc.Shutdown()
+
 	notificationSender := services.NewCloudNotificationSender(logger, provisioningSvc)
+	stopInference := dataSvc.StartCampaignInference(ctx, &inference.ManagedFactory{Root: dataManager.InferenceDirectory()}, &services.CampaignWebhookSender{})
+	defer stopInference()
 	systemAPISocketManager := services.NewAppSystemAPISocketManager(ctx, logger, notificationSender)
+	appDataSocketManager := services.NewAppDataSocketManager(ctx, logger, dataManager)
 	if ctrdClient != nil {
 		ctrdClient.SetAppSystemAPISocketProvider(systemAPISocketManager)
+		ctrdClient.SetAppDataSocketProvider(appDataSocketManager)
 		ctrdClient.RestoreAppSystemAPISockets(ctx)
 	}
 
 	go timesyncMgr.RunDirect(ctx)
 	go timesyncMgr.RunMulticast(ctx)
 
-	discoveryPool := rtps.NewPool()
-	defer discoveryPool.Close()
 	startROS2BatteryMonitor(ctx, logger, configPath, discoveryPool)
 
-	var videoROSRuntime []services.ROS2Runtime
-	if ctrdClient != nil {
-		videoROSRuntime = append(videoROSRuntime, ctrdClient)
-	}
-	videoSvc := services.NewVideoService(ctx, logger, discoveryPool, videoROSRuntime...)
-	defer videoSvc.Shutdown()
 	// Network cameras have to be found before they can be listed, so probe
 	// periodically rather than only when a client asks.
 	videoSvc.StartDiscovery()
@@ -564,6 +601,23 @@ func main() {
 			if !enrolled {
 				return
 			}
+			if principal := provisioningSvc.ProvisioningPrincipal(); principal != "" {
+				endpoint, err := cloudrelay.DeviceEndpoint(cloudHost, os.Getenv("WENDY_DEVICE_CLOUD_URL"))
+				if err != nil {
+					logger.Error("invalid device Cloud endpoint", zap.Error(err))
+					return
+				}
+				issuer, err := cloudrelay.Issuer(cloudHost, os.Getenv("WENDY_CLOUD_GRANT_ISSUER"))
+				if err != nil {
+					logger.Error("invalid Cloud grant issuer", zap.Error(err))
+					return
+				}
+				client := &cloudrelay.Agent{Endpoint: endpoint, Verifier: &cloudrelay.Verifier{Issuer: issuer},
+					StateDir: filepath.Join(configPath, "cloud-relay"), Credentials: provisioningSvc.ProvisioningCerts,
+					Logger: logger, MTLSPort: mtlsPortNum}
+				client.Run(ctx)
+				return
+			}
 			brokerURL := os.Getenv("WENDY_BROKER_URL")
 			if brokerURL == "" {
 				brokerURL = brokerURLForCloudHost(cloudHost)
@@ -597,8 +651,8 @@ func main() {
 	buildContextLocks := services.NewBuildContextLockSet()
 
 	registerAllServices := func(srv *grpc.Server) {
-		// MeshService's own-org check (assetIdentityFromContext / MeshDial)
-		// must reflect this device's *current* org, not a value captured once
+		// MeshService's own-tenant check (assetIdentityFromContext / MeshDial)
+		// must reflect this device's *current* tenant, not a value captured once
 		// at process start: a live BLE-provisioning event updates
 		// provisioningSvc's state without restarting the agent, and a stale
 		// org (e.g. 0/unknown from an unprovisioned boot) would silently
@@ -607,11 +661,10 @@ func main() {
 		// runs at most once per concrete server (plaintext agentServer, the
 		// local control socket, and the mTLS server), so this is at most a
 		// handful of cheap constructions over the process lifetime, not a hot
-		// path. orgID == 0 (never provisioned) intentionally matches the mTLS
-		// org interceptor's grace behavior: MeshService skips the org-equality
-		// check rather than reject every caller.
-		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
-		meshSvc := services.NewMeshService(logger, configPath, orgID)
+		// path. An unknown scope (never provisioned) intentionally matches the
+		// mTLS interceptor's grace behavior: MeshService skips the
+		// tenant-equality check rather than reject every caller.
+		meshSvc := services.NewMeshService(logger, configPath, deviceScope(provisioningSvc))
 		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{
 			ConfigPath:   configPath,
 			Chunks:       buildChunkSource,
@@ -631,9 +684,8 @@ func main() {
 			// spoofing gap this helper was written for.
 			PushTLS: func(targetAssetID int32) (*tls.Config, error) {
 				certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
-				_, pushOrgID, _, _ := provisioningSvc.ProvisioningInfo()
 				return mtls.NewClientTLSConfigExpectingPeer(certPEM, chainPEM, string(keyData), logger,
-					pushOrgID, strconv.FormatInt(int64(targetAssetID), 10))
+					strconv.FormatInt(int64(targetAssetID), 10))
 			},
 		})
 
@@ -653,6 +705,7 @@ func main() {
 		agentpbv2.RegisterWendyProvisioningServiceServer(srv, provisioningSvcV2)
 		agentpbv2.RegisterWendyAudioServiceServer(srv, audioSvcV2)
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
+		agentpbv2.RegisterDataServiceServer(srv, dataSvc)
 		agentpbv2.RegisterWendyMeshServiceServer(srv, meshSvc)
 		agentpbv2.RegisterWendyBuildServiceServer(srv, buildSvc)
 		agentpbv2.RegisterWendySensorPairingServiceServer(srv, sensorSvc)
@@ -687,24 +740,20 @@ func main() {
 		// startMTLSServer is also invoked from inside the OnProvisioned callback,
 		// where taking the provisioning mutex would risk re-entrancy (see the comment
 		// at the startTunnelBroker closure). Both call sites already pass certPEM.
-		expectedOrg, haveOrg := deviceOrgFromCertPEM(certPEM)
+		expectedScope, haveScope := certs.ScopeFromCertPEM(certPEM)
 		effectiveMode := orgMode
-		if orgMode != interceptor.OrgModeOff && !haveOrg {
-			// Fail safe: the device cannot determine its own org, so it cannot
-			// meaningfully compare a client's org against it. Rather than brick the
-			// device (rejecting all clients) or silently enforce against an unknown
-			// self-org, disable enforcement for this server and log loudly.
-			logger.Error("cannot determine device organization from own certificate; mTLS org enforcement DISABLED for this server",
+		if orgMode != interceptor.OrgModeOff && !haveScope {
+			logger.Error("cannot determine device identity scope; refusing to start mTLS server",
 				zap.String("configuredMode", orgMode.String()))
-			effectiveMode = interceptor.OrgModeOff
+			return
 		}
 		if effectiveMode != interceptor.OrgModeOff {
-			logger.Info("mTLS server enforcing org",
-				zap.Int32("org", expectedOrg),
+			logger.Info("mTLS server enforcing tenant",
+				zap.String("scope", expectedScope.String()),
 				zap.String("mode", effectiveMode.String()))
 		}
 
-		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor, expectedOrg, effectiveMode,
+		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor, expectedScope, effectiveMode,
 			// UnaryMTLSInterceptor and StreamMTLSInterceptor are embedded inside
 			// mtls.NewServer and run before these caller-provided interceptors.
 			grpc.ChainUnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
@@ -1067,6 +1116,34 @@ func main() {
 		}()
 	}
 
+	// Episode transfer worker: uploads sealed episodes to the cloud ingest
+	// service over the device's own enrolled identity, the certificate
+	// provisioning obtained and persisted. Its
+	// queue is the episode store the data manager owns, which NewManager above
+	// created (the agent exits when it cannot), so the only start condition is
+	// provisioning completion, which Run waits for itself. It is deliberately
+	// NOT gated on telemetry disk buffering: that reports on a different store,
+	// and gating on it would silently leave every sealed episode unuploaded
+	// until the quota evicted it.
+	dataTransferWorker := services.NewDataTransferWorker(logger, dataManager, provisioningSvc)
+	// WENDY_DATA_INGEST_URL names the DataIngestService endpoint episode uploads
+	// dial (ingest.data.wendy.sh in dev). There is no fallback: the enrolled
+	// cloud host does not serve DataIngestService. Unset disables uploads, the
+	// worker says so once, and sealed episodes stay queued on the device.
+	// Identity is the enrolled device certificate presented in the TLS
+	// handshake; no request header carries it.
+	if v := os.Getenv("WENDY_DATA_INGEST_URL"); v != "" {
+		dataTransferWorker.SetIngestEndpoint(v)
+		logger.Info("data transfer worker: ingest endpoint", zap.String("url", v))
+	} else {
+		logger.Error("data transfer worker: WENDY_DATA_INGEST_URL is not set; episode uploads are disabled")
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		dataTransferWorker.Run(ctx)
+	}()
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -1129,37 +1206,22 @@ func certNotBeforeFloor(certPEM string) time.Time {
 	return cert.NotBefore
 }
 
-// deviceOrgFromCertPEM parses the device's own leaf certificate (ML-DSA aware,
-// mirroring certNotBeforeFloor) and extracts its organization ID via
-// certs.OrgFromClientCert. It returns (org, true) when an org identity is present
-// and valid, and (0, false) on any parse/extract error or when the cert carries no
-// org identity. The caller treats (0, false) as "device org unknown".
-func deviceOrgFromCertPEM(certPEM string) (int32, bool) {
-	if certPEM == "" {
-		return 0, false
+// deviceScope reports the tenant this device's own current leaf belongs to,
+// falling back to the legacy org the provisioning record carries when the
+// certificate names no tenant at all.
+//
+// The certificate is the identity source, so it is read fresh on every call:
+// a BLE provisioning event or a pki-core renewal replaces it without
+// restarting the agent, and a scope captured at boot would outlive it.
+func deviceScope(provisioningSvc *services.ProvisioningService) certs.Scope {
+	certPEM, _, _ := provisioningSvc.ProvisioningCerts()
+	if scope, ok := certs.ScopeFromCertPEM(certPEM); ok {
+		return scope
 	}
-	block, _ := pem.Decode([]byte(certPEM))
-	if block == nil {
-		return 0, false
-	}
-	// ML-DSA certs from pki-core have trailing ASN.1 bytes that cause
-	// x509.ParseCertificate to fail. Strip them with the same fallback used by
-	// certNotBeforeFloor and internal/agent/mtls/mldsa_verify.go.
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		var raw asn1.RawValue
-		if _, asn1Err := asn1.Unmarshal(block.Bytes, &raw); asn1Err == nil {
-			cert, err = x509.ParseCertificate(raw.FullBytes)
-		}
-	}
-	if err != nil {
-		return 0, false
-	}
-	org, hasOrg, err := certs.OrgFromClientCert(cert)
-	if err != nil || !hasOrg {
-		return 0, false
-	}
-	return org, true
+	// An unprovisioned device reports org 0, which Scope.Known reads as
+	// "unidentified" — the same grace the mTLS interceptor applies.
+	_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
+	return certs.Scope{OrgID: orgID}
 }
 
 // ensureCNIBinDir (re)creates agentcontainerd.CNIBinDir with "bridge" and
@@ -1292,4 +1354,30 @@ func handleUtilityCommand(args []string) (bool, int) {
 
 	fmt.Printf("Opening %s in default browser...\n", rawURL)
 	return true, 0
+}
+
+// envBytes reads a byte count from the environment, falling back to fallback
+// when the variable is unset. A value that is present but unusable is reported
+// rather than silently ignored: a device configured with a bad quota should
+// learn that its configuration did not take.
+//
+// minimum is the smallest value the setting accepts. It exists because the two
+// callers disagree about zero: a reserve of zero is a real choice ("keep no
+// headroom"), while a maximum quota of zero is not a store that holds nothing,
+// it is a value SetQuota discards in favour of the default. Accepting zero for
+// the quota therefore produced a device running on 50 GiB while its operator
+// believed they had capped it, with nothing logged either way.
+func envBytes(logger *zap.Logger, name string, fallback, minimum int64) int64 {
+	raw, ok := os.LookupEnv(name)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || v < minimum {
+		logger.Warn("ignoring unusable byte count in environment; using the default",
+			zap.String("variable", name), zap.String("value", raw),
+			zap.Int64("minimum", minimum), zap.Int64("default", fallback))
+		return fallback
+	}
+	return v
 }

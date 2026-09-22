@@ -39,7 +39,7 @@ that the default is set but unreachable instead of opening a picker.
 ## 3. Show Picker
 
 mDNS and BLE discover nearby [WendyOS](../../wendyos/),
-[Wendy-Agent](../../wendy-agent/) and [Wendy Lite](../../wendy-lite/) devices.
+Wendy-Agent and [Wendy Lite](../../wendy-lite/) devices.
 A device picker is shown only when the terminal is interactive, so a user can
 select their target device for the current command invocation.
 

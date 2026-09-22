@@ -230,7 +230,7 @@ func startPreEnrollFakeServer(t *testing.T, svc *fakePreEnrollCertService) PreEn
 	t.Cleanup(func() { srv.GracefulStop(); lis.Close() })
 
 	addr := lis.Addr().String()
-	return func(_ context.Context, _ string, _ grpc.DialOption) (*grpc.ClientConn, error) {
+	return func(_ context.Context, _ string, _ ...grpc.DialOption) (*grpc.ClientConn, error) {
 		return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 }
@@ -398,8 +398,8 @@ func TestWriteConfigFiles_AgentBinaryOnly(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "wendy.conf")); !os.IsNotExist(err) {
 		t.Error("wendy.conf should not be written when no creds or device name")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "provisioning.json")); !os.IsNotExist(err) {
-		t.Error("provisioning.json should not be written when no provisioning data")
+	if _, err := os.Stat(filepath.Join(dir, "acme-enrollment.json")); !os.IsNotExist(err) {
+		t.Error("acme-enrollment.json should not be written when no provisioning data")
 	}
 }
 
@@ -438,24 +438,24 @@ func TestWriteConfigFiles_WithDeviceName(t *testing.T) {
 	}
 }
 
-func TestWriteConfigFiles_WithProvisioningJSON(t *testing.T) {
+func TestWriteConfigFiles_WithEnrollmentJSON(t *testing.T) {
 	dir := t.TempDir()
-	provJSON := []byte(`{"enrolled":true}`)
+	enrollJSON := []byte(`{"deviceID":"d"}`)
 
-	if err := writeConfigFiles(dir, []byte("bin"), nil, "", provJSON); err != nil {
+	if err := writeConfigFiles(dir, []byte("bin"), nil, "", enrollJSON); err != nil {
 		t.Fatalf("writeConfigFiles: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, "provisioning.json"))
+	got, err := os.ReadFile(filepath.Join(dir, "acme-enrollment.json"))
 	if err != nil {
-		t.Fatalf("reading provisioning.json: %v", err)
+		t.Fatalf("reading acme-enrollment.json: %v", err)
 	}
-	if string(got) != string(provJSON) {
-		t.Errorf("provisioning.json = %q; want %q", got, provJSON)
+	if string(got) != string(enrollJSON) {
+		t.Errorf("acme-enrollment.json = %q; want %q", got, enrollJSON)
 	}
-	info, _ := os.Stat(filepath.Join(dir, "provisioning.json"))
+	info, _ := os.Stat(filepath.Join(dir, "acme-enrollment.json"))
 	if info.Mode().Perm() != 0o600 {
-		t.Errorf("provisioning.json mode = %o; want 0600", info.Mode().Perm())
+		t.Errorf("acme-enrollment.json mode = %o; want 0600", info.Mode().Perm())
 	}
 }
 

@@ -5,7 +5,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,7 +16,13 @@ import (
 // just the endpoint when the session holds no certificate (and thus no org).
 func authSessionLabel(a *config.AuthConfig) string {
 	if len(a.Certificates) > 0 {
-		return fmt.Sprintf("org %d — %s", a.Certificates[0].OrganizationID, a.CloudGRPC)
+		if name := cachedCloudOrganizationName(a); name != "" {
+			return fmt.Sprintf("%s — %s", name, a.CloudGRPC)
+		}
+		return fmt.Sprintf("org %s — %s", a.OrganizationKey(), a.CloudGRPC)
+	}
+	if a.OAuthIssuer != "" {
+		return fmt.Sprintf("%s — %s", issuerRealm(a.OAuthIssuer), a.CloudGRPC)
 	}
 	return a.CloudGRPC
 }
@@ -27,7 +32,10 @@ func authSessionLabel(a *config.AuthConfig) string {
 // same endpoint are distinct and must not be collapsed to a single picker row.
 func authSessionKey(a *config.AuthConfig) string {
 	if len(a.Certificates) > 0 {
-		return fmt.Sprintf("%s::%d", a.CloudGRPC, a.Certificates[0].OrganizationID)
+		return fmt.Sprintf("%s::%s", a.CloudGRPC, a.OrganizationKey())
+	}
+	if a.OAuthIssuer != "" {
+		return fmt.Sprintf("%s::%s", a.CloudGRPC, a.OAuthIssuer)
 	}
 	return a.CloudGRPC
 }
@@ -51,56 +59,67 @@ var authPickerColumns = []tui.PickerColumn{
 	},
 }
 
-// resolveAuthOrgNames fetches a map of orgID -> org name for each stored auth
-// session. Failures are silently skipped; callers fall back to "org N" for any
-// missing entry.
-func resolveAuthOrgNames(cfg *config.Config) map[int32]string {
-	names := make(map[int32]string)
+// resolveAuthOrgNames refreshes names for both UUID and legacy sessions. Keys
+// include the endpoint so equal IDs in different environments stay distinct.
+func resolveAuthOrgNames(ctx context.Context, cfg *config.Config) map[string]string {
+	names := make(map[string]string)
 	for i := range cfg.Auth {
 		a := &cfg.Auth[i]
-		if len(a.Certificates) == 0 {
-			continue
-		}
-		certOrgID := int32(a.Certificates[0].OrganizationID)
-		if _, ok := names[certOrgID]; ok {
-			continue // already resolved from a previous session
-		}
-		orgs, err := listOrgsFromCloud(context.Background(), a)
-		if err != nil {
-			continue
-		}
-		for _, org := range orgs {
-			if org.GetId() == certOrgID {
-				names[certOrgID] = org.GetName()
-				break
-			}
+		key := authSessionKey(a)
+		if names[key] == "" {
+			names[key] = cloudOrganizationName(ctx, a)
 		}
 	}
 	return names
 }
 
 // authPickerItems builds picker rows for every stored session.
-// orgNames is a pre-fetched map of orgID -> name; missing entries fall back to
+// orgNames is a pre-fetched map of session key -> name; missing entries fall back to
 // "org N". The Name column shows the org name, Description shows the org ID,
 // and Type carries the environment (dashboard URL or gRPC endpoint).
 // DedupKey and Value carry the session key so each (endpoint, org) pair is a
 // distinct row even when multiple orgs share the same gRPC endpoint.
-func authPickerItems(cfg *config.Config, orgNames map[int32]string) []tui.PickerItem {
-	items := make([]tui.PickerItem, 0, len(cfg.Auth))
+func authPickerItems(cfg *config.Config, orgNames map[string]string) []tui.PickerItem {
+	// A legacy login and its operator/OIDC replacement can share the same
+	// endpoint and certificate org ID. They intentionally have the same picker
+	// key, so retain the operator-capable row rather than letting the stale
+	// legacy row win by insertion order.
+	preferred := make(map[string]*config.AuthConfig, len(cfg.Auth))
+	order := make([]string, 0, len(cfg.Auth))
 	for i := range cfg.Auth {
 		a := &cfg.Auth[i]
 		key := authSessionKey(a)
+		if _, exists := preferred[key]; !exists {
+			order = append(order, key)
+		}
+		if current := preferred[key]; current == nil || (current.OAuthIssuer == "" && a.OAuthIssuer != "") {
+			preferred[key] = a
+		}
+	}
 
+	items := make([]tui.PickerItem, 0, len(preferred))
+	for _, key := range order {
+		a := preferred[key]
 		name := a.CloudGRPC
 		idStr := ""
-		if len(a.Certificates) > 0 {
+		if len(a.Certificates) > 0 && a.Certificates[0].TenantUUID() != "" {
+			idStr = a.Certificates[0].TenantUUID()
+			name = idStr
+		} else if len(a.Certificates) > 0 {
 			orgID := int32(a.Certificates[0].OrganizationID)
 			idStr = fmt.Sprintf("%d", orgID)
-			if n, ok := orgNames[orgID]; ok && n != "" {
+			if n, ok := orgNames[key]; ok && n != "" {
 				name = n
 			} else {
 				name = fmt.Sprintf("org %d", orgID)
 			}
+		} else if a.OAuthIssuer != "" {
+			name = issuerRealm(a.OAuthIssuer)
+		}
+		if resolved := orgNames[key]; resolved != "" {
+			name = resolved
+		} else if cached := cachedCloudOrganizationName(a); cached != "" {
+			name = cached
 		}
 
 		env := a.CloudDashboard
@@ -119,26 +138,28 @@ func authPickerItems(cfg *config.Config, orgNames map[int32]string) []tui.Picker
 	return items
 }
 
-// persistSessionDefault stores the picker's highlighted session ("endpoint" or
-// "endpoint::orgID" key) as the default. Both halves are persisted: the org ID
-// is what actually disambiguates sessions when several orgs share one endpoint
-// — persisting only the endpoint made the default resolve to whichever of them
-// was logged into first, not the one the user picked.
+// persistSessionDefault makes the picker's highlighted session the current
+// context. The picker key collapses a legacy/operator pair into one row, so the
+// context set is the operator-preferred entry for that key — the row shown.
 func persistSessionDefault(key string) error {
 	c, err := config.Load()
 	if err != nil {
 		return err
 	}
-	endpoint := key
-	orgID := 0
-	if idx := strings.Index(key, "::"); idx >= 0 {
-		endpoint = key[:idx]
-		if n, convErr := strconv.Atoi(key[idx+2:]); convErr == nil {
-			orgID = n
+	var chosen *config.AuthConfig
+	for i := range c.Auth {
+		if authSessionKey(&c.Auth[i]) != key {
+			continue
+		}
+		cand := &c.Auth[i]
+		if chosen == nil || (chosen.OAuthIssuer == "" && cand.OAuthIssuer != "") {
+			chosen = cand
 		}
 	}
-	c.DefaultCloudGRPC = endpoint
-	c.DefaultOrgID = int32(orgID)
+	if chosen == nil {
+		return fmt.Errorf("selected session no longer exists")
+	}
+	c.CurrentContext = chosen.Name
 	return config.Save(c)
 }
 
@@ -147,26 +168,12 @@ func persistSessionDefault(key string) error {
 // the device picker), 'x' clears it, and Enter selects a session for this
 // invocation only. Returns the selected session (cert-validated).
 func pickAuthSession(cfg *config.Config) (*config.AuthConfig, error) {
-	orgNames := resolveAuthOrgNames(cfg)
-
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	picker := tui.NewPickerWithTitleAndColumns("Select an organisation", authPickerColumns)
-	// Compute the default key from the stored default org ID (preferred) or
-	// the legacy DefaultCloudGRPC field so both code-paths work.
-	if cfg.DefaultOrgID != 0 {
-		for i := range cfg.Auth {
-			if key := authSessionKey(&cfg.Auth[i]); strings.HasSuffix(key, fmt.Sprintf("::%d", cfg.DefaultOrgID)) {
-				picker.DefaultKey = strings.ToLower(key)
-				break
-			}
-		}
-	}
-	if picker.DefaultKey == "" && cfg.DefaultCloudGRPC != "" {
-		for i := range cfg.Auth {
-			if cfg.Auth[i].CloudGRPC == cfg.DefaultCloudGRPC {
-				picker.DefaultKey = strings.ToLower(authSessionKey(&cfg.Auth[i]))
-				break
-			}
-		}
+	// Highlight the current context's row.
+	if cur, ok := cfg.ContextByName(cfg.CurrentContext); ok {
+		picker.DefaultKey = strings.ToLower(authSessionKey(cur))
 	}
 
 	picker.OnSetDefault = func(item tui.PickerItem) (string, error) {
@@ -175,25 +182,33 @@ func pickAuthSession(cfg *config.Config) (*config.AuthConfig, error) {
 			return "", fmt.Errorf("no auth session selected")
 		}
 		if err := persistSessionDefault(key); err != nil {
-			return "", fmt.Errorf("could not save default: %w", err)
+			return "", fmt.Errorf("could not switch context: %w", err)
 		}
-		return fmt.Sprintf("Default set to %s.", item.Name), nil
+		return fmt.Sprintf("Switched to %s.", item.Name), nil
 	}
 	picker.OnUnsetDefault = func() (string, error) {
 		c, err := config.Load()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("could not clear context: %w", err)
 		}
-		c.DefaultCloudGRPC, c.DefaultOrgID = "", 0
+		c.CurrentContext = ""
 		if err := config.Save(c); err != nil {
-			return "", err
+			return "", fmt.Errorf("could not clear context: %w", err)
 		}
-		return "Default cleared.", nil
+		return "Current context cleared.", nil
 	}
 
+	// Snapshot the rows before background lookups; the caller can use its
+	// selected session as soon as the picker exits.
+	lookupCfg := *cfg
+	lookupCfg.Auth = append([]config.AuthConfig(nil), cfg.Auth...)
+	for i := range lookupCfg.Auth {
+		lookupCfg.Auth[i].Certificates = append([]config.CertificateInfo(nil), cfg.Auth[i].Certificates...)
+	}
 	p := tea.NewProgram(picker)
 	go func() {
-		p.Send(tui.PickerAddMsg{Items: authPickerItems(cfg, orgNames)})
+		p.Send(tui.PickerAddMsg{Items: authPickerItems(&lookupCfg, nil)})
+		p.Send(tui.PickerSetMsg{Items: authPickerItems(&lookupCfg, resolveAuthOrgNames(ctx, &lookupCfg))})
 		p.Send(tui.PickerDoneMsg{})
 	}()
 
@@ -209,13 +224,20 @@ func pickAuthSession(cfg *config.Config) (*config.AuthConfig, error) {
 		return nil, fmt.Errorf("no organisation selected")
 	}
 	selectedKey := pm.Selected().Value.(string)
+	var selected *config.AuthConfig
 	for i := range cfg.Auth {
 		if authSessionKey(&cfg.Auth[i]) == selectedKey {
-			if len(cfg.Auth[i].Certificates) == 0 {
-				return nil, fmt.Errorf("auth session has no certificates; re-run 'wendy auth login'")
+			candidate := &cfg.Auth[i]
+			if selected == nil || (selected.OAuthIssuer == "" && candidate.OAuthIssuer != "") {
+				selected = candidate
 			}
-			return &cfg.Auth[i], nil
 		}
+	}
+	if selected != nil {
+		if len(selected.Certificates) == 0 && !selected.HasAPIKey() {
+			return nil, fmt.Errorf("auth session has no certificates or API token; re-run 'wendy auth login'")
+		}
+		return selected, nil
 	}
 	return nil, fmt.Errorf("selected session no longer exists")
 }
