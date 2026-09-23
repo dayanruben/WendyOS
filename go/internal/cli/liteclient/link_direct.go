@@ -27,6 +27,13 @@ const keepAliveCmd = 'k'
 
 var keepAliveInterval = 6 * time.Second // var so tests can shrink it
 
+// monoEpoch anchors lastSend. Storing offsets from it via time.Since keeps
+// Go's monotonic clock in play, so a wall-clock step (e.g. NTP) cannot
+// stretch or collapse the idle interval.
+var monoEpoch = time.Now()
+
+func monoNow() int64 { return int64(time.Since(monoEpoch)) }
+
 // WendyCom frame header: magic, version, four reserved bytes, then a 16-bit
 // big-endian body length. directLink owns this framing — the cloud tunnel does
 // not use it, because there the broker frames instead.
@@ -59,7 +66,7 @@ type directLink struct {
 
 	keepAliveStop chan struct{}
 	keepAliveDone sync.WaitGroup
-	lastSend      atomic.Int64 // UnixNano of the last successful write
+	lastSend      atomic.Int64 // monoNow() at the last successful write
 }
 
 // newDirectLink frames WendyCom over an established byte stream: TCP-TLS, or
@@ -107,7 +114,7 @@ func (l *directLink) keepAliveLoop() {
 	defer l.keepAliveDone.Done()
 	for {
 		last := l.lastSend.Load()
-		wait := keepAliveInterval - time.Since(time.Unix(0, last))
+		wait := keepAliveInterval - time.Duration(monoNow()-last)
 		if wait <= 0 {
 			if l.sendKeepAlive(last) != nil {
 				return
@@ -141,7 +148,7 @@ func (l *directLink) sendKeepAlive(last int64) error {
 	if _, err := l.conn.Write([]byte{escapeChar, keepAliveCmd}); err != nil {
 		return err
 	}
-	l.lastSend.Store(time.Now().UnixNano())
+	l.lastSend.Store(monoNow())
 	return nil
 }
 
@@ -301,7 +308,7 @@ func (l *directLink) send(req *wendypb.WendyComMessage) error {
 		}
 		msg = msg[n:]
 	}
-	l.lastSend.Store(time.Now().UnixNano())
+	l.lastSend.Store(monoNow())
 	return nil
 }
 
