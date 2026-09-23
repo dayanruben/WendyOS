@@ -43,7 +43,7 @@ On GPU-capable devices, the following GPU fields are included. Each is omitted f
 | `jetpackVersion` | `JetPack:` | JetPack/L4T version string (Jetson only). |
 | `cudaVersion` | `CUDA:` | CUDA toolkit version (e.g. `12.6`). |
 | `gpuArch` | `GPU Arch:` | GPU architecture identifier. Format is vendor-specific (e.g. `sm_87` for NVIDIA, `a623` for a Qualcomm Adreno). |
-| `gpuCapabilities[]` | `GPU Compute:` | One entry per detected GPU: `vendor`, `path` (the device node that identified it, e.g. `/dev/dri/card0`), and `computeBackends` (`cuda`, `rocm`, `metal`, or `qnn`, the Qualcomm Hexagon NPU over FastRPC on Dragonwing). A single GPU prints its backends, or `none detected`; several GPUs print each one with its vendor and path. No entries means an older agent. |
+| `gpuCapabilities[]` | `GPU Compute:` | One entry per detected GPU: `vendor`, `path` (the device node that identified it, e.g. `/dev/dri/card0`), and `computeBackends` (`cuda`, `rocm`, or `metal`). A single GPU prints its backends; several print each one with its vendor and path. The line is omitted when no GPU reports a backend, and no entries at all means an older agent. An on-SoC neural accelerator is not a GPU backend — see `npuBackends`. |
 
 ### NPU output fields
 
@@ -53,8 +53,11 @@ On devices with an on-SoC neural accelerator the agent can reach, the following 
 |---|---|---|
 | `hasNpu` | — | Whether the device has a reachable NPU. Always present; `false` elsewhere. |
 | `npuVendor` | `NPU:` | NPU vendor (e.g. `qualcomm`); shown as `unknown` in human-readable output when an NPU is present but the vendor is unreported. |
+| `npuBackends[]` | `NPU:` | Runtimes an app can use on the NPU (e.g. `qnn` on a Qualcomm Hexagon). Rendered in parentheses after the vendor, as `qualcomm (qnn)`. Empty when the vendor's runtime is unrecognized, and on agents predating this field. |
 
 Detection requires a non-secure FastRPC node: the signed-PD nodes are root-only, so a board exposing only those reports no NPU. The vendor comes from the DSP's device-tree `compatible`, the only vendor signal an on-SoC accelerator has.
+
+FastRPC is the DSP's transport, so it is evidence for the NPU alone. A Dragonwing reports `NPU: qualcomm (qnn)` and no GPU compute backend for the Adreno beside it.
 
 `wendy device info` reports static GPU *metadata* (vendor, architecture, toolkit versions). For **live** GPU utilization, memory, temperature, and power draw, use [`wendy device top`](top.md).
 
