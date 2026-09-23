@@ -91,7 +91,7 @@ func (l *directLink) linkHandshake() error {
 // keepAliveInterval of silence, so the serial link stays alive when no other
 // WendyCom traffic is flowing.
 func (l *directLink) startKeepAlive() error {
-	if err := l.sendKeepAlive(); err != nil {
+	if err := l.sendKeepAlive(l.lastSend.Load()); err != nil {
 		return err
 	}
 	l.keepAliveDone.Add(1)
@@ -106,9 +106,10 @@ func (l *directLink) startKeepAlive() error {
 func (l *directLink) keepAliveLoop() {
 	defer l.keepAliveDone.Done()
 	for {
-		wait := keepAliveInterval - time.Since(time.Unix(0, l.lastSend.Load()))
+		last := l.lastSend.Load()
+		wait := keepAliveInterval - time.Since(time.Unix(0, last))
 		if wait <= 0 {
-			if l.sendKeepAlive() != nil {
+			if l.sendKeepAlive(last) != nil {
 				return
 			}
 			continue
@@ -127,9 +128,16 @@ func (l *directLink) keepAliveLoop() {
 // never interleaves with a real message on the wire. A write error means the
 // link is dead; the read loop discovers that independently via recv, so this
 // just stops trying.
-func (l *directLink) sendKeepAlive() error {
+//
+// last is the lastSend value the caller judged idle. If it changed, a real
+// write went out while we waited for writeMu, so the link is no longer idle
+// and the keep-alive is skipped.
+func (l *directLink) sendKeepAlive(last int64) error {
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
+	if l.lastSend.Load() != last {
+		return nil
+	}
 	if _, err := l.conn.Write([]byte{escapeChar, keepAliveCmd}); err != nil {
 		return err
 	}
