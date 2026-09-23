@@ -198,7 +198,7 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 	c.link = newSerialLink(port)
 	c.serialLock = lock
 	if err := c.handshake(); err != nil {
-		port.Close()
+		c.link.close() // also stops the keep-alive loop linkHandshake may have started
 		lock.Release()
 		c.link = nil
 		c.serialLock = nil
