@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,18 @@ func monoNow() int64 { return int64(time.Since(monoEpoch)) }
 
 // errLinkClosed is returned by writes attempted once close has begun.
 var errLinkClosed = errors.New("link closed")
+
+// On Windows, close arms a watchdog that purges pending serial output
+// (PURGE_TXCLEAR|PURGE_TXABORT) every closeWatchdogDelay until shutdown reaches
+// conn.Close. That aborts an overlapped write stuck on a device that stopped
+// draining, so close cannot hang behind it; repeating covers the next write or
+// Drain that gets stuck after the first purge. Off on unix: nothing there
+// reliably interrupts a blocked write(2). Vars so tests can enable and shrink
+// it on any OS.
+var (
+	closeWatchdogEnabled = runtime.GOOS == "windows"
+	closeWatchdogDelay   = 2 * time.Second
+)
 
 // WendyCom frame header: magic, version, four reserved bytes, then a 16-bit
 // big-endian body length. directLink owns this framing — the cloud tunnel does
@@ -352,6 +365,10 @@ func (l *directLink) preferredChunkSize() int {
 // writer has either finished or will see the flag and back off. It never waits
 // for the keep-alive goroutine while that goroutine could still be queued on
 // writeMu behind a write.
+//
+// On a serial link, a write stuck on a device that stopped draining would
+// block close at writeMu (or in Drain). On Windows the close watchdog frees
+// it; on unix such a write still blocks close.
 func (l *directLink) close() error {
 	l.closed.Store(true)
 	if !l.isSerial {
@@ -362,6 +379,7 @@ func (l *directLink) close() error {
 		l.writeMu.Unlock() //nolint:staticcheck — barrier, not a critical section
 		return err
 	}
+	stopWatchdog := l.startCloseWatchdog()
 	close(l.keepAliveStop)
 	l.writeMu.Lock()
 	_, _ = l.conn.Write([]byte{escapeChar, 'o'})
@@ -369,11 +387,42 @@ func (l *directLink) close() error {
 	if port, ok := l.conn.(serial.Port); ok {
 		_ = port.Drain()
 	}
+	stopWatchdog()
 	err := l.conn.Close()
 	// Safe now: having held writeMu, the keep-alive is either in its select
 	// (sees keepAliveStop) or queued on writeMu (sees closed); neither blocks.
 	l.keepAliveDone.Wait()
 	return err
+}
+
+// startCloseWatchdog arms the close watchdog when enabled and the transport
+// supports purging: it purges every closeWatchdogDelay until stopped. The
+// returned stop only returns once the watchdog goroutine has exited, so it can
+// never fire after conn.Close.
+func (l *directLink) startCloseWatchdog() (stop func()) {
+	r, ok := l.conn.(interface{ ResetOutputBuffer() error })
+	if !closeWatchdogEnabled || !ok {
+		return func() {}
+	}
+	cancel := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(closeWatchdogDelay)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = r.ResetOutputBuffer()
+			case <-cancel:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(cancel)
+		<-done
+	}
 }
 
 // readRawMessage reads one framed message of any kind (response, event, handshake)

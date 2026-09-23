@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -419,5 +420,107 @@ func TestCloseNonSerialRejectsWrites(t *testing.T) {
 	}
 	if n := len(conn.snapshot()); n != 0 {
 		t.Fatalf("got %d writes on a closed non-serial link, want none", n)
+	}
+}
+
+// stuckConn models a serial device that stopped draining: frame writes block
+// until ResetOutputBuffer purges them, the way PURGE_TXABORT aborts a pending
+// overlapped write on Windows. The 2-byte escape commands go through.
+type stuckConn struct {
+	recordingConn
+	purge     chan struct{}
+	purgeOnce sync.Once
+	resets    atomic.Int32
+	blocked   chan struct{} // closed when the first frame write blocks
+	blockOnce sync.Once
+}
+
+func newStuckConn() *stuckConn {
+	return &stuckConn{purge: make(chan struct{}), blocked: make(chan struct{})}
+}
+
+func (c *stuckConn) Write(p []byte) (int, error) {
+	if len(p) > 2 {
+		c.blockOnce.Do(func() { close(c.blocked) })
+		<-c.purge
+		return 0, errors.New("stuckConn: write aborted")
+	}
+	return c.recordingConn.Write(p)
+}
+
+func (c *stuckConn) ResetOutputBuffer() error {
+	c.resets.Add(1)
+	c.purgeOnce.Do(func() { close(c.purge) })
+	return nil
+}
+
+func enableCloseWatchdog(t *testing.T) {
+	t.Helper()
+	prevEnabled, prevDelay := closeWatchdogEnabled, closeWatchdogDelay
+	closeWatchdogEnabled, closeWatchdogDelay = true, 50*time.Millisecond
+	t.Cleanup(func() { closeWatchdogEnabled, closeWatchdogDelay = prevEnabled, prevDelay })
+}
+
+func TestCloseWatchdogAbortsStuckWrite(t *testing.T) {
+	enableCloseWatchdog(t)
+
+	conn := newStuckConn()
+	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	sendErr := make(chan error, 1)
+	go func() { sendErr <- link.send(&wendypb.WendyComMessage{}) }()
+	<-conn.blocked
+
+	done := make(chan error, 1)
+	go func() { done <- link.close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("close() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close() did not return: the watchdog did not free the stuck write")
+	}
+
+	if err := <-sendErr; err == nil {
+		t.Fatal("stuck send() returned nil after being purged, want an error")
+	}
+	if n := conn.resets.Load(); n < 1 {
+		t.Fatalf("ResetOutputBuffer called %d times, want at least 1", n)
+	}
+	writes := conn.snapshot()
+	if len(writes) == 0 || !bytes.Equal(writes[len(writes)-1], exitCmd) {
+		t.Fatalf("writes = %q, want DLE 'o' last", writes)
+	}
+}
+
+func TestCloseWatchdogIdleOnHealthyClose(t *testing.T) {
+	enableCloseWatchdog(t)
+
+	conn := newStuckConn()
+	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	if err := link.close(); err != nil {
+		t.Fatalf("close() = %v", err)
+	}
+	time.Sleep(3 * closeWatchdogDelay)
+	if n := conn.resets.Load(); n != 0 {
+		t.Fatalf("ResetOutputBuffer called %d times on a healthy close, want 0", n)
+	}
+}
+
+func TestCloseWatchdogRepeatsUntilStopped(t *testing.T) {
+	enableCloseWatchdog(t)
+
+	conn := newStuckConn()
+	link := &directLink{conn: conn}
+	stop := link.startCloseWatchdog()
+	time.Sleep(3*closeWatchdogDelay + closeWatchdogDelay/2)
+	stop()
+	n := conn.resets.Load()
+	if n < 2 {
+		t.Fatalf("ResetOutputBuffer called %d times in 3.5 periods, want it repeated", n)
+	}
+	time.Sleep(3 * closeWatchdogDelay)
+	if after := conn.resets.Load(); after != n {
+		t.Fatalf("ResetOutputBuffer called %d more times after stop", after-n)
 	}
 }
