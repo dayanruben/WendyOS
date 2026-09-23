@@ -366,9 +366,14 @@ func (l *directLink) preferredChunkSize() int {
 // for the keep-alive goroutine while that goroutine could still be queued on
 // writeMu behind a write.
 //
-// On a serial link, a write stuck on a device that stopped draining would
-// block close at writeMu (or in Drain). On Windows the close watchdog frees
-// it; on unix such a write still blocks close.
+// On a serial link, a write stuck on a device that stopped draining blocks
+// close at writeMu (or in Drain). Reviews keep flagging this as a deadlock and
+// suggest closing the port first, but that would not help: the serial API
+// offers no way to cancel pending output. On unix, closing the fd does not
+// interrupt a write(2) blocked in another goroutine, and the tty close itself
+// waits for pending output to drain. The limitation is the API, not the lock.
+// On Windows the close watchdog works around it by purging output; on unix
+// such a write still blocks close.
 func (l *directLink) close() error {
 	l.closed.Store(true)
 	if !l.isSerial {
