@@ -119,11 +119,16 @@ func (l *directLink) linkHandshake() error {
 // monitoring for the keep-alive right away, then begins sending one every
 // keepAliveInterval of silence, so the serial link stays alive when no other
 // WendyCom traffic is flowing.
+//
+// The loop is registered before the immediate write: if that write gets
+// writeMu ahead of close, the Add happens before close's Wait; if close gets
+// it first, the write sees closed and the registration is undone.
 func (l *directLink) startKeepAlive() error {
+	l.keepAliveDone.Add(1)
 	if err := l.sendKeepAlive(l.lastSend.Load()); err != nil {
+		l.keepAliveDone.Done()
 		return err
 	}
-	l.keepAliveDone.Add(1)
 	go l.keepAliveLoop()
 	return nil
 }
