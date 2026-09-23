@@ -342,3 +342,82 @@ func TestKeepAliveStopsOnClose(t *testing.T) {
 		t.Errorf("write count grew from %d to %d after close: keep-alive kept running", before, after)
 	}
 }
+
+var exitCmd = []byte{escapeChar, 'o'}
+
+func TestCloseSendsExitAndRejectsWrites(t *testing.T) {
+	conn := &recordingConn{}
+	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	if err := link.startKeepAlive(); err != nil {
+		t.Fatalf("startKeepAlive() = %v", err)
+	}
+	if err := link.close(); err != nil {
+		t.Fatalf("close() = %v", err)
+	}
+
+	writes := conn.snapshot()
+	if len(writes) == 0 || !bytes.Equal(writes[len(writes)-1], exitCmd) {
+		t.Fatalf("writes = %q, want the last one to be DLE 'o'", writes)
+	}
+	if err := link.send(&wendypb.WendyComMessage{}); !errors.Is(err, errLinkClosed) {
+		t.Fatalf("send() after close = %v, want %v", err, errLinkClosed)
+	}
+	if n := len(conn.snapshot()); n != len(writes) {
+		t.Fatalf("send() after close wrote to the port (%d writes, had %d)", n, len(writes))
+	}
+}
+
+func TestCloseWaitsForInFlightWrite(t *testing.T) {
+	prev := keepAliveInterval
+	keepAliveInterval = 20 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = prev })
+
+	conn := &recordingConn{}
+	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	if err := link.startKeepAlive(); err != nil {
+		t.Fatalf("startKeepAlive() = %v", err)
+	}
+
+	// Stand in for a send in flight; the keep-alive queues behind it on
+	// writeMu once its interval elapses.
+	link.writeMu.Lock()
+	time.Sleep(3 * keepAliveInterval)
+
+	done := make(chan error, 1)
+	go func() { done <- link.close() }()
+	select {
+	case err := <-done:
+		link.writeMu.Unlock()
+		t.Fatalf("close() = %v returned while a write held writeMu", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	link.writeMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("close() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close() did not return after the in-flight write finished")
+	}
+
+	writes := conn.snapshot()
+	if len(writes) == 0 || !bytes.Equal(writes[len(writes)-1], exitCmd) {
+		t.Fatalf("writes = %q, want DLE 'o' last with no keep-alive after it", writes)
+	}
+}
+
+func TestCloseNonSerialRejectsWrites(t *testing.T) {
+	conn := &recordingConn{}
+	link := newDirectLink(conn)
+	if err := link.close(); err != nil {
+		t.Fatalf("close() = %v", err)
+	}
+	if err := link.send(&wendypb.WendyComMessage{}); !errors.Is(err, errLinkClosed) {
+		t.Fatalf("send() after close = %v, want %v", err, errLinkClosed)
+	}
+	if n := len(conn.snapshot()); n != 0 {
+		t.Fatalf("got %d writes on a closed non-serial link, want none", n)
+	}
+}

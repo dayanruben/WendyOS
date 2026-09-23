@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -33,6 +34,9 @@ var keepAliveInterval = 6 * time.Second // var so tests can shrink it
 var monoEpoch = time.Now()
 
 func monoNow() int64 { return int64(time.Since(monoEpoch)) }
+
+// errLinkClosed is returned by writes attempted once close has begun.
+var errLinkClosed = errors.New("link closed")
 
 // WendyCom frame header: magic, version, four reserved bytes, then a 16-bit
 // big-endian body length. directLink owns this framing — the cloud tunnel does
@@ -67,6 +71,11 @@ type directLink struct {
 	keepAliveStop chan struct{}
 	keepAliveDone sync.WaitGroup
 	lastSend      atomic.Int64 // monoNow() at the last successful write
+
+	// closed is set when close begins. Writers check it only while holding
+	// writeMu, and close takes writeMu before tearing down, so no write can
+	// reach the wire after close's own final one.
+	closed atomic.Bool
 }
 
 // newDirectLink frames WendyCom over an established byte stream: TCP-TLS, or
@@ -134,7 +143,7 @@ func (l *directLink) keepAliveLoop() {
 // sendKeepAlive writes a bare DLE 'k' frame, sharing writeMu with send so it
 // never interleaves with a real message on the wire. A write error means the
 // link is dead; the read loop discovers that independently via recv, so this
-// just stops trying.
+// just stops trying; errLinkClosed once close has begun ends the loop too.
 //
 // last is the lastSend value the caller judged idle. If it changed, a real
 // write went out while we waited for writeMu, so the link is no longer idle
@@ -142,6 +151,9 @@ func (l *directLink) keepAliveLoop() {
 func (l *directLink) sendKeepAlive(last int64) error {
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
+	if l.closed.Load() {
+		return errLinkClosed
+	}
 	if l.lastSend.Load() != last {
 		return nil
 	}
@@ -294,6 +306,11 @@ func (l *directLink) send(req *wendypb.WendyComMessage) error {
 	}
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
+	// Once per frame is enough: close takes writeMu before tearing down, so it
+	// cannot run in the middle of this loop.
+	if l.closed.Load() {
+		return errLinkClosed
+	}
 	for len(msg) > 0 {
 		// A record never spans more than one Write, so capping the write caps
 		// the record. Serial is exempt: it carries no TLS, and its payload has
@@ -331,16 +348,32 @@ func (l *directLink) preferredChunkSize() int {
 	return chunkSize
 }
 
+// close sets closed first, then holds writeMu before tearing down, so every
+// writer has either finished or will see the flag and back off. It never waits
+// for the keep-alive goroutine while that goroutine could still be queued on
+// writeMu behind a write.
 func (l *directLink) close() error {
-	if l.isSerial {
-		close(l.keepAliveStop)
-		l.keepAliveDone.Wait()
-		if port, ok := l.conn.(serial.Port); ok {
-			_, _ = port.Write([]byte{escapeChar, 'o'})
-			_ = port.Drain()
-		}
+	l.closed.Store(true)
+	if !l.isSerial {
+		// tls.Conn.Close breaks an in-flight Write; taking writeMu afterwards
+		// waits for that writer to leave, so no write outlives close.
+		err := l.conn.Close()
+		l.writeMu.Lock()
+		l.writeMu.Unlock() //nolint:staticcheck — barrier, not a critical section
+		return err
 	}
-	return l.conn.Close()
+	close(l.keepAliveStop)
+	l.writeMu.Lock()
+	_, _ = l.conn.Write([]byte{escapeChar, 'o'})
+	l.writeMu.Unlock()
+	if port, ok := l.conn.(serial.Port); ok {
+		_ = port.Drain()
+	}
+	err := l.conn.Close()
+	// Safe now: having held writeMu, the keep-alive is either in its select
+	// (sees keepAliveStop) or queued on writeMu (sees closed); neither blocks.
+	l.keepAliveDone.Wait()
+	return err
 }
 
 // readRawMessage reads one framed message of any kind (response, event, handshake)
