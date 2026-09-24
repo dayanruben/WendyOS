@@ -261,7 +261,7 @@ func TestKeepAliveFiresWhenIdle(t *testing.T) {
 	t.Cleanup(func() { keepAliveInterval = prev })
 
 	conn := &recordingConn{}
-	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	link := newSerialLinkConn(conn)
 	if err := link.startKeepAlive(); err != nil {
 		t.Fatalf("startKeepAlive() = %v", err)
 	}
@@ -286,7 +286,7 @@ func TestKeepAlivePostponedBySend(t *testing.T) {
 	t.Cleanup(func() { keepAliveInterval = prev })
 
 	conn := &recordingConn{}
-	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	link := newSerialLinkConn(conn)
 	if err := link.startKeepAlive(); err != nil {
 		t.Fatalf("startKeepAlive() = %v", err)
 	}
@@ -321,7 +321,7 @@ func TestKeepAliveStopsOnClose(t *testing.T) {
 	t.Cleanup(func() { keepAliveInterval = prev })
 
 	conn := &recordingConn{}
-	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	link := newSerialLinkConn(conn)
 	if err := link.startKeepAlive(); err != nil {
 		t.Fatalf("startKeepAlive() = %v", err)
 	}
@@ -348,7 +348,7 @@ var exitCmd = []byte{escapeChar, 'o'}
 
 func TestCloseSendsExitAndRejectsWrites(t *testing.T) {
 	conn := &recordingConn{}
-	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	link := newSerialLinkConn(conn)
 	if err := link.startKeepAlive(); err != nil {
 		t.Fatalf("startKeepAlive() = %v", err)
 	}
@@ -368,13 +368,42 @@ func TestCloseSendsExitAndRejectsWrites(t *testing.T) {
 	}
 }
 
+func TestStartKeepAliveAfterCloseIsRejected(t *testing.T) {
+	conn := &recordingConn{}
+	link := newSerialLinkConn(conn)
+	if err := link.close(); err != nil {
+		t.Fatalf("close() = %v", err)
+	}
+	if err := link.startKeepAlive(); !errors.Is(err, errLinkClosed) {
+		t.Fatalf("startKeepAlive() after close = %v, want %v", err, errLinkClosed)
+	}
+	writes := conn.snapshot()
+	if len(writes) != 1 || !bytes.Equal(writes[0], exitCmd) {
+		t.Fatalf("writes = %q, want only DLE 'o'", writes)
+	}
+}
+
+func TestCloseWithoutKeepAliveDoesNotWait(t *testing.T) {
+	link := newSerialLinkConn(&recordingConn{})
+	done := make(chan error, 1)
+	go func() { done <- link.close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("close() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close() waited for a keep-alive loop that never started")
+	}
+}
+
 func TestCloseWaitsForInFlightWrite(t *testing.T) {
 	prev := keepAliveInterval
 	keepAliveInterval = 20 * time.Millisecond
 	t.Cleanup(func() { keepAliveInterval = prev })
 
 	conn := &recordingConn{}
-	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	link := newSerialLinkConn(conn)
 	if err := link.startKeepAlive(); err != nil {
 		t.Fatalf("startKeepAlive() = %v", err)
 	}
@@ -465,7 +494,7 @@ func TestCloseWatchdogAbortsStuckWrite(t *testing.T) {
 	enableCloseWatchdog(t)
 
 	conn := newStuckConn()
-	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	link := newSerialLinkConn(conn)
 	sendErr := make(chan error, 1)
 	go func() { sendErr <- link.send(&wendypb.WendyComMessage{}) }()
 	<-conn.blocked
@@ -497,7 +526,7 @@ func TestCloseWatchdogIdleOnHealthyClose(t *testing.T) {
 	enableCloseWatchdog(t)
 
 	conn := newStuckConn()
-	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	link := newSerialLinkConn(conn)
 	if err := link.close(); err != nil {
 		t.Fatalf("close() = %v", err)
 	}

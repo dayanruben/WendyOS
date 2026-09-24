@@ -81,9 +81,12 @@ type directLink struct {
 	isSerial bool
 	writeMu  sync.Mutex // serializes frames across command goroutines
 
-	keepAliveStop chan struct{}
-	keepAliveDone sync.WaitGroup
-	lastSend      atomic.Int64 // monoNow() at the last successful write
+	// keepAliveClaimed is claimed by whichever of startKeepAlive and close
+	// runs first; close waits on keepAliveDone only if startKeepAlive won.
+	keepAliveClaimed atomic.Bool
+	keepAliveStop    chan struct{}
+	keepAliveDone    chan struct{} // closed when the keep-alive loop exits
+	lastSend         atomic.Int64  // monoNow() at the last successful write
 
 	// closed is set when close begins. Writers check it only while holding
 	// writeMu, and close takes writeMu before tearing down, so no write can
@@ -100,7 +103,16 @@ func newDirectLink(conn io.ReadWriteCloser) *directLink {
 // newSerialLink frames WendyCom over a serial port, which needs escaping and a
 // smaller chunk than a network transport.
 func newSerialLink(port serial.Port) *directLink {
-	return &directLink{conn: port, isSerial: true, keepAliveStop: make(chan struct{})}
+	return newSerialLinkConn(port)
+}
+
+func newSerialLinkConn(conn io.ReadWriteCloser) *directLink {
+	return &directLink{
+		conn:          conn,
+		isSerial:      true,
+		keepAliveStop: make(chan struct{}),
+		keepAliveDone: make(chan struct{}),
+	}
 }
 
 // linkHandshake switches a serial device into WendyCom mode; on TCP-TLS there
@@ -118,15 +130,14 @@ func (l *directLink) linkHandshake() error {
 // startKeepAlive sends an immediate DLE 'k' so the device can start
 // monitoring for the keep-alive right away, then begins sending one every
 // keepAliveInterval of silence, so the serial link stays alive when no other
-// WendyCom traffic is flowing.
-//
-// The loop is registered before the immediate write: if that write gets
-// writeMu ahead of close, the Add happens before close's Wait; if close gets
-// it first, the write sees closed and the registration is undone.
+// WendyCom traffic is flowing. If close already claimed the loop, it does
+// nothing.
 func (l *directLink) startKeepAlive() error {
-	l.keepAliveDone.Add(1)
+	if !l.keepAliveClaimed.CompareAndSwap(false, true) {
+		return errLinkClosed
+	}
 	if err := l.sendKeepAlive(l.lastSend.Load()); err != nil {
-		l.keepAliveDone.Done()
+		close(l.keepAliveDone)
 		return err
 	}
 	go l.keepAliveLoop()
@@ -138,7 +149,7 @@ func (l *directLink) startKeepAlive() error {
 // inherent in calling Timer.Reset from a goroutine other than the one
 // draining it.
 func (l *directLink) keepAliveLoop() {
-	defer l.keepAliveDone.Done()
+	defer close(l.keepAliveDone)
 	for {
 		last := l.lastSend.Load()
 		wait := keepAliveInterval - time.Duration(monoNow()-last)
@@ -405,9 +416,13 @@ func (l *directLink) close() error {
 	}
 	stopWatchdog()
 	err := l.conn.Close()
-	// Safe now: having held writeMu, the keep-alive is either in its select
-	// (sees keepAliveStop) or queued on writeMu (sees closed); neither blocks.
-	l.keepAliveDone.Wait()
+	if !l.keepAliveClaimed.CompareAndSwap(false, true) {
+		// startKeepAlive won, so keepAliveDone gets closed by the loop or by a
+		// failed first write. Neither can block: keepAliveStop ends the select,
+		// closed rejects any later write, and no write was left in flight once
+		// close took writeMu.
+		<-l.keepAliveDone
+	}
 	return err
 }
 
