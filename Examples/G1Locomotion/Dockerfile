@@ -2,7 +2,7 @@ FROM ros:humble-ros-base@sha256:1813d3c85d7f96ff7d3012d865204583255740182db5d006
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 CYCLONEDDS_HOME=/opt/cyclonedds-sdk \
     CYCLONEDDS_URI=file:///app/cyclonedds.xml
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3-pip python3-dev build-essential curl ca-certificates ros-humble-rmw-cyclonedds-cpp \
+      python3-pip python3-dev build-essential cmake curl ca-certificates ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 RUN python3 -c 'import pathlib, sysconfig; root=pathlib.Path("/opt/cyclonedds-sdk"); root.mkdir(); ros=pathlib.Path("/opt/ros/humble"); [(root/name).symlink_to(ros/name) for name in ("include", "bin")]; (root/"lib").symlink_to(ros/"lib"/sysconfig.get_config_var("MULTIARCH"))'
 WORKDIR /app
