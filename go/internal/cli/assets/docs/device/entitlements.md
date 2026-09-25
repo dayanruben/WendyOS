@@ -19,8 +19,10 @@ Declare them in the `entitlements` array of your `wendy.json`, or add one with `
 ## Notifications
 
 Use `{ "type": "notifications" }` when an app needs to alert operators through
-Wendy Cloud and Companion. WendyKit exposes this as
-`WendyNotification.send(_:)`.
+Wendy Cloud and Companion. WendyKit is currently the only application SDK for
+this API and is Swift-only. Apps in other languages must call the app-facing
+gRPC service directly. See the [Notifications API](../cloud/notifications-api.md#app-facing-api-wendysystemv1)
+for setup, examples, and the exact RPC contract.
 
 | Boundary | Value |
 |---|---|

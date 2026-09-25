@@ -9,14 +9,115 @@ operator-facing Wendy Notifications in a Wendy Cloud organization.
 
 ## App-facing API (`wendy.system.v1`)
 
-Apps with the `notifications` entitlement call
-`wendy.system.v1.NotificationService` over the Unix socket at
-`$WENDY_SYSTEM_SOCKET` (`/run/wendy/system/system.sock`). WendyKit exposes this
-as `WendyNotification.send(_:)`, so apps normally do not call gRPC directly.
+Apps with the [`notifications` entitlement](../device/entitlements.md#notifications)
+call `wendy.system.v1.NotificationService` over the Unix socket at
+`$WENDY_SYSTEM_SOCKET` (`/run/wendy/system/system.sock`). This creates a
+canonical Wendy Notification in the recipients' Companion inboxes. Cloud then
+attempts APNs delivery; apps do not send an arbitrary APNs payload directly.
 
 The private socket binds every call to trusted app identity. The request cannot
 supply an app ID, device ID, or organization ID; the agent adds app identity and
 Cloud derives device and organization identity from device mTLS.
+
+### Before sending
+
+The device must be enrolled in Wendy Cloud, and the recipients must belong to
+that device's organization. The app must:
+
+1. Declare `{ "type": "notifications" }` in `wendy.json`.
+2. Exist in the organization's Cloud Apps catalog.
+3. Be assigned and desired to run on the source device.
+4. Have its Cloud Notification grant enabled.
+
+For example:
+
+```json
+{
+  "appId": "sh.wendy.voice-agent",
+  "entitlements": [
+    { "type": "notifications" }
+  ]
+}
+```
+
+An organization owner or admin enables the grant in the production portal:
+
+**Organization → Apps → select the app → Wendy Notifications → Enable
+Notification sending**
+
+The app page has this form:
+
+```text
+https://cloud.wendy.sh/organizations/<org-id>/apps/<app-id>
+```
+
+Wendy super-admins can also change the grant. This card controls the app's
+`can_send_notifications` Cloud grant. Declaring the entitlement does not grant
+Cloud authority. A local-only app that does not yet appear in the Cloud Apps
+catalog must be registered and assigned before the grant can be enabled.
+
+For an immediate push banner, the recipient must also be signed into Companion,
+have notifications allowed, and have an active APNs registration. A successful
+`Send` means Cloud accepted and stored the Notification; APNs delivery is
+best-effort.
+
+### Swift apps: WendyKit
+
+WendyKit is currently the only application SDK for this API, and it is
+Swift-only. It exposes the RPC as `WendyNotification.send(_:)`:
+
+```swift
+import WendyKit
+
+let request = try WendyNotificationSendRequest(
+    audience: WendyAudience(
+        userIDs: ["<cloud-user-id>"],
+        teamIDs: [7],
+        roles: [.owner, .admin]
+    ),
+    title: "Robot needs help",
+    body: "Please come to the G1 booth to answer a question.",
+    severity: .warning,
+    deepLink: "wendy://devices/current/live"
+)
+
+let response = try await WendyNotification.send(request)
+print("Created Notification \(response.notificationID)")
+```
+
+Use Cloud user IDs, not names or email addresses. User, team, and role selectors
+have union semantics. See the
+[wendy-app-sdk README](https://github.com/wendylabsinc/wendy-app-sdk#send-a-notification)
+for WendyKit package details.
+
+### Other languages: direct gRPC
+
+Apps written in Python, Go, Rust, or other languages must generate or provide a
+gRPC client from `Proto/wendy/system/v1/notifications.proto`, connect through
+the Unix socket in `$WENDY_SYSTEM_SOCKET`, and call:
+
+```text
+/wendy.system.v1.NotificationService/Send
+```
+
+The request shape is:
+
+```text
+SendRequest {
+  audience {
+    user_ids: "<cloud-user-id>"
+  }
+  title: "Robot needs help"
+  body: "Please come to the G1 booth to answer a question."
+  severity: NOTIFICATION_SEVERITY_WARNING
+  deep_link: "wendy://devices/current/live"
+  notification_id: "<new UUID v4>"
+}
+```
+
+There is currently no `wendy notification send` CLI command. Direct gRPC is the
+supported non-Swift interface; direct APNs calls bypass Wendy's organization
+authorization, attribution, durable inbox record, and deep-link handling.
 
 ### `Send`
 
@@ -50,7 +151,8 @@ the caller may retry with the same `notification_id`.
 The app-facing and Cloud messages use the same plural selector shape. All three
 fields have union semantics. At most 100 selector entries may be supplied across
 the three lists. Cloud normalizes and deduplicates them, remains authoritative
-for recipient resolution, and resolves at most 10,000 recipients.
+for recipient resolution, and resolves at most 100 recipients for a device-app
+send.
 
 | Field | Type | Description |
 |---|---|---|
@@ -69,6 +171,14 @@ receives one Notification.
 
 Recipient totals are intentionally omitted because team and role counts can disclose
 organization membership.
+
+Device-app sources may create 10 accepted Notifications per minute, and the
+agent also smooths bursts locally. Repeated rate-limit violations can quarantine
+that app/device source for 15 minutes.
+Device-originated deep links are restricted to the source device;
+`wendy://devices/current/live` is the portable form. For device-originated APNs
+alerts, Cloud uses `Wendy · <Cloud app name>` as the banner title while retaining
+the supplied title on the stored Notification.
 
 ## `Notification` message
 
