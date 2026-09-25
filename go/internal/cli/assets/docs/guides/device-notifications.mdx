@@ -21,11 +21,13 @@ You need:
    and desired to run on that device.
 3. The `notifications` app entitlement.
 4. The app's Cloud Notification grant enabled.
-5. Companion users in the same organization to receive the Notification.
+5. Recipients with [Wendy Companion installed from the App Store](https://apps.apple.com/app/wendy-companion/id6761771159)
+   and signed in to the same organization.
 
-For an immediate push banner, each recipient must also be signed into Companion,
-allow notifications, and have an active APNs registration. Without APNs, the
-stored Notification can still appear in the Companion inbox.
+Wendy Companion must be installed to receive push notifications. Each recipient
+must also allow notifications and have an active APNs registration. If push
+delivery is unavailable, the stored Notification can still appear in the
+Companion inbox.
 
 ## Add the app entitlement
 
