@@ -6,18 +6,26 @@ from connected agents; there is no demo mode.
 
 ## Run locally
 
-From `web-client`:
+Install Node.js 22.13 or newer and Go 1.27 or newer, then run from `web-client`
+inside the Wendy repository:
 
 ```sh
-npm run install:ci
-npm run dev
+npm i && npm run dev
 ```
 
-From the repository root, start the Cloud API relay:
+This builds the Go WASM client and matching JavaScript runtime, builds and starts
+the Cloud API and broker relay on `127.0.0.1:8788`, then starts the web app on port
+5173. The relay stops with the dev server when you press Ctrl-C. No separate
+relay terminal or hosted Site configuration is needed. The first run may download
+Go modules. Restart `npm run dev` after changing Go code to rebuild it.
 
-```sh
-go run ./go/cmd/wendy-web-relay -cloud
-```
+Both ports must be free. Stop any manually started relay or previous dev server
+before running this command. The app fails if port 5173 is occupied, since signing
+in requires the registered OAuth callback on that port.
+
+If Cloud discovery cannot connect, check the `npm run dev` terminal for relay
+upstream errors. The relay verifies TLS and HTTP/2 before accepting the browser
+connection, and logs connection failures there.
 
 Open **http://localhost:5173**. Use this exact hostname and port: the existing
 `cloud-login` OAuth client registers `http://localhost:5173/auth/callback`.

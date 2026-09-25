@@ -5,13 +5,14 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -32,44 +33,12 @@ func main() {
 		log.Fatal("-origin must be a browser HTTP(S) origin")
 	}
 	mux := http.NewServeMux()
-	handler := func(destination string, cloudTLS bool) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Origin") != *origin {
-				http.Error(w, "Origin not allowed", http.StatusForbidden)
-				return
-			}
-			ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{u.Host}})
-			if err != nil {
-				return
-			}
-			defer ws.CloseNow()
-			ctx, cancel := context.WithCancel(r.Context())
-			defer cancel()
-			var tcp net.Conn
-			if cloudTLS {
-				tcp, err = (&tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second}, Config: &tls.Config{ServerName: strings.Split(destination, ":")[0], MinVersion: tls.VersionTLS12, NextProtos: []string{"h2"}}}).DialContext(ctx, "tcp", destination)
-			} else {
-				tcp, err = (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", destination)
-			}
-			if err != nil {
-				ws.Close(websocket.StatusTryAgainLater, "Agent unavailable")
-				return
-			}
-			defer tcp.Close()
-			conn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
-			done := make(chan struct{})
-			go func() { _, _ = io.Copy(tcp, conn); tcp.Close(); close(done) }()
-			_, _ = io.Copy(conn, tcp)
-			cancel()
-			ws.CloseNow()
-			<-done
-		}
-	}
+
 	if *target != "" {
-		mux.HandleFunc("GET /tunnel", handler(*target, false))
+		mux.HandleFunc("GET /tunnel", relayHandler(*target, false, *origin))
 	}
 	if *cloud {
-		mux.HandleFunc("GET /cloud", handler("api.dev.wendy.sh:443", true))
+		mux.HandleFunc("GET /cloud", relayHandler("api.dev.wendy.sh:443", true, *origin))
 		mux.HandleFunc("GET /broker", func(w http.ResponseWriter, r *http.Request) {
 			endpoint, err := brokerEndpoint(r.URL.Query().Get("endpoint"))
 			if err != nil {
@@ -77,7 +46,7 @@ func main() {
 				return
 			}
 
-			handler(endpoint, true)(w, r)
+			relayHandler(endpoint, true, *origin)(w, r)
 		})
 	}
 	log.Printf("Relay listening at %s; allowed origin %s", *listen, *origin)
@@ -86,4 +55,62 @@ func main() {
 
 func brokerEndpoint(endpoint string) (string, error) {
 	return cloudrelay.BrowserBrokerTarget(endpoint)
+}
+
+// Connect upstream before upgrading the browser connection. Otherwise a TLS or
+// network failure looks like a successful dial followed by a closed gRPC preface.
+func relayHandler(destination string, cloudTLS bool, origin string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != origin {
+			http.Error(w, "Origin not allowed", http.StatusForbidden)
+			return
+		}
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		tcp, err := dialUpstream(ctx, destination, cloudTLS)
+		if err != nil {
+			log.Printf("Relay upstream %s: %v", destination, err)
+			http.Error(w, "Relay upstream unavailable; check the relay terminal for details", http.StatusBadGateway)
+			return
+		}
+		defer tcp.Close()
+		u, _ := url.Parse(origin) // main validates the configured origin.
+		ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{u.Host}})
+		if err != nil {
+			return
+		}
+		defer ws.CloseNow()
+		conn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+		done := make(chan struct{})
+		go func() { _, _ = io.Copy(tcp, conn); tcp.Close(); close(done) }()
+		_, err = io.Copy(conn, tcp)
+		if err != nil && !errors.Is(err, net.ErrClosed) && ctx.Err() == nil && websocket.CloseStatus(err) == -1 {
+			log.Printf("Relay upstream %s disconnected: %v", destination, err)
+		}
+		cancel()
+		ws.CloseNow()
+		<-done
+	}
+}
+
+func dialUpstream(ctx context.Context, destination string, cloudTLS bool) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	if !cloudTLS {
+		return dialer.DialContext(ctx, "tcp", destination)
+	}
+	host, _, err := net.SplitHostPort(destination)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := (&tls.Dialer{NetDialer: dialer, Config: &tls.Config{
+		ServerName: host, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2"},
+	}}).DialContext(ctx, "tcp", destination)
+	if err != nil {
+		return nil, err
+	}
+	if conn.(*tls.Conn).ConnectionState().NegotiatedProtocol != "h2" {
+		conn.Close()
+		return nil, fmt.Errorf("upstream did not negotiate HTTP/2")
+	}
+	return conn, nil
 }

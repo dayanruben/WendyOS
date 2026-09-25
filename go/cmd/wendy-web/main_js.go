@@ -132,7 +132,7 @@ func (b *bridge) handle(r request) (any, error) {
 		assets, err := b.auth.Discover(ctx, func(ctx context.Context, _ string) (net.Conn, error) {
 			ws, _, err := websocket.Dial(ctx, "ws://127.0.0.1:8788/cloud", nil)
 			if err != nil {
-				return nil, fmt.Errorf("Start the browser relay: go run ./go/cmd/wendy-web-relay -cloud: %w", err)
+				return nil, fmt.Errorf("Browser relay connection failed; check the npm run dev terminal: %w", err)
 			}
 			return websocket.NetConn(ctx, ws, websocket.MessageBinary), nil
 		})

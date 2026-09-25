@@ -1,6 +1,17 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+)
 
 func TestBrokerEndpoint(t *testing.T) {
 	for _, endpoint := range []string{"relay.dev.wendy.sh:443", "eu.relay.wendy.sh:443", "https://wendy-cloud-dev-tunnel-broker-nkohwk7hda-uc.a.run.app"} {
@@ -12,5 +23,90 @@ func TestBrokerEndpoint(t *testing.T) {
 		if _, err := brokerEndpoint(endpoint); err == nil {
 			t.Errorf("accepted forbidden destination %q", endpoint)
 		}
+	}
+}
+
+func TestRelayUpstreamFailureBeforeUpgrade(t *testing.T) {
+	// A closed local listener provides a refused connection without DNS or TLS.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := listener.Addr().String()
+	listener.Close()
+	server := httptest.NewServer(relayHandler(target, false, "http://localhost:5173"))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ws, response, err := websocket.Dial(ctx, server.URL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": {"http://localhost:5173"}},
+	})
+	if ws != nil {
+		ws.CloseNow()
+	}
+	if err == nil || response == nil || response.StatusCode != http.StatusBadGateway {
+		t.Fatalf("failed upstream must reject the handshake with 502: response=%v, err=%v", response, err)
+	}
+}
+
+func TestRelayRejectsOriginBeforeDial(t *testing.T) {
+	handler := relayHandler("invalid destination", true, "http://localhost:5173")
+	for _, origin := range []string{"", "http://localhost:5174", "https://untrusted.example"} {
+		request := httptest.NewRequest(http.MethodGet, "/cloud", nil)
+		request.Header.Set("Origin", origin)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("origin %q: got %d, want 403", origin, response.Code)
+		}
+	}
+}
+
+func TestRelayForwardsBytesAndClosesUpstream(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		_, _ = io.Copy(conn, conn)
+	}()
+	server := httptest.NewServer(relayHandler(listener.Addr().String(), false, "http://localhost:5173"))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, server.URL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": {"http://localhost:5173"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.CloseNow()
+	conn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	// Exceed WebSocket's default message limit, as large gRPC frames can do.
+	payload := bytes.Repeat([]byte("relay bytes"), 10000)
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("relay changed the byte stream")
+	}
+	conn.Close()
+	select {
+	case <-closed:
+	case <-ctx.Done():
+		t.Fatal("browser disconnect left the upstream open")
 	}
 }
