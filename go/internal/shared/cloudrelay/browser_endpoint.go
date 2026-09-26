@@ -24,8 +24,18 @@ func BrowserBrokerTarget(endpoint string) (string, error) {
 		return "", fmt.Errorf("Cloud returned an invalid broker endpoint")
 	}
 	host := strings.ToLower(u.Hostname())
-	if u.Scheme != "https" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || (u.Port() != "" && u.Port() != "443") || strings.HasSuffix(u.Host, ":") || !(strings.HasSuffix(host, ".wendy.sh") || host == DevelopmentBrowserBroker) {
+	if u.Scheme != "https" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || (u.Port() != "" && u.Port() != "443") || strings.HasSuffix(u.Host, ":") || !browserBrokerHostAllowed(host) {
 		return "", fmt.Errorf("Cloud broker endpoint %q is not an allowed Wendy HTTPS broker", original)
 	}
 	return net.JoinHostPort(host, "443"), nil
+}
+
+func browserBrokerHostAllowed(host string) bool {
+	// Other Wendy services must never receive broker authorization traffic.
+	switch host {
+	case "relay.dev.wendy.sh", "relay.wendy.sh", "eu.relay.wendy.sh", DevelopmentBrowserBroker:
+		return true
+	default:
+		return false
+	}
 }

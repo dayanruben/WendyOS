@@ -48,8 +48,12 @@ same-origin `/api/wendy-auth` proxy forwards only allowlisted Wendy auth/PKI
 requests and Cloud grant signing keys; tokens and public CSRs pass through it, but private keys do not.
 The local `/cloud` WebSocket relay terminates verified public TLS to the fixed
 `api.dev.wendy.sh:443` upstream. DPoP proofs are generated inside the worker.
-The relay permits the configured browser origin and does not accept an arbitrary
-Cloud hostname. Run remote relays behind WSS.
+The relay binds only to a loopback IP and accepts direct loopback connections
+with the configured browser origin. Origin is a browser CSRF check, not relay
+authentication. Remote listeners and reverse-proxy forwarding are unsupported;
+do not expose this development relay through a proxy or port forward. A hosted
+relay requires a separate authenticated service. The relay does not accept an
+arbitrary Cloud hostname.
 
 Sign-out deletes the saved credentials and clears other open Wendy Client tabs.
 Transient connection failures preserve the saved session for retry. An expired
@@ -81,8 +85,8 @@ grants, broker challenge proofs, and end-to-end agent mTLS pinned to the selecte
 tenant/device principal. The worker reads the selected asset's `pki_device_name`
 enrollment binding from the authenticated Cloud API. It does not assume the
 inventory UUID is the certificate identity or learn that identity from the peer.
-The local `/broker` relay accepts only Wendy HTTPS
-hosts and the exact Wendy development Cloud Run broker on port 443, and verifies
+The local `/broker` relay accepts only `relay.dev.wendy.sh`, `relay.wendy.sh`,
+`eu.relay.wendy.sh`, and the exact Wendy development Cloud Run broker on port 443, and verifies
 their public TLS certificates. The worker selects
 the endpoint from the verified grant. Operator private keys stay in the browser.
 Both inventory and device sessions currently require the local relay. Native
@@ -110,6 +114,7 @@ go test -race ./go/internal/cli/browserauth
 node go/experiments/wasmgrpc/auth-worker.mjs
 node web-client/tests/credential-store.test.mjs
 node --experimental-strip-types web-client/tests/telemetry.test.mjs
+node --experimental-strip-types --test web-client/tests/auth-proxy.test.mjs
 
 # From web-client:
 npm run build:wasm

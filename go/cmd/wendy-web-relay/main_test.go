@@ -53,12 +53,57 @@ func TestRelayRejectsOriginBeforeDial(t *testing.T) {
 	handler := relayHandler("invalid destination", true, "http://localhost:5173")
 	for _, origin := range []string{"", "http://localhost:5174", "https://untrusted.example"} {
 		request := httptest.NewRequest(http.MethodGet, "/cloud", nil)
+		request.RemoteAddr = "127.0.0.1:12345"
+		request.Host = "127.0.0.1:8788"
 		request.Header.Set("Origin", origin)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusForbidden {
 			t.Fatalf("origin %q: got %d, want 403", origin, response.Code)
 		}
+	}
+}
+
+func TestRelayRequiresLoopbackAddress(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:8788", "[::1]:8788"} {
+		if !loopbackAddress(address) {
+			t.Errorf("rejected loopback address %q", address)
+		}
+	}
+	for _, address := range []string{":8788", "0.0.0.0:8788", "[::]:8788", "192.0.2.1:8788", "localhost:8788", "attacker.test:8788", "127.0.0.1"} {
+		if loopbackAddress(address) {
+			t.Errorf("accepted unsafe listen address %q", address)
+		}
+	}
+}
+
+func TestRelayRejectsRemoteRequestsWithSpoofedOrigin(t *testing.T) {
+	handler := relayHandler("invalid destination", true, "http://localhost:5173")
+	for _, tc := range []struct {
+		name, remote, host, forwardedHeader string
+	}{
+		{"remote peer", "192.0.2.1:12345", "127.0.0.1:8788", ""},
+		{"remote IPv6 peer", "[2001:db8::1]:12345", "[::1]:8788", ""},
+		{"DNS rebinding", "127.0.0.1:12345", "attacker.test:8788", ""},
+		{"forwarded", "127.0.0.1:12345", "127.0.0.1:8788", "Forwarded"},
+		{"forwarded for", "127.0.0.1:12345", "127.0.0.1:8788", "X-Forwarded-For"},
+		{"forwarded host", "127.0.0.1:12345", "127.0.0.1:8788", "X-Forwarded-Host"},
+		{"forwarded proto", "127.0.0.1:12345", "127.0.0.1:8788", "X-Forwarded-Proto"},
+		{"real IP", "127.0.0.1:12345", "127.0.0.1:8788", "X-Real-IP"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/cloud", nil)
+			request.RemoteAddr, request.Host = tc.remote, tc.host
+			request.Header.Set("Origin", "http://localhost:5173")
+			if tc.forwardedHeader != "" {
+				request.Header.Set(tc.forwardedHeader, "192.0.2.1")
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("got %d, want 403 before upstream dial", response.Code)
+			}
+		})
 	}
 }
 

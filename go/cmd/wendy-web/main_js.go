@@ -15,18 +15,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall/js"
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
-	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -176,7 +172,7 @@ func (b *bridge) handle(r request) (any, error) {
 	}
 
 	if r.Method == "connect" {
-		return b.connect(r.Params)
+		return nil, errors.New("Direct certificate connections are disabled; sign in with Wendy")
 	}
 	if r.Method == "disconnect" {
 		b.mu.Lock()
@@ -452,55 +448,6 @@ func (b *bridge) handle(r request) (any, error) {
 	default:
 		return nil, fmt.Errorf("Unknown operation %q", r.Method)
 	}
-}
-
-func (b *bridge) connect(raw json.RawMessage) (any, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.conn != nil {
-		return nil, errors.New("This worker is already connected")
-	}
-	var p struct {
-		Relay       string                 `json:"relay"`
-		Certificate config.CertificateInfo `json:"certificate"`
-		AssetID     int                    `json:"assetId"`
-	}
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, err
-	}
-	u, err := url.Parse(p.Relay)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "ws" && u.Scheme != "wss") {
-		return nil, errors.New("Use a ws:// or wss:// relay URL")
-	}
-	if p.Certificate.OrganizationID <= 0 {
-		return nil, errors.New("Organization ID must be positive")
-	}
-	if p.AssetID <= 0 {
-		return nil, errors.New("Device asset ID must be positive")
-	}
-	life, closeConn := context.WithCancel(context.Background())
-	expected := &certs.WendyIdentity{OrgID: int32(p.Certificate.OrganizationID), EntityType: "asset", EntityID: strconv.Itoa(p.AssetID)}
-	conn, err := grpcclient.ConnectWithTLSExpecting(life, "passthrough:///wendy-device", &p.Certificate, nil, expected, clouddefaults.TunnelDialer(func(ctx context.Context) (net.Conn, error) {
-		ws, _, err := websocket.Dial(ctx, p.Relay, nil)
-		if err != nil {
-			return nil, err
-		}
-		return websocket.NetConn(ctx, ws, websocket.MessageBinary), nil
-	}))
-	if err != nil {
-		closeConn()
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(life, 15*time.Second)
-	defer cancel()
-	v, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
-	if err != nil {
-		closeConn()
-		conn.Close()
-		return nil, fmt.Errorf("Could not authenticate the device: %w", err)
-	}
-	b.conn, b.life, b.close = conn, life, closeConn
-	return json.RawMessage(protojson.Format(v)), nil
 }
 
 // Only HTTP transport crosses the same-origin proxy. DPoP signs the original

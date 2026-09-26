@@ -3,6 +3,7 @@
 const authOrigin = "https://auth.dev.wendy.sh";
 const identity = "https://identity.dev.pki.wendy.sh/v1/identity/certificate";
 function allowed(url: URL, method: string) {
+  if (method !== "GET" && method !== "POST") return false;
   if (url.username || url.password || url.search || url.hash) return false;
   if (
     url.href ===

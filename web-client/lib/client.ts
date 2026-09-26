@@ -42,18 +42,6 @@ export type ActivityEntry = {
   detail: string;
   time: string;
 };
-export type Certificate = {
-  pemCertificate: string;
-  pemCertificateChain: string;
-  pemPrivateKey: string;
-  organizationId: number;
-};
-export type Connection = {
-  name: string;
-  relay: string;
-  certificate: Certificate;
-  assetId: number;
-};
 export type RawSnapshot = {
   version: {
     version?: string;
@@ -260,42 +248,6 @@ export function relativeTime(iso: string) {
     : s < 3600
       ? `${Math.floor(s / 60)} min ago`
       : `${Math.floor(s / 3600)} hr ago`;
-}
-export function validateConnection(c: Connection) {
-  if (!c.name.trim()) throw new Error("Give this device a name.");
-  let u: URL;
-  try {
-    u = new URL(c.relay);
-  } catch {
-    throw new Error("Enter a valid WebSocket relay URL.");
-  }
-  if (!["ws:", "wss:"].includes(u.protocol) || u.username || u.password)
-    throw new Error(
-      "Use a ws:// or wss:// relay URL without embedded credentials.",
-    );
-  if (
-    u.protocol === "ws:" &&
-    !["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)
-  )
-    throw new Error("Use wss:// for a remote relay.");
-  if (
-    !Number.isInteger(c.certificate.organizationId) ||
-    c.certificate.organizationId <= 0
-  )
-    throw new Error("Enter a positive organization ID.");
-  if (!Number.isInteger(c.assetId) || c.assetId <= 0)
-    throw new Error(
-      "Enter the device asset ID so Wendy can verify its identity.",
-    );
-  if (
-    !c.certificate.pemCertificate.includes("BEGIN CERTIFICATE") ||
-    !c.certificate.pemCertificateChain.includes("BEGIN CERTIFICATE")
-  )
-    throw new Error(
-      "Add the client certificate and its CA chain in PEM format.",
-    );
-  if (!c.certificate.pemPrivateKey.includes("PRIVATE KEY"))
-    throw new Error("Add the corresponding private key in PEM format.");
 }
 export function downloadText(name: string, text: string, type = "text/plain") {
   const url = URL.createObjectURL(new Blob([text], { type }));
