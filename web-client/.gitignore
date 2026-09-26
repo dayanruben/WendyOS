@@ -44,4 +44,8 @@ next-env.d.ts
 /outputs/
 /work/
 
+# These directories contain checked-in build support and styles, not outputs.
+!/build/
+!/vendor/
+
 *.tsbuildinfo
