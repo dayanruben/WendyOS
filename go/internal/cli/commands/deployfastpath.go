@@ -219,6 +219,16 @@ func saveDeployFingerprint(appID, deviceKey string, fp deployFingerprint) {
 // Callers that can only use the hash with digest-pinned bases go through
 // pinnedBuildInputHash, which skips the context for an unpinned Dockerfile.
 func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs map[string]string, deployEnv []string) (string, error) {
+	// BuildKit follows a symlinked context root (wendy run --prefix ./link, a
+	// symlinked $PWD or Compose context), but filepath.WalkDir does not
+	// descend into one: it would hash no context files at all. Walk the real
+	// directory, and key the digest cache on it, so a context reached through
+	// a link and directly share one cache.
+	root, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return "", fmt.Errorf("resolving build context for fingerprint: %w", err)
+	}
+
 	h := sha256.New()
 	// Salt for the deploy fingerprint. Changing this string invalidates every
 	// recorded fingerprint, forcing one honest rebuild per app — do that
@@ -246,9 +256,9 @@ func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs 
 	}
 
 	// Resolve and hash the Dockerfile.
-	dfPath := filepath.Join(cwd, "Dockerfile")
+	dfPath := filepath.Join(root, "Dockerfile")
 	if dockerfile != "" {
-		resolved, err := confinedDockerfilePath(cwd, dockerfile)
+		resolved, err := confinedDockerfilePath(root, dockerfile)
 		if err != nil {
 			return "", err
 		}
@@ -265,17 +275,17 @@ func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs 
 	// BuildKit gives <dockerfile>.dockerignore precedence over .dockerignore
 	// (the Stagefile flow derives a deny-all allowlist there), so the walk must
 	// follow the same file or it hashes paths the build can never see.
-	ignore := loadDockerIgnoreForBuild(cwd, dfPath)
+	ignore := loadDockerIgnoreForBuild(root, dfPath)
 	type contextFile struct {
 		rel  string
 		info fs.FileInfo
 	}
 	var files []contextFile
-	err = filepath.WalkDir(cwd, func(p string, d os.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		rel, err := filepath.Rel(cwd, p)
+		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
 		}
@@ -311,9 +321,9 @@ func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs 
 	// them) and content digest. A settled file's digest comes from the
 	// context digest cache while its identity is unchanged, so a warm run
 	// stats the context instead of reading it.
-	digests := openContextDigestCache(cwd, dfPath, contextDigestClock())
+	digests := openContextDigestCache(root, dfPath, contextDigestClock())
 	for _, f := range files {
-		digest, err := digests.fileDigest(filepath.Join(cwd, filepath.FromSlash(f.rel)), f.rel, f.info)
+		digest, err := digests.fileDigest(filepath.Join(root, filepath.FromSlash(f.rel)), f.rel, f.info)
 		if err != nil {
 			return "", err
 		}

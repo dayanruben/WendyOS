@@ -17,6 +17,22 @@ func settleContextDigestClock(t *testing.T) {
 	t.Cleanup(func() { contextDigestClock = orig })
 }
 
+// hashCacheFile is the digest cache file computeBuildInputHash uses for the
+// default Dockerfile in dir. The hash keys the cache on the symlink-resolved
+// context root, and a temp dir can sit behind a link (/var on macOS).
+func hashCacheFile(t *testing.T, dir string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := contextDigestCachePath(root, filepath.Join(root, "Dockerfile"))
+	if !ok {
+		t.Fatal("no cache path")
+	}
+	return p
+}
+
 func pinnedProject(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -40,7 +56,7 @@ func TestComputeBuildInputHashUsesTheDigestCache(t *testing.T) {
 		t.Fatalf("warm hash %s != cold hash %s", warm, cold)
 	}
 
-	p, _ := contextDigestCachePath(dir, filepath.Join(dir, "Dockerfile"))
+	p := hashCacheFile(t, dir)
 	data, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatal(err)

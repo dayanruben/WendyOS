@@ -177,6 +177,32 @@ func TestComputeBuildInputHash_PerDockerfileIgnoreAllowlist(t *testing.T) {
 	}
 }
 
+// TestComputeBuildInputHash_FollowsASymlinkedContextRoot: BuildKit follows a
+// symlinked context root (wendy run --prefix ./link, a symlinked $PWD, a
+// symlinked Compose or multi-service context), but filepath.WalkDir does not
+// descend into one. The hash must see the files behind the link, or a pinned
+// project reached that way never sees a source edit.
+func TestComputeBuildInputHash_FollowsASymlinkedContextRoot(t *testing.T) {
+	useContextDigestCacheDir(t)
+	parent := t.TempDir()
+	real := filepath.Join(parent, "real")
+	writeFile(t, real, "Dockerfile", "FROM scratch\nCOPY . /app\n")
+	writeFile(t, real, "app.py", "print('v1')\n")
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink("real", link); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+
+	viaLink := hashOrFatal(t, link, nil)
+	if viaReal := hashOrFatal(t, real, nil); viaReal != viaLink {
+		t.Fatalf("hash via the link %s != hash via the real path %s", viaLink, viaReal)
+	}
+	writeFile(t, real, "app.py", "print('v2')\n")
+	if got := hashOrFatal(t, link, nil); got == viaLink {
+		t.Fatal("editing a file behind a symlinked context root did not change the hash")
+	}
+}
+
 // A directory with a re-included descendant must stay walkable: with
 // "*" + "!src/app.py", the walk may not SkipDir at src/ or the allowlisted
 // file's changes would be missed entirely (stale-skip, the unsafe direction).
