@@ -377,9 +377,9 @@ func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, has
 
 	// Fast path: if the (uncompressed) layer blob already exists in the content
 	// store, it was reassembled and indexed on a previous deploy. Skip the
-	// expensive reconstruct + re-chunk + index-save entirely — for an unchanged
-	// layer this avoids reading and re-chunking the full layer on every deploy,
-	// which dominates redeploy latency for large base images.
+	// expensive reconstruct + index update entirely — for an unchanged layer
+	// this avoids reading the full layer on every deploy, which dominates
+	// redeploy latency for large base images.
 	if dgst, err := digest.Parse(diffID); err == nil {
 		if _, err := c.client.ContentStore().Info(nsCtx, dgst); err == nil {
 			return nil
@@ -387,13 +387,16 @@ func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, has
 	}
 
 	// Total layer size is the sum of the chunk lengths, resolved without reading
-	// any bytes. content.WriteBlob needs the size up front to commit the blob.
+	// any bytes; content.WriteBlob needs the size up front to commit the blob.
+	// The same lengths place every chunk in the new blob by prefix sum.
+	refs := make([]chunk.Ref, len(hashes))
 	var total int64
 	for i, h := range hashes {
 		n, ok := c.chunkLen(h)
 		if !ok {
 			return fmt.Errorf("chunk %d (%x) unavailable", i, h)
 		}
+		refs[i] = chunk.Ref{Hash: h, Offset: uint64(total), Len: uint64(n)}
 		total += n
 	}
 
@@ -416,10 +419,11 @@ func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, has
 		return err
 	}
 
-	// Re-chunk the freshly written blob by streaming it back out of the content
-	// store, so the index references this blob (offsets relative to it) without
-	// holding the layer in memory.
-	if err := c.indexLayerBlob(nsCtx, diffID); err != nil {
+	// Index the new blob from its manifest. WriteLayer verified the blob digest
+	// and chunkStream verified each chunk's hash in order, so these ranges are
+	// exact; re-reading and re-chunking the blob to rediscover them cost ~1 s
+	// per 430 MB on an Orin Nano (WDY-3214).
+	if err := c.chunkIndex.AddLayer(diffID, refs); err != nil {
 		c.logger.Warn("failed to index reassembled layer", zap.String("diff_id", diffID), zap.Error(err))
 	}
 
@@ -428,28 +432,5 @@ func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, has
 		c.staging.remove(h)
 	}
 
-	return nil
-}
-
-// indexLayerBlob re-chunks the layer blob identified by diffID by streaming it
-// from the content store, and records the chunk ranges in the persistent index.
-func (c *Client) indexLayerBlob(ctx context.Context, diffID string) error {
-	dgst, err := digest.Parse(diffID)
-	if err != nil {
-		return err
-	}
-	ra, err := c.client.ContentStore().ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
-	if err != nil {
-		return err
-	}
-	defer ra.Close()
-
-	refs, err := chunk.ChunkReaderAt(ra, ra.Size())
-	if err != nil {
-		return err
-	}
-	if err := c.chunkIndex.AddLayer(diffID, refs); err != nil {
-		c.logger.Warn("failed to persist chunk index", zap.Error(err))
-	}
 	return nil
 }

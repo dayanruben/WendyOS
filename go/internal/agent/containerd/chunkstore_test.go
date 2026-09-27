@@ -5,13 +5,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"io"
+	"math/rand"
 	"path/filepath"
 	"testing"
 
 	containerdclient "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/plugins/content/local"
 	"github.com/containerd/errdefs"
 	digest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -221,5 +224,77 @@ func TestMissingChunksKeepsIndexEntryBackedByContentBlob(t *testing.T) {
 	}
 	if len(missing) != 0 {
 		t.Fatalf("missing = %x, want none", missing)
+	}
+}
+
+// newLocalStoreClient builds a Client over containerd's on-disk content store,
+// so assembly runs the real WriteBlob/Commit path without a daemon.
+func newLocalStoreClient(t *testing.T) (*Client, content.Store) {
+	t.Helper()
+	store, err := local.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := containerdclient.New("",
+		containerdclient.WithDefaultNamespace("default"),
+		containerdclient.WithServices(containerdclient.WithContentStore(store)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close() })
+	return &Client{
+		client:     client,
+		logger:     zap.NewNop(),
+		namespace:  "default",
+		chunkIndex: newTestChunkIndex(t),
+		staging:    newStaging(filepath.Join(t.TempDir(), "staging")),
+	}, store
+}
+
+// TestAssembleLayerFromChunksIndexesTheManifestRanges proves the index entries
+// derived from the manifest (prefix sums of chunk lengths) name exactly the
+// bytes of each chunk in the committed blob, so no re-chunking is needed.
+func TestAssembleLayerFromChunksIndexesTheManifestRanges(t *testing.T) {
+	c, store := newLocalStoreClient(t)
+	layer := make([]byte, 700_000)
+	rand.New(rand.NewSource(3)).Read(layer)
+	refs, err := chunk.ChunkBytes(layer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashes := make([][32]byte, len(refs))
+	for i, r := range refs {
+		hashes[i] = r.Hash
+		if err := c.StageChunk(context.Background(), r.Hash, layer[r.Offset:r.Offset+r.Len]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	diffID := digest.FromBytes(layer)
+
+	if err := c.AssembleLayerFromChunks(context.Background(), diffID.String(), hashes); err != nil {
+		t.Fatal(err)
+	}
+
+	ra, err := store.ReaderAt(context.Background(), ocispec.Descriptor{Digest: diffID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ra.Close()
+	for i, r := range refs {
+		loc, ok := c.chunkIndex.Has(r.Hash)
+		if !ok || loc.Blob != diffID.String() || loc.Offset != r.Offset || loc.Len != r.Len {
+			t.Fatalf("chunk %d indexed as %+v (%v), want %s@%d+%d", i, loc, ok, diffID, r.Offset, r.Len)
+		}
+		buf := make([]byte, loc.Len)
+		if _, err := ra.ReadAt(buf, int64(loc.Offset)); err != nil {
+			t.Fatal(err)
+		}
+		if sha256.Sum256(buf) != r.Hash {
+			t.Fatalf("chunk %d's indexed range does not hold its bytes", i)
+		}
+		if c.staging.has(r.Hash) {
+			t.Fatalf("chunk %d still staged after assembly", i)
+		}
 	}
 }
