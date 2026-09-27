@@ -2149,6 +2149,8 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// entirely for darwin agents and go straight to the registry push below.
 	isDarwinAgent := strings.EqualFold(agentOS, appconfig.PlatformDarwin)
 
+	mark("run setup (project, build args)")
+
 	// Fast path: when nothing that affects the image has changed since
 	// the last successful deploy to this device, skip the build entirely and
 	// just ensure the existing container is running. Best-effort — a missing or
