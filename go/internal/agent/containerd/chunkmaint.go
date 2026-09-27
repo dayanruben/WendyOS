@@ -1,12 +1,17 @@
 package containerd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
+
+	"github.com/containerd/errdefs"
+	digest "github.com/opencontainers/go-digest"
+	"go.uber.org/zap"
 )
 
 const (
@@ -133,4 +138,98 @@ func (s *staging) purgeRetired() (files int, bytes int64, err error) {
 		}
 	}
 	return files, bytes, err
+}
+
+// StartChunkStoreMaintenance keeps the chunk store bounded (WDY-3212,
+// WDY-3217). It retires this agent's leftover staging directory before
+// returning — call it before the agent serves RPCs — then, in the background,
+// deletes the retired chunks, drops index entries for layer blobs containerd
+// no longer holds, and repeats the sweep and reconciliation every
+// chunkStoreMaintenanceInterval while no deploy is using the store.
+func (c *Client) StartChunkStoreMaintenance(ctx context.Context) {
+	if err := c.staging.retire(time.Now()); err != nil {
+		c.logger.Warn("Retiring leftover chunk staging failed", zap.Error(err))
+	}
+	go c.runChunkStoreMaintenance(ctx, chunkStoreMaintenanceInterval)
+}
+
+func (c *Client) runChunkStoreMaintenance(ctx context.Context, interval time.Duration) {
+	files, bytes, err := c.staging.purgeRetired()
+	if err != nil {
+		c.logger.Warn("Deleting leftover chunk staging failed", zap.Error(err))
+	}
+	dropped, err := c.reconcileChunkIndex(ctx)
+	if err != nil {
+		c.logger.Warn("Reconciling chunk index failed", zap.Error(err))
+	}
+	c.logChunkStoreMaintenance(files, bytes, dropped)
+
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			c.maintainIdleChunkStore(ctx, now)
+		}
+	}
+}
+
+// maintainIdleChunkStore sweeps staged chunks older than stagingRetention and
+// reconciles the index, unless a deploy has used the store recently.
+func (c *Client) maintainIdleChunkStore(ctx context.Context, now time.Time) {
+	c.chunkSweepMu.Lock()
+	if !c.chunkActivity.idleFor(chunkStoreIdleAfter, now) {
+		c.chunkSweepMu.Unlock()
+		return
+	}
+	files, bytes, err := c.staging.sweep(now.Add(-stagingRetention))
+	c.chunkSweepMu.Unlock()
+	if err != nil {
+		c.logger.Warn("Sweeping chunk staging failed", zap.Error(err))
+	}
+	dropped, err := c.reconcileChunkIndex(ctx)
+	if err != nil {
+		c.logger.Warn("Reconciling chunk index failed", zap.Error(err))
+	}
+	c.logChunkStoreMaintenance(files, bytes, dropped)
+}
+
+func (c *Client) logChunkStoreMaintenance(files int, bytes int64, droppedBlobs int) {
+	if files == 0 && droppedBlobs == 0 {
+		return
+	}
+	c.logger.Info("Chunk store maintenance",
+		zap.Int("staged_chunks_removed", files),
+		zap.Int64("staged_bytes_removed", bytes),
+		zap.Int("index_blobs_dropped", droppedBlobs))
+}
+
+// reconcileChunkIndex drops the entries of every indexed blob containerd no
+// longer holds and returns how many blobs it dropped.
+func (c *Client) reconcileChunkIndex(ctx context.Context) (int, error) {
+	blobs, err := c.chunkIndex.Blobs()
+	if err != nil {
+		return 0, err
+	}
+	ctx = c.withNamespace(ctx)
+	cs := c.client.ContentStore()
+	dropped := 0
+	for _, blob := range blobs {
+		if dgst, perr := digest.Parse(blob); perr == nil {
+			_, ierr := cs.Info(ctx, dgst)
+			if ierr == nil {
+				continue
+			}
+			if !errdefs.IsNotFound(ierr) {
+				return dropped, fmt.Errorf("checking indexed blob %s: %w", blob, ierr)
+			}
+		}
+		if err := c.chunkIndex.Drop(blob); err != nil {
+			return dropped, err
+		}
+		dropped++
+	}
+	return dropped, nil
 }

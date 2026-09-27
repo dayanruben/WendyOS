@@ -340,6 +340,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Keep the chunk store bounded (WDY-3212, WDY-3217). This retires the
+	// staging left by the previous run, so it must precede serving any RPC.
+	if ctrdErr == nil {
+		ctrdClient.StartChunkStoreMaintenance(ctx)
+	}
+
 	// The video service is constructed before the app socket managers because it
 	// owns the camera producer shared by capture, inference, and app loopback
 	// nodes, so it must exist before the capture adapters are registered.

@@ -1,11 +1,20 @@
 package containerd
 
 import (
+	"context"
 	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	containerdclient "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/core/leases"
+	digest "github.com/opencontainers/go-digest"
+	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 )
 
 // stageAged stages data and backdates its file by age.
@@ -98,5 +107,78 @@ func TestStagingRetireStartsEmptyAndPurgeDeletesLeftovers(t *testing.T) {
 	}
 	if !s.has(sha256.Sum256(data)) {
 		t.Fatal("purge removed a chunk staged by this run")
+	}
+}
+
+// recordingLeases is a leases.Manager that records synchronous deletes.
+type recordingLeases struct {
+	leases.Manager
+	created, syncDeletes int
+}
+
+// newMaintenanceClient builds a Client over a fake content store (holding
+// only present) and a lease recorder, with its own index and staging dir.
+func newMaintenanceClient(t *testing.T, present ...digest.Digest) (*Client, *recordingLeases) {
+	t.Helper()
+	blobs := map[digest.Digest]content.Info{}
+	for _, d := range present {
+		blobs[d] = content.Info{Digest: d, Size: 1 << 20}
+	}
+	ls := &recordingLeases{}
+	client, err := containerdclient.New("",
+		containerdclient.WithDefaultNamespace("default"),
+		containerdclient.WithServices(
+			containerdclient.WithContentStore(&chunkAvailabilityContentStore{blobs: blobs}),
+			containerdclient.WithLeasesService(ls),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close() })
+	return &Client{
+		client:     client,
+		logger:     zap.NewNop(),
+		namespace:  "default",
+		chunkIndex: newTestChunkIndex(t),
+		staging:    newStaging(filepath.Join(t.TempDir(), "staging")),
+	}, ls
+}
+
+func TestReconcileChunkIndexDropsBlobsContainerdNoLongerHolds(t *testing.T) {
+	kept, collected := digest.FromString("kept layer"), digest.FromString("collected layer")
+	c, _ := newMaintenanceClient(t, kept)
+	if err := c.chunkIndex.AddLayer(kept.String(), []chunk.Ref{{Hash: [32]byte{1}, Len: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.chunkIndex.AddLayer(collected.String(), []chunk.Ref{{Hash: [32]byte{2}, Len: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	dropped, err := c.reconcileChunkIndex(context.Background())
+	if err != nil || dropped != 1 {
+		t.Fatalf("reconcile dropped %d, %v; want 1", dropped, err)
+	}
+	if _, ok := c.chunkIndex.Has([32]byte{2}); ok {
+		t.Fatal("entry of a collected blob survived")
+	}
+	if _, ok := c.chunkIndex.Has([32]byte{1}); !ok {
+		t.Fatal("entry of a present blob was dropped")
+	}
+}
+
+func TestMaintainIdleChunkStoreSkipsWhileADeployIsActive(t *testing.T) {
+	c, _ := newMaintenanceClient(t)
+	h := stageAged(t, c.staging, []byte("chunk of an abandoned deploy"), 7*time.Hour)
+
+	c.chunkActivity.touch()
+	c.maintainIdleChunkStore(context.Background(), time.Now())
+	if !c.staging.has(h) {
+		t.Fatal("maintenance swept staging while a deploy was active")
+	}
+
+	c.maintainIdleChunkStore(context.Background(), time.Now().Add(chunkStoreIdleAfter+time.Minute))
+	if c.staging.has(h) {
+		t.Fatal("idle maintenance kept a chunk older than stagingRetention")
 	}
 }
