@@ -900,7 +900,7 @@ func resolveDeviceAddress() (addr string, pinKey string, isDefault bool, err err
 		isDefault = hostname != ""
 	}
 	if hostname == "" {
-		return "", "", false, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
+		return "", "", false, commandErrorf(errNoDevice, "no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 	// If the hostname already contains a port, use it as-is.
 	addr = hostname
@@ -1245,7 +1245,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 
 	// No device configured — fall back to interactive picker.
 	if cfg.nonInteractive || jsonOutput {
-		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
+		return nil, commandErrorf(errNoDevice, "no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
 	target, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
@@ -2994,7 +2994,7 @@ func attemptBLEConnect(device *models.BluetoothDevice, cert config.CertificateIn
 func connectBLEAgent(device *models.BluetoothDevice) (*ble.AgentClient, error) {
 	auth := loadCLIAuth()
 	if auth == nil || len(auth.Certificates) == 0 {
-		return nil, fmt.Errorf("not logged in; run 'wendy auth login' to authenticate")
+		return nil, classifyCommandError(config.ErrNotLoggedIn, fmt.Errorf("not logged in; run 'wendy auth login' to authenticate"))
 	}
 	pins := openPinStore()
 	cert := auth.Certificates[0]
@@ -3244,7 +3244,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 				return nil, fmt.Errorf("discovering %s devices: %w", p.DisplayName(), err)
 			}
 			if len(devices) == 0 {
-				return nil, fmt.Errorf("no %s devices found", p.DisplayName())
+				return nil, commandErrorf(errNoDevice, "no %s devices found", p.DisplayName())
 			}
 			return &SelectedDevice{
 				External: &devices[0],
@@ -3349,7 +3349,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 
 	// No device specified — run interactive picker if we have a TTY.
 	if jsonOutput || cfg.nonInteractive {
-		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
+		return nil, commandErrorf(errNoDevice, "no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
 	picked, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
@@ -4003,7 +4003,7 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 	}
 	choice, ok := dm.choice()
 	if !ok {
-		return nil, fmt.Errorf("no device selected")
+		return nil, commandErrorf(errNoDevice, "no device selected")
 	}
 	switch choice.Tab {
 	case devicePickerCloudTab:
@@ -4097,7 +4097,7 @@ func lanPickerRemoveMsg(dev models.LANDevice) tui.PickerRemoveMsg {
 // readable on one screen.
 func connectLocalPickerChoice(ctx context.Context, sel *tui.PickerItem, suppressUpdateCheck bool) (*SelectedDevice, error) {
 	if sel == nil {
-		return nil, fmt.Errorf("no device selected")
+		return nil, commandErrorf(errNoDevice, "no device selected")
 	}
 
 	entry, ok := sel.Value.(*pickerEntry)

@@ -56,13 +56,13 @@ func rejectUnsupportedMacRunProject(projectType, platform string) error {
 	if !strings.EqualFold(osName, appconfig.PlatformDarwin) &&
 		!strings.EqualFold(osName, "linux") &&
 		!strings.EqualFold(osName, "wendyos") {
-		return errors.New(macPlatformMismatchMessage(platform))
+		return classifyCommandError(errProjectTargetMismatch, errors.New(macPlatformMismatchMessage(platform)))
 	}
 	switch projectType {
 	case "swift", "xcode", "docker", "python", "compose", "multi-service", "native-process":
 		return nil
 	default:
-		return fmt.Errorf("unable to detect project type for a Mac target: %q", projectType)
+		return commandErrorf(errConfigInvalid, "unable to detect project type for a Mac target: %q", projectType)
 	}
 }
 
@@ -317,7 +317,7 @@ func createContainerWithProgressPlain(stream agentpb.WendyContainerService_Creat
 	}
 
 	if !completed {
-		return fmt.Errorf("creating container: progress stream ended without completion")
+		return commandErrorf(errContainerStartFailed, "creating container: progress stream ended without completion")
 	}
 	return nil
 }
@@ -365,7 +365,7 @@ func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.We
 			resp, recvErr := stream.Recv()
 			if recvErr == io.EOF {
 				if !completed && createErr == nil {
-					createErr = fmt.Errorf("creating container: progress stream ended without completion")
+					createErr = commandErrorf(errContainerStartFailed, "creating container: progress stream ended without completion")
 				}
 				if !progressDone {
 					prog.Send(tui.ProgressDoneMsg{Err: createErr})
@@ -590,7 +590,7 @@ func validateChunkingMode(mode string) error {
 	case "", chunkingAuto, chunkingForce, chunkingOff:
 		return nil
 	default:
-		return fmt.Errorf("invalid --chunking value %q: must be auto, force, or off", mode)
+		return commandErrorf(errConfigInvalid, "invalid --chunking value %q: must be auto, force, or off", mode)
 	}
 }
 
@@ -612,7 +612,7 @@ func newRunCmd() *cobra.Command {
 					return err
 				}
 				if cmd.Flags().Changed("hil") && watch {
-					return fmt.Errorf("HIL cannot be combined with --watch")
+					return commandErrorf(errConfigInvalid, "HIL cannot be combined with --watch")
 				}
 				if cmd.Flags().Changed("build-host") && strings.TrimSpace(opts.buildHost) == "" {
 					if strings.TrimSpace(opts.builder) != "" {
@@ -856,7 +856,7 @@ func debugRequiresDebugpy(cwd string, appCfg *appconfig.AppConfig) error {
 		}
 	}
 
-	return fmt.Errorf(`--debug requires debugpy in the image: add "debugpy" to requirements.txt, or run without --debug`)
+	return commandErrorf(errConfigInvalid, `--debug requires debugpy in the image: add "debugpy" to requirements.txt, or run without --debug`)
 }
 
 func runCommand(ctx context.Context, opts runOptions) error {
@@ -873,22 +873,22 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 	useLLB, err := stagefileBackendLLB(opts.stagefileBackend, normalizedBuilder)
 	if err != nil {
-		return err
+		return classifyCommandError(errConfigInvalid, err)
 	}
 	ctx = withStagefileBackend(ctx, opts.stagefileBackend)
 	if opts.maxConcurrency < 0 {
-		return fmt.Errorf("--max-concurrency must be >= 0 (0 = default limit of 4)")
+		return commandErrorf(errConfigInvalid, "--max-concurrency must be >= 0 (0 = default limit of 4)")
 	}
 	if err := validateChunkingMode(opts.chunking); err != nil {
 		return err
 	}
 	buildHost, err := resolveAndValidateRunBuildHost(opts.buildHost, opts.builder)
 	if err != nil {
-		return err
+		return classifyCommandError(errConfigInvalid, err)
 	}
 	opts.buildHost = buildHost
 	if useLLB && opts.buildHost != "" {
-		return fmt.Errorf("--stagefile-backend=llb cannot yet be combined with --build-host: remote build agents currently accept Dockerfile definitions")
+		return commandErrorf(errConfigInvalid, "--stagefile-backend=llb cannot yet be combined with --build-host: remote build agents currently accept Dockerfile definitions")
 	}
 
 	// A comma-separated --device names a fleet. Split it HERE, before anything
@@ -916,14 +916,14 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	// --build-type is compatible.
 	if opts.dockerfile != "" {
 		if opts.buildType != "" && normalizeBuildType(opts.buildType) != "docker" {
-			return fmt.Errorf("--dockerfile cannot be used with --build-type=%s", opts.buildType)
+			return commandErrorf(errConfigInvalid, "--dockerfile cannot be used with --build-type=%s", opts.buildType)
 		}
 		if err := validateDockerfileName(opts.dockerfile); err != nil {
-			return fmt.Errorf("--dockerfile: %w", err)
+			return commandErrorf(errConfigInvalid, "--dockerfile: %w", err)
 		}
 		opts.dockerfile = filepath.Clean(opts.dockerfile)
 		if _, err := confinedDockerfilePath(cwd, opts.dockerfile); err != nil {
-			return fmt.Errorf("--dockerfile: %w", err)
+			return commandErrorf(errConfigInvalid, "--dockerfile: %w", err)
 		}
 		if opts.buildType == "" {
 			opts.buildType = "docker"
@@ -936,7 +936,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	// before we try to load wendy.json.
 	projectType, err := resolveRunProjectType(cwd, opts.buildType)
 	if err != nil {
-		return err
+		return classifyCommandError(errConfigInvalid, err)
 	}
 	if projectType == "compose" {
 		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "Compose projects"); err != nil {
@@ -1002,11 +1002,11 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	appCfg, err := ensureAppConfig(cfgPath, opts.yes)
 	if err != nil {
-		return fmt.Errorf("loading wendy.json: %w", err)
+		return commandErrorf(errConfigInvalid, "loading wendy.json: %w", err)
 	}
 
 	if err := appCfg.Validate(); err != nil {
-		return fmt.Errorf("invalid wendy.json: %w", err)
+		return commandErrorf(errConfigInvalid, "invalid wendy.json: %w", err)
 	}
 	if err := warnAppConfigFile(cfgPath); err != nil {
 		return fmt.Errorf("reading wendy.json warnings: %w", err)
@@ -1068,7 +1068,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 
 	if projectType == "native-process" && target.Agent == nil {
-		return fmt.Errorf("run.command requires a native Darwin agent target")
+		return commandErrorf(errProjectTargetMismatch, "run.command requires a native Darwin agent target")
 	}
 
 	// Provider-based run path.
@@ -1088,14 +1088,14 @@ func runCommand(ctx context.Context, opts runOptions) error {
 			if target.Bluetooth.IsWendyAgent() {
 				// Full WendyOS device reachable only over Bluetooth: instruct user
 				// to get it onto WiFi / LAN so the agent can be reached.
-				return fmt.Errorf("selected device is currently reachable only over Bluetooth. To run apps on it, first connect it to WiFi or ensure it has a LAN address, then retry 'wendy run'")
+				return commandErrorf(errDeviceUnreachable, "selected device is currently reachable only over Bluetooth. To run apps on it, first connect it to WiFi or ensure it has a LAN address, then retry 'wendy run'")
 			}
 			// BLE-only Wendy Lite device: these cannot run containers.
-			return fmt.Errorf("selected device is a Wendy Lite device, which does not support 'wendy run'. To provision it, first connect it to WiFi using 'wendy device wifi connect'")
+			return commandErrorf(errProjectTargetMismatch, "selected device is a Wendy Lite device, which does not support 'wendy run'. To provision it, first connect it to WiFi using 'wendy device wifi connect'")
 		}
 
 		// Fallback: no agent and no Bluetooth/External path we can use.
-		return fmt.Errorf("selected device does not have a reachable WendyOS agent and cannot run 'wendy run'")
+		return commandErrorf(errDeviceUnreachable, "selected device does not have a reachable WendyOS agent and cannot run 'wendy run'")
 	}
 
 	// Agent-based run path (existing gRPC pipeline).
@@ -1166,7 +1166,7 @@ func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
 
 	if target.External != nil && target.Provider != nil {
 		if opts.builder != "" {
-			return fmt.Errorf("--builder is only used when --device selects a WendyOS device; use --device docker for local Compose runs")
+			return commandErrorf(errConfigInvalid, "--builder is only used when --device selects a WendyOS device; use --device docker for local Compose runs")
 		}
 		// External providers handle local compose support themselves.
 		// Compose projects have no wendy.json, so entitlements are nil.
@@ -1176,11 +1176,11 @@ func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
 	if target.Agent == nil {
 		if target.Bluetooth != nil {
 			if target.Bluetooth.IsWendyAgent() {
-				return fmt.Errorf("selected device is currently reachable only over Bluetooth. Connect it to WiFi and retry 'wendy run'")
+				return commandErrorf(errDeviceUnreachable, "selected device is currently reachable only over Bluetooth. Connect it to WiFi and retry 'wendy run'")
 			}
-			return fmt.Errorf("selected device is a Wendy Lite device, which does not support 'wendy run'")
+			return commandErrorf(errProjectTargetMismatch, "selected device is a Wendy Lite device, which does not support 'wendy run'")
 		}
-		return fmt.Errorf("selected device does not have a reachable WendyOS agent and cannot run 'wendy run'")
+		return commandErrorf(errDeviceUnreachable, "selected device does not have a reachable WendyOS agent and cannot run 'wendy run'")
 	}
 
 	if ownedTarget {
@@ -1379,7 +1379,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	regPort := registryPort(agentOS)
 
 	if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
-		return err
+		return classifyCommandError(errBuilderUnavailable, err)
 	}
 
 	product, err := swifttoolchain.FindSwiftProductWithOptions(cwd, opts.product, !opts.yes && isInteractiveTerminal())
@@ -1416,7 +1416,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 				)
 			}
 		}
-		return fmt.Errorf("building Swift container image: %w", err)
+		return commandErrorf(errBuildFailed, "building Swift container image: %w", err)
 	}
 	cliLogln("Build and push completed.")
 
@@ -1473,12 +1473,15 @@ func runMacOSSwiftPMWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		deviceArch = "arm64"
 	}
 	if deviceArch != runtime.GOARCH {
-		return fmt.Errorf("architecture mismatch: device is %s but host is %s", deviceArch, runtime.GOARCH)
+		return commandErrorf(errProjectTargetMismatch, "architecture mismatch: device is %s but host is %s", deviceArch, runtime.GOARCH)
 	}
 
 	product, err := swifttoolchain.FindSwiftProductWithActiveSwiftOptions(cwd, opts.product, !opts.yes && isInteractiveTerminal())
 	if err != nil {
-		return err
+		if errors.Is(err, swifttoolchain.ErrUserCancelled) {
+			return ErrUserCancelled
+		}
+		return classifyCommandError(errConfigInvalid, err)
 	}
 
 	buildConfig := "release"
@@ -1493,7 +1496,7 @@ func runMacOSSwiftPMWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {
-		return fmt.Errorf("swift build failed: %w", err)
+		return commandErrorf(errBuildFailed, "swift build failed: %w", err)
 	}
 	cliLogln("Build completed.")
 
@@ -1504,7 +1507,7 @@ func runMacOSSwiftPMWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 
 	binaryPath := filepath.Join(binDir, product)
 	if _, err := os.Stat(binaryPath); err != nil {
-		return fmt.Errorf("binary not found at %s: %w", binaryPath, err)
+		return commandErrorf(errBuildFailed, "binary not found at %s: %w", binaryPath, err)
 	}
 
 	syncEntries, err := assembleSwiftPMSyncEntries(binaryPath, cwd, appCfg)
@@ -1514,7 +1517,7 @@ func runMacOSSwiftPMWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 
 	// Sync files to the device.
 	if err := syncFiles(ctx, conn, appCfg.AppID, syncEntries); err != nil {
-		return fmt.Errorf("syncing files: %w", err)
+		return commandErrorf(errTransferFailed, "syncing files: %w", err)
 	}
 
 	var runArgs []string
@@ -1593,7 +1596,7 @@ func assembleSwiftPMSyncEntries(binaryPath, cwd string, appCfg *appconfig.AppCon
 func resolveRunProjectType(dir, requestedType string) (string, error) {
 	if cfg, err := appconfig.LoadFromFile(filepath.Join(dir, "wendy.json")); err == nil && cfg.Run != nil && cfg.Run.Command != "" {
 		if requestedType != "" {
-			return "", fmt.Errorf("run.command cannot be combined with --build-type")
+			return "", commandErrorf(errConfigInvalid, "run.command cannot be combined with --build-type")
 		}
 		return "native-process", nil
 	}
@@ -1603,7 +1606,7 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 
 	buildType := normalizeBuildType(requestedType)
 	if buildType != "docker" && buildType != "swift" && buildType != "python" && buildType != "compose" {
-		return "", fmt.Errorf("invalid value %q for --build-type: must be one of docker, swift, python, or compose", requestedType)
+		return "", commandErrorf(errConfigInvalid, "invalid value %q for --build-type: must be one of docker, swift, python, or compose", requestedType)
 	}
 
 	switch buildType {
@@ -1657,13 +1660,13 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("build type %q is not available in %s", requestedType, dir)
+	return "", commandErrorf(errConfigInvalid, "build type %q is not available in %s", requestedType, dir)
 }
 
 // runWithProvider builds and runs via an external device provider.
 func runWithProvider(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, product string, entitlements []appconfig.Entitlement, opts runOptions) error {
 	if opts.builder != "" {
-		return fmt.Errorf("--builder is only used when --device selects a WendyOS device; use --device docker or --device apple-container for local provider runs")
+		return commandErrorf(errConfigInvalid, "--builder is only used when --device selects a WendyOS device; use --device docker or --device apple-container for local provider runs")
 	}
 	projectType, err := resolveRunProjectType(projectPath, opts.buildType)
 	if err != nil {
@@ -1676,17 +1679,17 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	// Resolve Swift product name from Package.swift.
 	if projectType == "swift" {
 		if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-			return fmt.Errorf("`wendy run` for Swift packages is not supported on %s; provide a Dockerfile or Containerfile", runtime.GOOS)
+			return commandErrorf(errProjectTargetMismatch, "`wendy run` for Swift packages is not supported on %s; provide a Dockerfile or Containerfile", runtime.GOOS)
 		}
 		if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
-			return err
+			return classifyCommandError(errBuilderUnavailable, err)
 		}
 		swiftProduct, err := swifttoolchain.FindSwiftProductWithOptions(projectPath, opts.product, !opts.yes && isInteractiveTerminal())
 		if err != nil {
 			if errors.Is(err, swifttoolchain.ErrUserCancelled) {
 				return ErrUserCancelled
 			}
-			return fmt.Errorf("could not determine Swift product: %w", err)
+			return commandErrorf(errConfigInvalid, "could not determine Swift product: %w", err)
 		}
 		product = swiftProduct
 	} else if p.CanBuild(projectPath) {
@@ -1700,7 +1703,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 
 	// Xcode projects cannot be deployed via provider (requires darwin + file sync).
 	if projectType == "xcode" {
-		return fmt.Errorf("Xcode projects are not supported by the %s provider; use 'wendy run' with a macOS target instead", p.DisplayName())
+		return commandErrorf(errProjectTargetMismatch, "Xcode projects are not supported by the %s provider; use 'wendy run' with a macOS target instead", p.DisplayName())
 	}
 
 	// Swift projects without a container build file: cross-compile on the host and
@@ -1710,7 +1713,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 			cliLogln("Building Swift project for %s...", p.DisplayName())
 			imageName, err := buildSwiftDockerImage(ctx, projectPath, product, runtime.GOARCH, swiftBuildConfig(opts.debug), &dimWriter{}, os.Stderr)
 			if err != nil {
-				return fmt.Errorf("building Swift Docker image: %w", err)
+				return commandErrorf(errBuildFailed, "building Swift Docker image: %w", err)
 			}
 			app = ib.BuildFromImage(device, product, imageName)
 		}
@@ -1867,7 +1870,7 @@ func waitForSerialPortFree(ctx context.Context, port string) bool {
 // silently accept a destructive reinstall — it returns the build error
 // unchanged.
 func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, projectType, product string, opts runOptions, buildErr error) (*providers.BuiltApp, error) {
-	wrapped := fmt.Errorf("provider build: %w", buildErr)
+	wrapped := commandErrorf(errBuildFailed, "provider build: %w", buildErr)
 	unsupported, ok := shouldOfferLiteReinstall(buildErr, device, !opts.yes && isInteractiveTerminal())
 	if !ok {
 		return nil, wrapped
@@ -1944,7 +1947,7 @@ func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvide
 	cliLogln("Building with %s provider...", p.DisplayName())
 	app, err := providerBuild(ctx, p, device, projectPath, projectType, product, opts)
 	if err != nil {
-		return nil, fmt.Errorf("provider build: %w", err)
+		return nil, commandErrorf(errBuildFailed, "provider build: %w", err)
 	}
 	return app, nil
 }
@@ -2006,7 +2009,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Detect project type and ensure a build file exists when needed.
 	projectType, err := resolveRunProjectType(cwd, opts.buildType)
 	if err != nil {
-		return err
+		return classifyCommandError(errConfigInvalid, err)
 	}
 
 	// Resolve the target platform. Query the agent for its OS and architecture,
@@ -2036,7 +2039,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 
 	if appCfg.Run != nil && appCfg.Run.Command != "" {
 		if !strings.EqualFold(agentOS, "darwin") || platformOS(platform) != "darwin" {
-			return fmt.Errorf("run.command requires a native Darwin agent target")
+			return commandErrorf(errProjectTargetMismatch, "run.command requires a native Darwin agent target")
 		}
 		return runNativeCommandWithAgent(ctx, conn, cwd, appCfg, opts, versionResp)
 	}
@@ -2049,7 +2052,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		if platformOS(platform) == "darwin" {
 			return runMacOSXcodeWithAgent(ctx, conn, cwd, appCfg, opts)
 		}
-		return fmt.Errorf("Xcode projects require a darwin target (got %s)", platform)
+		return commandErrorf(errProjectTargetMismatch, "Xcode projects require a darwin target (got %s)", platform)
 	}
 
 	// Swift projects use a native darwin path for macOS targets and
@@ -2078,10 +2081,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 				return err
 			}
 			if targetIsDarwin && runtime.GOOS != "darwin" {
-				return fmt.Errorf("`wendy run` for Swift packages targeting darwin requires a darwin host (got %s); provide a Dockerfile or Containerfile to build a Linux image instead", runtime.GOOS)
+				return commandErrorf(errProjectTargetMismatch, "`wendy run` for Swift packages targeting darwin requires a darwin host (got %s); provide a Dockerfile or Containerfile to build a Linux image instead", runtime.GOOS)
 			}
 			if !targetIsDarwin && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-				return fmt.Errorf("`wendy run` for Swift packages is not supported on %s; provide a Dockerfile or Containerfile", runtime.GOOS)
+				return commandErrorf(errProjectTargetMismatch, "`wendy run` for Swift packages is not supported on %s; provide a Dockerfile or Containerfile", runtime.GOOS)
 			}
 			if targetIsDarwin {
 				return runMacOSSwiftPMWithAgent(ctx, conn, cwd, appCfg, opts)
@@ -2110,11 +2113,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		}
 	case "swift":
 		if normalized, _ := normalizeImageBuilder(opts.builder); normalized == imageBuilderAppleContainer {
-			return fmt.Errorf("Apple Container builder is only supported for Dockerfile/Containerfile builds; provide a build file or omit --builder")
+			return commandErrorf(errConfigInvalid, "Apple Container builder is only supported for Dockerfile/Containerfile builds; provide a build file or omit --builder")
 		}
 		// A container build file exists; use the image build path.
 	default:
-		return fmt.Errorf("unable to detect project type; ensure a Dockerfile/Containerfile, requirements.txt, or Package.swift is present")
+		return commandErrorf(errConfigInvalid, "unable to detect project type; ensure a Dockerfile/Containerfile, requirements.txt, or Package.swift is present")
 	}
 
 	deviceType := versionResp.GetDeviceType()
@@ -2388,10 +2391,10 @@ func validateEnvFlag(entries []string) error {
 	for _, kv := range entries {
 		key, _, ok := strings.Cut(kv, "=")
 		if !ok {
-			return fmt.Errorf("--env %q must be KEY=VALUE", kv)
+			return commandErrorf(errConfigInvalid, "--env %q must be KEY=VALUE", kv)
 		}
 		if err := appconfig.ValidateEnvKey("--env", key); err != nil {
-			return err
+			return classifyCommandError(errConfigInvalid, err)
 		}
 	}
 	return nil
@@ -2690,7 +2693,7 @@ func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostn
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("readiness probe timed out after %s waiting for %s", timeout, addr)
+			return commandErrorf(errReadinessTimeout, "readiness probe timed out after %s waiting for %s", timeout, addr)
 		case <-ticker.C:
 		}
 	}
@@ -3097,7 +3100,7 @@ func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentCo
 		}
 	}
 	if !started {
-		return fmt.Errorf("agent closed the stream before confirming the container started")
+		return commandErrorf(errContainerStartFailed, "agent closed the stream before confirming the container started")
 	}
 	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil
