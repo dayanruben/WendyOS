@@ -19,10 +19,12 @@ import (
 )
 
 const (
-	// maxSegmentBytes bounds one read of a layer's bytes and one write to the
-	// content store. It matches the containerd proxy writer's own 8 MiB message
-	// split, so a segment costs one Write round trip rather than the eight
-	// 1 MiB round trips of content.WriteBlob's copy loop.
+	// maxSegmentBytes bounds a segment: one read of a layer's bytes and one
+	// write to the content store. planAssembly caps every chunk at
+	// maxStagedChunkBytes, below it, so a single chunk always fits and runs
+	// coalesce only up to it. It matches the containerd proxy writer's own
+	// 8 MiB message split, so a segment costs one Write round trip rather than
+	// the eight 1 MiB round trips of content.WriteBlob's copy loop.
 	maxSegmentBytes = 8 << 20
 	// assemblyReadAhead is how many verified segments may wait for the writer,
 	// so reading and hashing the next segments overlaps the current write.
@@ -35,8 +37,8 @@ const (
 
 // assemblyBuffers is the segment buffer pool every assembly shares. Compose
 // prepares up to four services at once, and a build delivery prepares images
-// too; buffers per assembly put 121 MiB on the heap for four of them, on
-// devices with 1 GB of RAM. Shared, the agent holds at most
+// too; with buffers of their own, four assemblies took the agent's heap from
+// 14 to 121 MiB, on devices with 1 GB of RAM. Shared, the agent holds at most
 // assemblyBufferCount × maxSegmentBytes (48 MiB) of them at any concurrency.
 var assemblyBuffers = newBufferPool(assemblyBufferCount, maxSegmentBytes)
 
@@ -45,14 +47,15 @@ var assemblyBuffers = newBufferPool(assemblyBufferCount, maxSegmentBytes)
 //
 // It cannot deadlock. Only readers take buffers: readSegments' goroutine, and
 // verifyPrefix, which holds no other buffer while it waits. Writers never do.
-// A reader gives back a buffer it could not deliver (a failed read, or its
-// context ending first), and the consumer gives back every buffer delivered
-// to it: after writing it, or, when it stops early, by cancelling the reader
-// and draining the channel. So every buffer out of the pool is held by a
-// goroutine that returns it without waiting on the pool, and a reader waiting
-// for one waits only on other assemblies' writes. Nor does an assembly hold a
-// buffer while it waits for another's per-ref ingest lock: its reader starts
-// only once OpenWriter has returned.
+// A reader gives back a buffer it could not deliver (a failed read, its
+// context ending first, or a panic), and the consumer gives back every buffer
+// delivered to it: after writing it, or, when it stops early, by cancelling
+// the reader and draining the channel. So every buffer out of the pool is held
+// by a goroutine that returns it without waiting on the pool, and a reader
+// waiting for one waits only on writes already under way, its own
+// assembly's or another's. Nor does an assembly hold a buffer while it waits
+// for another's per-ref ingest lock: its reader starts only once OpenWriter
+// has returned.
 type bufferPool struct {
 	// slots holds the buffers not in use; nil stands for one not yet made.
 	slots chan []byte
@@ -85,7 +88,11 @@ func (p *bufferPool) acquire(ctx context.Context) ([]byte, error) {
 		p.allocated.Add(1)
 	}
 	out := p.outstanding.Add(1)
-	for peak := p.peak.Load(); out > peak && !p.peak.CompareAndSwap(peak, out); peak = p.peak.Load() {
+	for {
+		peak := p.peak.Load()
+		if out <= peak || p.peak.CompareAndSwap(peak, out) {
+			break
+		}
 	}
 	return b, nil
 }
@@ -97,9 +104,10 @@ func (p *bufferPool) release(b []byte) {
 	p.slots <- b[:cap(b)]
 }
 
-// assemblySegment is a run of a layer's chunks read with one call: consecutive
-// staged chunk files (blob == ""), or consecutive chunks that sit back to back
-// in the same indexed blob.
+// assemblySegment is a run of a layer's chunks read into one buffer and written
+// with one Write: consecutive chunks that sit back to back in the same indexed
+// blob, read with one ReadAt, or consecutive staged chunks (blob == ""), read
+// with one file read each.
 type assemblySegment struct {
 	blob   string
 	offset uint64 // start of the run within blob

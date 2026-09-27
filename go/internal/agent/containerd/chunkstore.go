@@ -38,8 +38,9 @@ const defaultChunkStagingDir = "/var/lib/wendy/chunk-staging"
 
 // staging persists chunk bytes received via StageChunk to disk, keyed by hash,
 // until the next AssembleLayerFromChunks streams them into the content store.
-// Disk — not the agent heap — is the staging budget, so peak memory during a
-// deploy is one chunk rather than the whole uncompressed layer (×2 with the old
+// Disk — not the agent heap — is the staging budget, so reassembly's memory is
+// bounded by the segment buffer pool every assembly shares (assemblyBuffers,
+// 48 MiB for the whole agent), not by the uncompressed layer (×2 with the old
 // reconstruct buffer). Distinct chunks map to distinct files, so concurrent
 // deploys staging different content do not collide.
 type staging struct {
@@ -158,9 +159,8 @@ type chunkSource func(h [32]byte) ([]byte, error)
 
 // chunkStream is an io.Reader that yields the chunks named by order in sequence,
 // holding at most one chunk in memory at a time and verifying each chunk's
-// SHA-256 as it is served. Feeding it to content.WriteBlob reassembles a layer
-// without ever buffering the whole layer in RAM; WriteBlob independently
-// verifies the overall layer digest as it streams.
+// SHA-256 as it is served. OpenChunkStream returns it to callers that want the
+// bytes themselves; layer assembly reads segments instead (readSegments).
 type chunkStream struct {
 	order [][32]byte
 	src   chunkSource

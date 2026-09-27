@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math"
 	"math/rand"
 	"net"
@@ -515,6 +516,102 @@ func TestAssemblyReadsAStagedChunkFromTheIndexOnceAnotherAssemblyConsumedIt(t *t
 	}
 	if !bytes.Equal(got, shared) {
 		t.Fatal("fallback read returned the wrong bytes")
+	}
+}
+
+// TestReadSegmentsSkipsAResumedPrefix: a resumed ingest's prefix is not
+// delivered, whether it ends inside a segment or on a boundary, and a segment
+// wholly inside it is not read at all.
+func TestReadSegmentsSkipsAResumedPrefix(t *testing.T) {
+	for _, skip := range []int64{0, 5_000, 10_000, 25_000, 30_000, 59_999, 60_000} {
+		t.Run(fmt.Sprint("skip ", skip), func(t *testing.T) {
+			c, _ := newCountingStoreClient(t)
+			// Three staged segments of one chunk each: [0,10k) [10k,30k) [30k,60k).
+			var (
+				layer []byte
+				segs  []assemblySegment
+			)
+			for i, n := range []int{10_000, 20_000, 30_000} {
+				data := randomBytes(int64(100+i), n)
+				h := sha256.Sum256(data)
+				if err := c.StageChunk(context.Background(), h, data); err != nil {
+					t.Fatal(err)
+				}
+				if int64(len(layer)+n) <= skip {
+					c.staging.remove(h) // wholly skipped: reading it would fail
+				}
+				layer = append(layer, data...)
+				segs = append(segs, assemblySegment{size: uint64(n), chunks: []assemblyChunk{{hash: h, len: uint64(n)}}})
+			}
+
+			var (
+				got       []byte
+				delivered int
+			)
+			for seg := range c.readSegments(context.Background(), segs, skip, nil) {
+				if seg.err != nil {
+					t.Fatal(seg.err)
+				}
+				got = append(got, seg.data...)
+				delivered++
+				seg.release()
+			}
+			if !bytes.Equal(got, layer[skip:]) {
+				t.Fatalf("delivered %d bytes, want the %d after the skip", len(got), len(layer)-int(skip))
+			}
+			want := 0 // segments ending after the skip
+			var end int64
+			for _, s := range segs {
+				if end += int64(s.size); end > skip {
+					want++
+				}
+			}
+			if delivered != want {
+				t.Fatalf("delivered %d segments, want %d", delivered, want)
+			}
+		})
+	}
+}
+
+// TestConcurrentAssembliesOfTheSameLayer: concurrent deploys of one image
+// assemble the same layer at once. They serialize on the per-ref ingest lock
+// (OpenWriter retries while another holds it), one commits and indexes the
+// layer, and the rest find it committed. All succeed.
+func TestConcurrentAssembliesOfTheSameLayer(t *testing.T) {
+	for _, rig := range storeRigs {
+		t.Run(rig.name, func(t *testing.T) {
+			c, cs := rig.new(t)
+			core, logs := observer.New(zap.InfoLevel)
+			c.logger = zap.New(core)
+			layer := randomBytes(110, 2<<20)
+			hashes := stageChunks(t, c, layer)
+			diffID := digest.FromBytes(layer)
+
+			const n = 3
+			errs := make(chan error, n)
+			for range n {
+				go func() { errs <- c.AssembleLayerFromChunks(context.Background(), diffID.String(), hashes) }()
+			}
+			for range n {
+				if err := <-errs; err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if got := readBlob(t, cs, diffID); !bytes.Equal(got, layer) {
+				t.Fatal("the committed blob is not the layer")
+			}
+			requireIndexedAndUnstaged(t, c, diffID, layer, hashes)
+			verified := 0
+			for _, l := range logs.FilterMessage("Assembled layer").All() {
+				if l.ContextMap()["verified"] == true {
+					verified++
+				}
+			}
+			if verified != 1 {
+				t.Fatalf("%d assemblies verified the layer, want exactly the one that committed it", verified)
+			}
+		})
 	}
 }
 
