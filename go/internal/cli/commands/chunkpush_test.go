@@ -13,6 +13,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
+	"github.com/wendylabsinc/wendy/go/internal/shared/chunkupload"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -137,13 +138,16 @@ type fakeContainerClient struct {
 	agentpb.WendyContainerServiceClient // embedded nil — satisfies interface
 	queryFn                             func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse
 	queryLayersFn                       func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse
-	writeFn                             func(*agentpb.WriteChunksRequest) error
+	writeFn                             func(*agentpb.WriteChunksRequest) error // called from several streams at once
 	closeErr                            error
-	chunksWritten                       int
-	writeStreams                        int
 	writeStarted                        chan struct{}
 	blockWrites                         bool
 	writeOnce                           sync.Once
+
+	mu            sync.Mutex // guards the counters below; uploads run several streams
+	chunksWritten int
+	writeStreams  int
+	compressors   []string
 }
 
 // TestPushLayersByChunksPreparesDuringUpload proves the preparation RPC is
@@ -328,8 +332,17 @@ func (f *fakeContainerClient) QueryLayers(_ context.Context, in *agentpb.QueryLa
 	return f.queryLayersFn(in), nil
 }
 
-func (f *fakeContainerClient) WriteChunks(ctx context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse], error) {
+func (f *fakeContainerClient) WriteChunks(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse], error) {
+	compressor := ""
+	for _, o := range opts {
+		if c, ok := o.(grpc.CompressorCallOption); ok {
+			compressor = c.CompressorType
+		}
+	}
+	f.mu.Lock()
 	f.writeStreams++
+	f.compressors = append(f.compressors, compressor)
+	f.mu.Unlock()
 	return &fakeWriteChunksStream{parent: f, ctx: ctx}, nil
 }
 
@@ -341,7 +354,9 @@ type fakeWriteChunksStream struct {
 }
 
 func (s *fakeWriteChunksStream) Send(req *agentpb.WriteChunksRequest) error {
+	s.parent.mu.Lock()
 	s.parent.chunksWritten++
+	s.parent.mu.Unlock()
 	if s.parent.writeStarted != nil {
 		s.parent.writeOnce.Do(func() { close(s.parent.writeStarted) })
 	}
@@ -389,8 +404,10 @@ func TestPushLayerByChunksSurfacesTerminalWriteStatusAfterSendEOF(t *testing.T) 
 func TestPushLayerByChunksBatchesLongUploads(t *testing.T) {
 	manifestCacheTestDir = t.TempDir()
 	t.Cleanup(func() { manifestCacheTestDir = "" })
+	t.Setenv("WENDY_CHUNK_UPLOAD_STREAMS", "") // a developer's benchmarking knobs must not leak in
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "")
 
-	layerTar := variedChunkTestData((maxChunksPerWriteStream + 8) * int(chunk.MaxSize))
+	layerTar := variedChunkTestData((chunkupload.DefaultBatchChunks + 8) * int(chunk.MaxSize))
 	fake := &fakeContainerClient{
 		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
 			return &agentpb.QueryChunksResponse{MissingHashes: req.GetChunkHashes()}
@@ -403,12 +420,35 @@ func TestPushLayerByChunksBatchesLongUploads(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if fake.chunksWritten <= maxChunksPerWriteStream {
-		t.Fatalf("fixture wrote %d chunks, want more than one %d-chunk batch", fake.chunksWritten, maxChunksPerWriteStream)
+	if fake.chunksWritten <= chunkupload.DefaultBatchChunks {
+		t.Fatalf("fixture wrote %d chunks, want more than one %d-chunk batch", fake.chunksWritten, chunkupload.DefaultBatchChunks)
 	}
-	wantStreams := (fake.chunksWritten + maxChunksPerWriteStream - 1) / maxChunksPerWriteStream
+	wantStreams := (fake.chunksWritten + chunkupload.DefaultBatchChunks - 1) / chunkupload.DefaultBatchChunks
 	if fake.writeStreams != wantStreams {
 		t.Fatalf("WriteChunks streams = %d, want %d for %d chunks", fake.writeStreams, wantStreams, fake.chunksWritten)
+	}
+	for _, c := range fake.compressors {
+		if c != chunkupload.Gzip {
+			t.Fatalf("stream compressor = %q, want gzip until PR 2 makes it adaptive", c)
+		}
+	}
+}
+
+func TestChunkUploadTuningReadsBenchmarkKnobs(t *testing.T) {
+	t.Setenv("WENDY_CHUNK_UPLOAD_STREAMS", "")
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "")
+	if s, b := chunkUploadTuning(); s != chunkupload.DefaultStreams || b != chunkupload.DefaultBatchChunks {
+		t.Fatalf("defaults = %d/%d", s, b)
+	}
+	t.Setenv("WENDY_CHUNK_UPLOAD_STREAMS", "6")
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "1024")
+	if s, b := chunkUploadTuning(); s != 6 || b != 1024 {
+		t.Fatalf("knobs = %d/%d, want 6/1024", s, b)
+	}
+	t.Setenv("WENDY_CHUNK_UPLOAD_STREAMS", "0")
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "lots")
+	if s, b := chunkUploadTuning(); s != chunkupload.DefaultStreams || b != chunkupload.DefaultBatchChunks {
+		t.Fatalf("invalid knobs must keep defaults, got %d/%d", s, b)
 	}
 }
 
