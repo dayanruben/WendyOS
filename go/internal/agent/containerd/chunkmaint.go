@@ -300,10 +300,16 @@ func (c *Client) reconcileChunkIndex(ctx context.Context) (int, error) {
 
 // pruneChunkStore extends a cache prune to the chunk store (WDY-3212,
 // WDY-3217). It removes every staged chunk, or on a dry run counts them,
-// unless a deploy used the store within cachePruneStagingIdleAfter. A real
-// prune then drops the index entries of every layer blob containerd no longer
-// holds; PruneCache calls it after the forced GC, so that includes the blobs
-// the prune just let containerd collect.
+// unless the store is in use: a chunk RPC within cachePruneStagingIdleAfter,
+// or an image preparation or layer assembly in flight. A real prune of an
+// idle store then drops the index entries of every layer blob containerd no
+// longer holds; PruneCache calls it after the forced GC, so that includes the
+// blobs the prune just let containerd collect.
+//
+// While the store is in use, the real prune defers that reconcile to idle
+// maintenance or the next prune: a deploy can be assembling a layer the GC
+// just collected, and a reconcile that found the blob missing just before the
+// assembly committed it would drop the entries the assembly then wrote.
 //
 // Failures are logged, not returned: the cache-root release before this step
 // already happened and stands on its own. A Client built without a staging
@@ -319,16 +325,19 @@ func (c *Client) pruneChunkStore(ctx context.Context, now time.Time, dryRun bool
 	if dryRun || c.chunkIndex == nil {
 		return
 	}
-	dropped, err := c.reconcileChunkIndex(ctx)
-	if err != nil {
-		c.logger.Warn("Reconciling chunk index after cache prune failed", zap.Error(err))
+	if !result.StagingInUse {
+		dropped, err := c.reconcileChunkIndex(ctx)
+		if err != nil {
+			c.logger.Warn("Reconciling chunk index after cache prune failed", zap.Error(err))
+		}
+		result.ChunkIndexBlobsDropped = uint64(dropped)
 	}
-	result.ChunkIndexBlobsDropped = uint64(dropped)
 	c.logger.Info("Cache prune pruned the chunk store",
 		zap.Uint64("staged_chunks_removed", result.StagedChunks),
 		zap.Uint64("staged_bytes_removed", result.StagedBytes),
 		zap.Bool("staging_in_use", result.StagingInUse),
-		zap.Uint64("index_blobs_dropped", result.ChunkIndexBlobsDropped))
+		zap.Uint64("index_blobs_dropped", result.ChunkIndexBlobsDropped),
+		zap.Bool("reconcile_deferred", result.StagingInUse))
 }
 
 // pruneStaging removes, or with dryRun counts, every staged chunk unless a

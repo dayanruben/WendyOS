@@ -451,6 +451,35 @@ func TestPruneChunkStoreLeavesStagingWhilePrepareImageWaits(t *testing.T) {
 	}
 }
 
+// TestPruneChunkStoreDefersTheReconcileWhileADeployUsesTheStore: a deploy
+// assembling a layer the prune's GC just collected commits the blob and
+// indexes it again, and a reconcile that found the blob missing just before
+// would drop those fresh entries. So a prune that finds the store in use
+// leaves the index to idle maintenance or the next prune.
+func TestPruneChunkStoreDefersTheReconcileWhileADeployUsesTheStore(t *testing.T) {
+	c, _ := newMaintenanceClient(t)
+	core, logs := observer.New(zap.InfoLevel)
+	c.logger = zap.New(core)
+	collected := digest.FromString("layer the prune let containerd collect")
+	if err := c.chunkIndex.AddLayer(collected.String(), []chunk.Ref{{Hash: [32]byte{5}, Len: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	c.chunkActivity.touch()
+	var result services.CachePruneResult
+	c.pruneChunkStore(context.Background(), time.Now(), false, &result)
+	if !result.StagingInUse || result.ChunkIndexBlobsDropped != 0 {
+		t.Fatalf("result = %+v; want staging in use and no index blob dropped", result)
+	}
+	if _, ok := c.chunkIndex.Has([32]byte{5}); !ok {
+		t.Fatal("the prune reconciled the index while a deploy was using the store")
+	}
+	deferred := logs.FilterMessage("Cache prune pruned the chunk store").FilterField(zap.Bool("reconcile_deferred", true))
+	if deferred.Len() != 1 {
+		t.Fatalf("the deferred reconcile was not logged: %v", logs.All())
+	}
+}
+
 // TestPruneChunkStoreKeepsGoingWhenStagingCannotBeRemoved: the cache-root
 // release before the chunk-store step already happened, so a staging failure
 // is logged, not returned, and the index is still reconciled.
