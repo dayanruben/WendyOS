@@ -2,6 +2,7 @@ package containerd
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -517,6 +518,8 @@ type collectingContentStore struct {
 	content.Store
 	mu    sync.Mutex
 	blobs map[digest.Digest]content.Info
+	// walkErr fails Walk, as containerd does when it cannot list content.
+	walkErr error
 }
 
 func (s *collectingContentStore) Info(_ context.Context, d digest.Digest) (content.Info, error) {
@@ -530,6 +533,9 @@ func (s *collectingContentStore) Info(_ context.Context, d digest.Digest) (conte
 }
 
 func (s *collectingContentStore) Walk(_ context.Context, fn content.WalkFunc, _ ...string) error {
+	if s.walkErr != nil {
+		return s.walkErr
+	}
 	s.mu.Lock()
 	infos := make([]content.Info, 0, len(s.blobs))
 	for _, info := range s.blobs {
@@ -643,6 +649,9 @@ func TestPruneCacheReconcilesTheIndexAfterTheGC(t *testing.T) {
 	}
 }
 
+// TestPruneCacheDryRunReportsStagingWithoutCollecting: a dry run counts the
+// pins and the staged chunks but forces no GC, removes no staged chunk and
+// drops no index entry.
 func TestPruneCacheDryRunReportsStagingWithoutCollecting(t *testing.T) {
 	stale := wendyLayerPinned("layer pinned two days ago", 48*time.Hour)
 	c, ls := newChunkStorePruneClient(t, stale)
@@ -688,5 +697,36 @@ func TestPruneCacheMeasuresReclaimBeforeSweepingStaging(t *testing.T) {
 	}
 	if result.StagedChunks != 1 || c.staging.has(h) {
 		t.Fatalf("staging not pruned after the measurement: %+v", result)
+	}
+}
+
+// TestPruneCacheSkipsTheChunkStoreWhenThePinWalkFails: a prune that cannot
+// list the pins returns that error before its chunk-store step, so staging
+// and the index stay as they were.
+func TestPruneCacheSkipsTheChunkStoreWhenThePinWalkFails(t *testing.T) {
+	c, ls := newChunkStorePruneClient(t)
+	cs, ok := c.client.ContentStore().(*collectingContentStore)
+	if !ok {
+		t.Fatalf("content store is %T, want *collectingContentStore", c.client.ContentStore())
+	}
+	cs.walkErr = errors.New("content store unavailable")
+	collected := digest.FromString("layer containerd no longer holds")
+	if err := c.chunkIndex.AddLayer(collected.String(), []chunk.Ref{{Hash: [32]byte{1}, Len: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	h := stageAged(t, c.staging, []byte("chunk of a cancelled deploy"), 5*time.Minute)
+
+	_, err := c.PruneCache(context.Background(), services.CachePruneOptions{})
+	if !errors.Is(err, cs.walkErr) {
+		t.Fatalf("PruneCache = %v, want the walk error", err)
+	}
+	if !c.staging.has(h) {
+		t.Fatal("the prune removed staging after its pin walk failed")
+	}
+	if _, ok := c.chunkIndex.Has([32]byte{1}); !ok {
+		t.Fatal("the prune reconciled the index after its pin walk failed")
+	}
+	if ls.syncDeletes != 0 {
+		t.Fatalf("the prune forced %d GCs after its pin walk failed", ls.syncDeletes)
 	}
 }
