@@ -195,34 +195,53 @@ func requireIndexedAndUnstaged(t *testing.T, c *Client, dgst digest.Digest, data
 	}
 }
 
-// commitRaceStore commits blob under another ref just before the writer it
-// handed out commits, as a concurrent assembly of the same layer finishing
-// first would.
-type commitRaceStore struct {
+// hookStore hands out writers whose Write and Commit run onWrite and onCommit
+// instead, when set, given the real writer.
+type hookStore struct {
 	content.Store
-	blob []byte
+	onWrite  func(w content.Writer, p []byte) (int, error)
+	onCommit func(ctx context.Context, w content.Writer, size int64, expected digest.Digest, opts ...content.Opt) error
 }
 
-func (s *commitRaceStore) Writer(ctx context.Context, opts ...content.WriterOpt) (content.Writer, error) {
+func (s *hookStore) Writer(ctx context.Context, opts ...content.WriterOpt) (content.Writer, error) {
 	w, err := s.Store.Writer(ctx, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return &commitRaceWriter{Writer: w, s: s}, nil
+	return &hookWriter{Writer: w, s: s}, nil
 }
 
-type commitRaceWriter struct {
+type hookWriter struct {
 	content.Writer
-	s *commitRaceStore
+	s *hookStore
 }
 
-func (w *commitRaceWriter) Commit(ctx context.Context, size int64, expected digest.Digest, opts ...content.Opt) error {
-	dgst := digest.FromBytes(w.s.blob)
-	if err := content.WriteBlob(ctx, w.s.Store, "concurrent assembly", bytes.NewReader(w.s.blob),
-		ocispec.Descriptor{Digest: dgst, Size: int64(len(w.s.blob))}); err != nil {
-		return err
+func (w *hookWriter) Write(p []byte) (int, error) {
+	if w.s.onWrite == nil {
+		return w.Writer.Write(p)
 	}
-	return w.Writer.Commit(ctx, size, expected, opts...)
+	return w.s.onWrite(w.Writer, p)
+}
+
+func (w *hookWriter) Commit(ctx context.Context, size int64, expected digest.Digest, opts ...content.Opt) error {
+	if w.s.onCommit == nil {
+		return w.Writer.Commit(ctx, size, expected, opts...)
+	}
+	return w.s.onCommit(ctx, w.Writer, size, expected, opts...)
+}
+
+// commitRaceStore commits blob under another ref just before a writer it
+// handed out commits, as a concurrent assembly of the same layer finishing
+// first would.
+func commitRaceStore(store content.Store, blob []byte) *hookStore {
+	return &hookStore{Store: store, onCommit: func(ctx context.Context, w content.Writer, size int64, expected digest.Digest, opts ...content.Opt) error {
+		dgst := digest.FromBytes(blob)
+		if err := content.WriteBlob(ctx, store, "concurrent assembly", bytes.NewReader(blob),
+			ocispec.Descriptor{Digest: dgst, Size: int64(len(blob))}); err != nil {
+			return err
+		}
+		return w.Commit(ctx, size, expected, opts...)
+	}}
 }
 
 // TestAssembleLayerFromChunksDoesNotIndexAfterACommitRace: a concurrent
@@ -252,7 +271,7 @@ func TestAssembleLayerFromChunksDoesNotIndexAfterACommitRace(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			layer := randomBytes(20, 300_000)
 			store := tc.store(t)
-			c := newStoreClient(t, &commitRaceStore{Store: store, blob: layer})
+			c := newStoreClient(t, commitRaceStore(store, layer))
 			manifest := layer
 			if tc.otherBytes {
 				manifest = randomBytes(21, len(layer))
@@ -489,7 +508,7 @@ func TestAssemblyReadsAStagedChunkFromTheIndexOnceAnotherAssemblyConsumedIt(t *t
 	commitIndexedBlob(t, c, cs, shared) // the other assembly's blob holds the chunk…
 	c.staging.remove(h)                 // …and it released the staged file
 
-	got, err := collectSegments(c.readSegments(context.Background(), segs, 0))
+	got, err := collectSegments(c.readSegments(context.Background(), segs, 0, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,11 +635,11 @@ func TestWriteAssembledLayerReportsUnverifiedWhenTheBlobAlreadyExists(t *testing
 	data := randomBytes(7, 1_000)
 	dgst, _ := commitIndexedBlob(t, c, cs, data)
 
-	verified, err := c.writeAssembledLayer(context.Background(), dgst.String(), int64(len(data)), nil)
+	stats, err := c.writeAssembledLayer(context.Background(), dgst.String(), int64(len(data)), nil)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	if verified {
+	if stats.verified {
 		t.Fatal("verified = true for a blob this call never read")
 	}
 }
@@ -685,28 +704,6 @@ func stageInterleavedLayer(t *testing.T, c *Client, cs content.Store, seed int64
 	return layer, hashes
 }
 
-// writeHookStore hands out writers whose every Write is onWrite, given the
-// real writer.
-type writeHookStore struct {
-	content.Store
-	onWrite func(w content.Writer, p []byte) (int, error)
-}
-
-func (s *writeHookStore) Writer(ctx context.Context, opts ...content.WriterOpt) (content.Writer, error) {
-	w, err := s.Store.Writer(ctx, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return &writeHookWriter{Writer: w, s: s}, nil
-}
-
-type writeHookWriter struct {
-	content.Writer
-	s *writeHookStore
-}
-
-func (w *writeHookWriter) Write(p []byte) (int, error) { return w.s.onWrite(w.Writer, p) }
-
 // TestConcurrentAssembliesShareTheBufferPool: Compose prepares up to four
 // services at once, and every assembly draws its segment buffers from one
 // pool. Four assemblies of distinct layers, many segments each, with their
@@ -719,7 +716,7 @@ func TestConcurrentAssembliesShareTheBufferPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate := make(chan struct{})
-	c := newStoreClient(t, &writeHookStore{Store: backend, onWrite: func(w content.Writer, p []byte) (int, error) {
+	c := newStoreClient(t, &hookStore{Store: backend, onWrite: func(w content.Writer, p []byte) (int, error) {
 		<-gate
 		return w.Write(p)
 	}})
@@ -759,7 +756,8 @@ func TestConcurrentAssembliesShareTheBufferPool(t *testing.T) {
 }
 
 // TestACancelledAssemblyReturnsItsBuffers: a deploy cancelled mid-layer, with
-// the reader's pipeline full, gives every buffer back.
+// the reader's pipeline full, gives every buffer back and reports the
+// cancellation, not whatever the interrupted Write returned.
 func TestACancelledAssemblyReturnsItsBuffers(t *testing.T) {
 	pool := useFreshAssemblyBuffers(t)
 	backend, err := local.NewStore(t.TempDir())
@@ -768,7 +766,7 @@ func TestACancelledAssemblyReturnsItsBuffers(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := newStoreClient(t, &writeHookStore{Store: backend, onWrite: func(content.Writer, []byte) (int, error) {
+	c := newStoreClient(t, &hookStore{Store: backend, onWrite: func(content.Writer, []byte) (int, error) {
 		waitFor(t, "the reader to fill its pipeline", func() bool { return pool.outstanding.Load() == assemblyBufferCount })
 		cancel()
 		return 0, errors.New("failed to send write: transport is closing")
@@ -776,13 +774,114 @@ func TestACancelledAssemblyReturnsItsBuffers(t *testing.T) {
 	layer, hashes := stageInterleavedLayer(t, c, backend, 70)
 	diffID := digest.FromBytes(layer)
 
-	if err := c.AssembleLayerFromChunks(ctx, diffID.String(), hashes); err == nil {
-		t.Fatal("a cancelled assembly reported success")
+	err = c.AssembleLayerFromChunks(ctx, diffID.String(), hashes)
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), diffID.String()) {
+		t.Fatalf("error = %v, want the cancellation, naming the layer", err)
 	}
 	if _, err := backend.Info(context.Background(), diffID); err == nil {
 		t.Fatal("a cancelled assembly committed its layer")
 	}
 	requireAllBuffersReturned(t, pool)
+}
+
+// TestACancelledCommitReportsTheCancellation: a Commit that fails because
+// the deploy was cancelled reports the cancellation too.
+func TestACancelledCommitReportsTheCancellation(t *testing.T) {
+	backend, err := local.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := newStoreClient(t, &hookStore{Store: backend, onCommit: func(context.Context, content.Writer, int64, digest.Digest, ...content.Opt) error {
+		cancel()
+		return errors.New("commit failed: transport is closing")
+	}})
+	diffID, hashes := stageLayer(t, c, 300_000, 71)
+
+	err = c.AssembleLayerFromChunks(ctx, diffID.String(), hashes)
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), diffID.String()) {
+		t.Fatalf("error = %v, want the cancellation, naming the layer", err)
+	}
+}
+
+// TestReadSegmentsReadsNothingOnceCancelled: the reader checks its context
+// before each segment rather than reading on until its next send.
+func TestReadSegmentsReadsNothingOnceCancelled(t *testing.T) {
+	c, cs := newCountingStoreClient(t)
+	blob := randomBytes(72, 512_000)
+	_, refs := commitIndexedBlob(t, c, cs, blob)
+	// Every other chunk: runs that are not contiguous, one segment each.
+	var hashes [][32]byte
+	for i := 0; i < len(refs); i += 2 {
+		hashes = append(hashes, refs[i].Hash)
+	}
+	segs, _, _, err := c.planAssembly(hashes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// A pool with a buffer free and a closed Done are both ready, and select
+	// picks between them at random: without the check, a run reads with
+	// probability 1/2 or more.
+	for range 20 {
+		if got, err := collectSegments(c.readSegments(ctx, segs, 0, nil)); len(got) != 0 || err != nil {
+			t.Fatalf("a cancelled reader delivered %d bytes, %v", len(got), err)
+		}
+	}
+	if n := cs.reads.Load(); n != 0 {
+		t.Fatalf("a cancelled reader read %d times", n)
+	}
+}
+
+// TestAssembleLayerFromChunksLogsEachAssembly: WDY-3213's acceptance is
+// measured on hardware from the one "Assembled layer" line each assembly
+// logs. The fast path, which assembles nothing, logs none.
+func TestAssembleLayerFromChunksLogsEachAssembly(t *testing.T) {
+	c, cs := newCountingStoreClient(t)
+	core, logs := observer.New(zap.InfoLevel)
+	c.logger = zap.New(core)
+	previous := randomBytes(90, 1<<20)
+	_, prevRefs := commitIndexedBlob(t, c, cs, previous)
+	fresh := randomBytes(91, 40_000)
+	var hashes [][32]byte
+	for _, r := range prevRefs {
+		hashes = append(hashes, r.Hash)
+	}
+	hashes = append(hashes, stageChunks(t, c, fresh)...)
+	layer := append(bytes.Clone(previous), fresh...)
+	diffID := digest.FromBytes(layer)
+	writePartialIngest(t, cs, layer, 100_000)
+
+	for range 2 { // the second call takes the fast path
+		if err := c.AssembleLayerFromChunks(context.Background(), diffID.String(), hashes); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	lines := logs.FilterMessage("Assembled layer").All()
+	if len(lines) != 1 {
+		t.Fatalf("logged %d assembly lines, want 1", len(lines))
+	}
+	fields := lines[0].ContextMap()
+	for k, want := range map[string]any{
+		"diff_id":       diffID.String(),
+		"size":          int64(len(layer)),
+		"segments":      int64(2), // the previous blob's run, then the staged chunks
+		"staged_bytes":  int64(len(fresh)),
+		"indexed_bytes": int64(len(previous)),
+		"resumed_bytes": int64(100_000),
+		"blobs":         int64(1),
+		"verified":      true,
+	} {
+		if fields[k] != want {
+			t.Errorf("%s = %v (%T), want %v (%T)", k, fields[k], fields[k], want, want)
+		}
+	}
+	if took, ok := fields["took"].(time.Duration); !ok || took <= 0 {
+		t.Errorf("took = %v, want the assembly's duration", fields["took"])
+	}
 }
 
 // TestAFailedAssemblyReturnsItsBuffers: a corrupt staged chunk mid-layer

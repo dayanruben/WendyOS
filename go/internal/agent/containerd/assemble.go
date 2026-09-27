@@ -195,14 +195,23 @@ func (s segmentData) release() {
 // Each segment is read into a buffer from assemblyBuffers; the consumer
 // releases every segment it receives (see segmentData), and one that stops
 // early cancels ctx and drains the channel, releasing the rest.
-func (c *Client) readSegments(ctx context.Context, segs []assemblySegment, skip int64) <-chan segmentData {
+//
+// A non-nil blobs receives, before the channel closes, how many source blobs
+// the reader opened.
+func (c *Client) readSegments(ctx context.Context, segs []assemblySegment, skip int64, blobs *int) <-chan segmentData {
 	out := make(chan segmentData, assemblyReadAhead)
 	go func() {
 		defer close(out)
 		r := segmentReader{c: c, ctx: ctx, readers: map[string]content.ReaderAt{}}
 		defer r.close()
+		if blobs != nil {
+			defer func() { *blobs = len(r.readers) }()
+		}
 		var pos int64
 		for _, seg := range segs {
+			if ctx.Err() != nil {
+				return // cancelled: read nothing more
+			}
 			start := pos
 			pos += int64(seg.size)
 			if pos <= skip {
@@ -343,17 +352,27 @@ func (s *staging) readInto(h [32]byte, dst []byte) error {
 	return nil
 }
 
+// assemblyStats describes one assembly, for its log line.
+type assemblyStats struct {
+	verified     bool  // see writeAssembledLayer
+	segments     int   // segments planned
+	stagedBytes  int64 // bytes planned from staged chunk files
+	indexedBytes int64 // bytes planned from indexed blobs
+	resumedBytes int64 // bytes the resumed ingest already held
+	blobs        int   // source blobs the reader opened
+}
+
 // writeAssembledLayer writes segs into the content store as diffID, one Write
 // per verified segment instead of content.WriteBlob's 1 MiB copy loop. Like
 // content.Copy, it resumes a partial ingest by skipping the bytes the ingest
 // already holds, so concurrent assemblies of the same layer still serialize on
 // containerd's per-ref lock rather than clobbering each other.
 //
-// verified reports that every chunk of the manifest was hash-checked against
-// the bytes now committed as diffID: the reader checked each chunk it wrote,
-// and checkResumedPrefix read back and checked the prefix the reader skipped.
-// Only then may the manifest's ranges be indexed. It is false, with a nil
-// error, whenever this call committed nothing it checked:
+// stats.verified reports that every chunk of the manifest was hash-checked
+// against the bytes now committed as diffID: the reader checked each chunk it
+// wrote, and checkResumedPrefix read back and checked the prefix the reader
+// skipped. Only then may the manifest's ranges be indexed. It is false, with a
+// nil error, whenever this call committed nothing it checked:
 //   - OpenWriter or Commit reports the blob already exists. A concurrent
 //     assembly committed it first, and over the proxy the content server
 //     answers a Commit with AlreadyExists before it hashes a byte of this
@@ -363,10 +382,28 @@ func (s *staging) readInto(h [32]byte, dst []byte) error {
 //
 // The blob itself is valid either way: its digest was verified when it was
 // committed. Only the manifest is unproven.
-func (c *Client) writeAssembledLayer(ctx context.Context, diffID string, size int64, segs []assemblySegment) (verified bool, err error) {
+//
+// Once ctx ends, any failure is reported as ctx's error, so a cancelled
+// deploy reads as cancelled rather than as the broken write it caused.
+func (c *Client) writeAssembledLayer(ctx context.Context, diffID string, size int64, segs []assemblySegment) (assemblyStats, error) {
+	stats := assemblyStats{segments: len(segs)}
+	for _, seg := range segs {
+		if seg.blob == "" {
+			stats.stagedBytes += int64(seg.size)
+		} else {
+			stats.indexedBytes += int64(seg.size)
+		}
+	}
+	fail := func(what string, err error) (assemblyStats, error) {
+		if cerr := ctx.Err(); cerr != nil {
+			err = cerr
+		}
+		return assemblyStats{}, fmt.Errorf("%s layer %s: %w", what, diffID, err)
+	}
+
 	dgst, err := digest.Parse(diffID)
 	if err != nil {
-		return false, fmt.Errorf("parsing digest %q: %w", diffID, err)
+		return assemblyStats{}, fmt.Errorf("parsing digest %q: %w", diffID, err)
 	}
 	w, err := content.OpenWriter(ctx, c.client.ContentStore(),
 		content.WithRef(diffID),
@@ -374,18 +411,20 @@ func (c *Client) writeAssembledLayer(ctx context.Context, diffID string, size in
 	if err != nil {
 		if errdefs.IsAlreadyExists(err) {
 			c.logger.Debug("Layer already exists in content store", zap.String("digest", diffID))
-			return false, nil
+			return stats, nil
 		}
-		return false, fmt.Errorf("opening layer %s for writing: %w", diffID, err)
+		return fail("opening", err)
 	}
 	defer w.Close()
 	st, err := w.Status()
 	if err != nil {
-		return false, fmt.Errorf("checking layer %s ingest: %w", diffID, err)
+		return fail("checking the ingest of", err)
 	}
+	stats.resumedBytes = st.Offset
 
 	readCtx, cancel := context.WithCancel(ctx)
-	segments := c.readSegments(readCtx, segs, st.Offset)
+	var blobs int // the reader's to set, and this call's to read once the channel closes
+	segments := c.readSegments(readCtx, segs, st.Offset, &blobs)
 	defer func() {
 		// However this returns, stop the reader and give back the buffers
 		// it still has queued. After the last segment the channel is
@@ -397,17 +436,18 @@ func (c *Client) writeAssembledLayer(ctx context.Context, diffID string, size in
 	}()
 	for seg := range segments {
 		if seg.err != nil {
-			return false, fmt.Errorf("reassembling layer %s: %w", diffID, seg.err)
+			return fail("reassembling", seg.err)
 		}
 		_, err := w.Write(seg.data)
 		seg.release()
 		if err != nil {
-			return false, fmt.Errorf("writing layer %s: %w", diffID, err)
+			return fail("writing", err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return fail("writing", err)
 	}
+	stats.blobs = blobs
 	labels := map[string]string{
 		labelKeyGCRoot:     gcTimestamp(),
 		labelKeyWendyLayer: "true",
@@ -415,15 +455,13 @@ func (c *Client) writeAssembledLayer(ctx context.Context, diffID string, size in
 	if err := w.Commit(ctx, size, dgst, content.WithLabels(labels)); err != nil {
 		if errdefs.IsAlreadyExists(err) {
 			c.logger.Debug("Layer already exists in content store", zap.String("digest", diffID))
-			return false, nil
+			return stats, nil
 		}
-		return false, fmt.Errorf("committing layer %s: %w", diffID, err)
+		return fail("committing", err)
 	}
 	c.logger.Info("Wrote layer to content store", zap.String("digest", diffID), zap.Int64("size", size))
-	if st.Offset > 0 {
-		return c.checkResumedPrefix(ctx, dgst, segs, st.Offset), nil
-	}
-	return true, nil
+	stats.verified = st.Offset == 0 || c.checkResumedPrefix(ctx, dgst, segs, st.Offset)
+	return stats, nil
 }
 
 // errPrefixMismatch marks a resumed prefix that does not hold the manifest's

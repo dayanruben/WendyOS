@@ -21,6 +21,8 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 )
 
 // maxStagedChunkBytes bounds a single staged chunk. The CDC chunker emits
@@ -416,45 +418,60 @@ func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, has
 		}
 	}
 
+	start := time.Now()
 	segs, refs, total, err := c.planAssembly(hashes)
 	if err != nil {
 		return err
 	}
-	verified, err := c.writeAssembledLayer(nsCtx, diffID, total, segs)
+	stats, err := c.writeAssembledLayer(nsCtx, diffID, total, segs)
 	if err != nil {
 		return err
 	}
-
-	// Staged chunks go only once the index holds them. Until then a concurrent
-	// assembly of another layer may rely on them: its waitForChunks, or its
-	// CLI's MissingChunks, already counted them present. When this returns
-	// early, retire and the sweep reclaim them.
-	if !verified {
-		// Nothing proved that this manifest describes the committed blob: a
-		// concurrent assembly of the same layer committed it first, or the
-		// prefix this call resumed does not match. Indexing the manifest
-		// would send later assemblies to ranges that fail their hashes.
-		return nil
+	// Nothing proved that an unverified manifest describes the committed
+	// blob: a concurrent assembly of the same layer committed it first, or
+	// the prefix this call resumed does not match. Indexing it would send
+	// later assemblies to ranges that fail their hashes.
+	if stats.verified {
+		c.indexAssembledLayer(diffID, refs, hashes)
 	}
+	// WDY-3213's acceptance is measured on devices from this line.
+	c.logger.Info("Assembled layer",
+		zap.String("diff_id", diffID),
+		zap.Int64("size", total),
+		zap.Duration("took", time.Since(start)),
+		zap.Int("segments", stats.segments),
+		zap.Int64("staged_bytes", stats.stagedBytes),
+		zap.Int64("indexed_bytes", stats.indexedBytes),
+		zap.Int64("resumed_bytes", stats.resumedBytes),
+		zap.Int("blobs", stats.blobs),
+		zap.Bool("verified", stats.verified))
+	return nil
+}
 
-	// Index the new blob from its manifest. Commit verified the blob digest and
-	// the segment reader verified each chunk's hash as it read it, so these
-	// ranges are exact; re-reading and re-chunking the blob to rediscover them
-	// cost ~1 s per 430 MB on an Orin Nano (WDY-3214). A resumed prefix, which
-	// the reader skips, is read back from the blob and checked, so the index
-	// never records a range this call did not verify.
+// indexAssembledLayer indexes a verified layer's blob from its manifest, then
+// releases the staged chunks the index now holds.
+//
+// Staged chunks go only once the index holds them. Until then a concurrent
+// assembly of another layer may rely on them: its waitForChunks, or its CLI's
+// MissingChunks, already counted them present. When this returns early, or
+// is never called, retire and the sweep reclaim them.
+func (c *Client) indexAssembledLayer(diffID string, refs []chunk.Ref, hashes [][32]byte) {
+	// Commit verified the blob digest and the segment reader verified each
+	// chunk's hash as it read it, so these ranges are exact; re-reading and
+	// re-chunking the blob to rediscover them cost ~1 s per 430 MB on an Orin
+	// Nano (WDY-3214). A resumed prefix, which the reader skips, is read back
+	// from the blob and checked, so the index never records a range this call
+	// did not verify.
 	if err := c.chunkIndex.AddLayer(diffID, refs); err != nil {
 		c.logger.Warn("failed to index reassembled layer", zap.String("diff_id", diffID), zap.Error(err))
-		return nil
+		return
 	}
 	if c.chunkIndex.disabled() {
-		return nil // nothing was recorded
+		return // nothing was recorded
 	}
 
 	// Release the staged chunks now embedded in the blob and indexed.
 	for _, h := range hashes {
 		c.staging.remove(h)
 	}
-
-	return nil
 }
