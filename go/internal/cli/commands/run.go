@@ -2167,6 +2167,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if hashErr == nil {
 		desiredHash, hashErr = computeDeployDesiredHash(inputHash, appCfg, opts.userArgs, deployEnv, resolveRestartPolicy(opts))
 	}
+	mark("build-input fingerprint")
 	if !isDarwinAgent && !opts.deploy && hashErr == nil {
 		if done, err := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
 			mark("fast-path (skipped build)")
