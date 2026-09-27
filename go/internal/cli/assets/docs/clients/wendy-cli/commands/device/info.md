@@ -1,6 +1,6 @@
 # `wendy device info`
 
-Shows agent version, OS, architecture, GPU, NPU, and hardware info for the target device.
+Shows organization, agent version, OS, architecture, GPU, NPU, and hardware info for the target device.
 
 ## Usage
 
@@ -13,6 +13,18 @@ wendy device info [flags]
 `wendy device info` queries the connected device's agent and prints its version, operating system, CPU architecture, CPU core count, total RAM, GPU and NPU presence, and other hardware details. Use this command anywhere device metadata is needed — in scripts, CI pipelines, or interactively.
 
 The output format follows the standard `--json` / human-readable convention shared across all device commands.
+
+### Organization output
+
+`Organization:` shows the device's enrolled organization name and ID, or just the ID when the name cannot be resolved. The name lookup uses credentials for the device's cloud and organization, with a cached name as an offline fallback. The ID comes from the device's enrollment, regardless of your default organization.
+
+With `--json`, `organization` contains a string `id` and an optional `name`:
+
+```json
+{"organization": {"id": "42", "name": "Robotics"}}
+```
+
+The ID can be a tenant UUID or a legacy numeric ID encoded as a string. An unenrolled device shows `Organization: Not enrolled` and `"organization": null`. If enrollment information is unavailable, including on unsupported agents or Bluetooth connections, the field is omitted.
 
 ### CPU and memory output
 
