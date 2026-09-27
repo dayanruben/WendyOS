@@ -248,14 +248,12 @@ func (s *staging) readInto(h [32]byte, dst []byte) error {
 // containerd's per-ref lock rather than clobbering each other.
 //
 // verified reports whether this call itself read and hash-checked diffID's
-// chunks: false when the blob was already committed — either found by
-// OpenWriter before anything was read, or committed by a concurrent assembly
-// between this call's OpenWriter and its Commit — so nothing here confirms
-// this manifest's ranges against the blob. containerd's local store checks
-// the digest before it detects an existing target (plugins/content/local/
-// writer.go), so an AlreadyExists at Commit still means every byte this call
-// wrote hashed to diffID; only the leading bytes skipped as already-ingested
-// went unverified here.
+// chunks. False only when OpenWriter reports the blob already committed
+// before this call read or checked anything. True even when a concurrent
+// assembly commits the blob first and Commit then reports AlreadyExists:
+// containerd's local writer checks the digest before it detects the existing
+// target (plugins/content/local/writer.go), so that outcome still means every
+// byte this call wrote hashed to diffID.
 func (c *Client) writeAssembledLayer(ctx context.Context, diffID string, size int64, segs []assemblySegment) (verified bool, err error) {
 	dgst, err := digest.Parse(diffID)
 	if err != nil {
