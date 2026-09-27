@@ -2179,6 +2179,8 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// A build will run below (the no-build fast path returned above), so make
 	// sure the Apple Container system is up when --builder apple-container is
 	// explicit. This covers both the chunk-diff and the registry-push build.
+	// The emulation notice goes out now, before the build UI owns the terminal.
+	noteEmulatedBuild(platform, true)
 	if err := ensureAppleContainerSystemForBuilder(ctx, opts.builder, opts.yes); err != nil {
 		return err
 	}

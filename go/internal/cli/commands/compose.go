@@ -1390,6 +1390,9 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		cliLogln("%d of %d Compose services unchanged and already on device; skipping image preparation.", n, len(cfg.Services))
 	}
 
+	if len(jobs) > 0 {
+		noteEmulatedBuild(platform, false)
+	}
 	failedBuilds, preparedContent, err := buildComposeServicesParallel(ctx, conn, regPort, agentOS, opts.builder, platform, opts.chunking, jobs, opts.maxConcurrency, opts.quietBuild)
 	if err != nil {
 		return err
