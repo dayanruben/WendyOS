@@ -134,6 +134,44 @@ func TestChunkUploadConfigFor(t *testing.T) {
 			t.Fatalf("cfg = %+v, want gzip forced by the env override", cfg)
 		}
 	})
+
+	t.Run("a tunnel never resolves its Host", func(t *testing.T) {
+		// Save the original resolver and restore it after the test.
+		origResolver := registryIPResolver
+		t.Cleanup(func() { registryIPResolver = origResolver })
+
+		// Count calls to the resolver.
+		var resolveCallCount int
+		registryIPResolver = func(host string) string {
+			resolveCallCount++
+			return origResolver(host)
+		}
+
+		// Test 1: tunnel with display name as Host never calls resolver, gets gzip.
+		resolveCallCount = 0
+		conn := seeded(&grpcclient.AgentConnection{
+			Host:      "Ethan Nano",
+			Reconnect: func(context.Context) (*grpcclient.AgentConnection, error) { return nil, nil },
+		}, "0.19.3", "pk")
+		cfg := chunkUploadConfigFor(context.Background(), conn)
+		if resolveCallCount != 0 {
+			t.Fatalf("tunnel resolved its Host %d times, want 0", resolveCallCount)
+		}
+		if cfg.compressor != chunkupload.Gzip {
+			t.Fatalf("tunnel cfg = %+v, want gzip", cfg)
+		}
+
+		// Test 2: non-tunnel link-local host resolves once, sends uncompressed.
+		resolveCallCount = 0
+		conn2 := seeded(&grpcclient.AgentConnection{Host: "169.254.18.126"}, "0.19.3", "pk")
+		cfg2 := chunkUploadConfigFor(context.Background(), conn2)
+		if resolveCallCount != 1 {
+			t.Fatalf("non-tunnel link-local resolved %d times, want 1", resolveCallCount)
+		}
+		if cfg2.compressor != "" {
+			t.Fatalf("non-tunnel link-local cfg = %+v, want uncompressed", cfg2)
+		}
+	})
 }
 
 // TestChunkCompressionModeFromEnvWarnsOnceOnAnUnknownValue is M4: a typo'd

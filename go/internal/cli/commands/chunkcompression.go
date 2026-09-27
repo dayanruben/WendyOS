@@ -156,16 +156,21 @@ func chunkCompressionModeFromEnv() string {
 // chunkUploadConfigFor resolves the config for a push over conn. A failed
 // version probe leaves the OS version unknown, which picks gzip.
 //
-// directLink comes from isLinkLocalIP(resolveRegistryIP(conn.Host)) — the
-// same pair docker.go's Apple Container registry path already uses to tell a
-// direct device hop from a routed one. conn.Addr is not a cheaper substitute:
+// For non-tunnel connections, directLink comes from isLinkLocalIP(registryIPResolver(conn.Host)) —
+// the same pair docker.go's Apple Container registry path already uses to tell a
+// direct device hop from a routed one. For cloud tunnels (conn.Reconnect != nil),
+// conn.Host is the device's display name (e.g. "Ethan Nano"), not an address; the
+// lookup is skipped entirely because it would be doomed and the tunnel picks gzip
+// regardless, so directLink stays false.
+//
+// conn.Addr is not a cheaper substitute for directLink's computation:
 // it is set (grpcclient/client.go) to the exact dial string the caller
 // passed in, i.e. conn.Host plus a port, never a separately resolved IP, so
 // there is no second, already-resolved address to prefer over Host.
-// resolveRegistryIP itself costs no network round trip for the common direct
+// registryIPResolver itself costs no network round trip for the common direct
 // case: a USB-C NCM or bare-cable device's Host is already a link-local IP
 // literal, which netip.ParseAddr matches before any DNS lookup is attempted;
-// only a hostname target pays for the lookup resolveRegistryIP already makes
+// only a hostname target pays for the lookup registryIPResolver already makes
 // on that path today.
 //
 // Session-broker connections (conn.IsSessionProxy) need no special case:
@@ -175,9 +180,18 @@ func chunkCompressionModeFromEnv() string {
 // correctly report false (loopback is not link-local), falling back to gzip
 // exactly as the ruling requires for an unidentifiable device.
 func chunkUploadConfigFor(ctx context.Context, conn *grpcclient.AgentConnection) chunkUploadConfig {
+	isTunnel := conn.Reconnect != nil
+	// For a tunnel, conn.Host is the device's display name (e.g. "Ethan Nano"),
+	// not an address; resolveRegistryIP would run a doomed DNS lookup and mDNS
+	// browse (~200 ms) with no outcome change, since a tunnel picks gzip
+	// regardless. Skip it entirely for cloud tunnels.
+	var directLink bool
+	if !isTunnel {
+		directLink = isLinkLocalIP(registryIPResolver(conn.Host))
+	}
 	t := chunkUploadTarget{
-		tunnel:     conn.Reconnect != nil,
-		directLink: isLinkLocalIP(resolveRegistryIP(conn.Host)),
+		tunnel:     isTunnel,
+		directLink: directLink,
 	}
 	if v, err := agentVersionForRun(ctx, conn); err == nil {
 		t.osVersion, t.deviceKey = v.GetOsVersion(), deviceFingerprintKey(v)
@@ -187,6 +201,11 @@ func chunkUploadConfigFor(ctx context.Context, conn *grpcclient.AgentConnection)
 		return chunkUploadStalledRecently(key, now)
 	})
 }
+
+// registryIPResolver is the function used to resolve a registry host to an IP.
+// Tests swap it to observe/control resolution behavior. It defaults to
+// resolveRegistryIP.
+var registryIPResolver = resolveRegistryIP
 
 // chunkStallTestDir, when non-empty, overrides the stall memory's directory.
 var chunkStallTestDir string
