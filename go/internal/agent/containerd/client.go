@@ -374,10 +374,13 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		return nil, fmt.Errorf("connecting to containerd at %s: %w", address, err)
 	}
 
-	chunkIndexPath := "/var/lib/wendy/chunk-index.json"
-	idx, err := NewChunkIndex(chunkIndexPath)
+	idx, err := OpenChunkIndex(defaultChunkIndexPath, legacyChunkIndexPath, logger)
 	if err != nil {
-		return nil, fmt.Errorf("loading chunk index: %w", err)
+		// Chunk dedup is an optimization. A device whose /var/lib/wendy cannot
+		// hold the index (full or read-only) must still run, stop and delete
+		// apps — deleting them is how a full disk gets space back.
+		logger.Warn("Chunk index unavailable; chunk-diff deploys will re-send every chunk", zap.Error(err))
+		idx = &ChunkIndex{}
 	}
 
 	snapshotter := probeSnapshotter(logger)
@@ -422,6 +425,11 @@ func (c *Client) Close() error {
 	// them. Explicit stop/delete paths remain the lifecycle boundary.
 	if c.proxyManager != nil {
 		c.proxyManager.StopAll()
+	}
+	if c.chunkIndex != nil {
+		if err := c.chunkIndex.Close(); err != nil {
+			c.logger.Warn("Closing chunk index failed", zap.Error(err))
+		}
 	}
 	return c.client.Close()
 }

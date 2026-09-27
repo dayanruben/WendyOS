@@ -12,6 +12,7 @@ import (
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/errdefs"
 	digest "github.com/opencontainers/go-digest"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -162,16 +163,15 @@ func newChunkAvailabilityClient(t *testing.T, cs content.Store, index *ChunkInde
 
 func TestMissingChunksPrunesIndexEntriesWhoseBlobWasGarbageCollected(t *testing.T) {
 	dir := t.TempDir()
-	indexPath := filepath.Join(dir, "index.json")
-	index, err := NewChunkIndex(indexPath)
+	indexPath := filepath.Join(dir, "chunk-index.db")
+	index, err := OpenChunkIndex(indexPath, "", zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
 	data := []byte("chunk whose indexed layer was garbage collected")
 	hash := sha256.Sum256(data)
 	staleBlob := digest.FromString("stale uncompressed layer")
-	index.AddLayer(staleBlob.String(), []chunk.Ref{{Hash: hash, Len: uint64(len(data))}})
-	if err := index.Save(); err != nil {
+	if err := index.AddLayer(staleBlob.String(), []chunk.Ref{{Hash: hash, Len: uint64(len(data))}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,26 +187,29 @@ func TestMissingChunksPrunesIndexEntriesWhoseBlobWasGarbageCollected(t *testing.
 	if _, ok := index.Has(hash); ok {
 		t.Fatal("stale chunk entry was not pruned")
 	}
+	if err := index.Close(); err != nil {
+		t.Fatal(err)
+	}
 
-	reloaded, err := NewChunkIndex(indexPath)
+	reopened, err := OpenChunkIndex(indexPath, "", zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := reloaded.Has(hash); ok {
+	defer reopened.Close()
+	if _, ok := reopened.Has(hash); ok {
 		t.Fatal("pruned chunk entry remained in the persisted index")
 	}
 }
 
 func TestMissingChunksKeepsIndexEntryBackedByContentBlob(t *testing.T) {
 	dir := t.TempDir()
-	index, err := NewChunkIndex(filepath.Join(dir, "index.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	index := newTestChunkIndex(t)
 	data := []byte("available indexed chunk")
 	hash := sha256.Sum256(data)
 	blob := digest.FromString("available uncompressed layer")
-	index.AddLayer(blob.String(), []chunk.Ref{{Hash: hash, Offset: 4, Len: uint64(len(data))}})
+	if err := index.AddLayer(blob.String(), []chunk.Ref{{Hash: hash, Offset: 4, Len: uint64(len(data))}}); err != nil {
+		t.Fatal(err)
+	}
 
 	cs := &chunkAvailabilityContentStore{blobs: map[digest.Digest]content.Info{
 		blob: {Digest: blob, Size: int64(len(data)) + 4},

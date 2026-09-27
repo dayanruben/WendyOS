@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/errdefs"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -182,72 +183,77 @@ func (c *Client) MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]by
 	// layers because nearly the entire layer may be streamed before the stale
 	// chunk is encountered.
 	nsCtx := c.withNamespace(ctx)
-	indexed := make([]chunkLoc, 0, len(hashes))
+	candidates := make([][32]byte, 0, len(hashes))
 	for _, h := range hashes {
-		if c.staging.has(h) {
-			continue
-		}
-		if loc, ok := c.chunkIndex.Has(h); ok {
-			indexed = append(indexed, loc)
+		if !c.staging.has(h) {
+			candidates = append(candidates, h)
 		}
 	}
+	locs, found, err := c.chunkIndex.Lookup(candidates)
+	if err != nil {
+		return nil, fmt.Errorf("reading chunk index: %w", err)
+	}
 
+	var cs content.Store
 	blobSizes := make(map[string]uint64)
 	invalidBlobs := make(map[string]struct{})
-	if len(indexed) > 0 {
-		cs := c.client.ContentStore()
-		for _, loc := range indexed {
-			if _, checked := blobSizes[loc.Blob]; checked {
-				continue
-			}
-			if _, invalid := invalidBlobs[loc.Blob]; invalid {
-				continue
-			}
-
-			dgst, err := digest.Parse(loc.Blob)
-			if err != nil {
-				invalidBlobs[loc.Blob] = struct{}{}
-				continue
-			}
-			info, err := cs.Info(nsCtx, dgst)
-			if err != nil {
-				if errdefs.IsNotFound(err) {
-					invalidBlobs[loc.Blob] = struct{}{}
-					continue
-				}
-				return nil, fmt.Errorf("checking indexed chunk blob %s: %w", loc.Blob, err)
-			}
-			if info.Size < 0 {
-				invalidBlobs[loc.Blob] = struct{}{}
-				continue
-			}
-			blobSizes[loc.Blob] = uint64(info.Size)
+	for i, loc := range locs {
+		if !found[i] {
+			continue
 		}
+		if _, checked := blobSizes[loc.Blob]; checked {
+			continue
+		}
+		if _, invalid := invalidBlobs[loc.Blob]; invalid {
+			continue
+		}
+		dgst, err := digest.Parse(loc.Blob)
+		if err != nil {
+			invalidBlobs[loc.Blob] = struct{}{}
+			continue
+		}
+		if cs == nil {
+			cs = c.client.ContentStore()
+		}
+		info, err := cs.Info(nsCtx, dgst)
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				invalidBlobs[loc.Blob] = struct{}{}
+				continue
+			}
+			return nil, fmt.Errorf("checking indexed chunk blob %s: %w", loc.Blob, err)
+		}
+		if info.Size < 0 {
+			invalidBlobs[loc.Blob] = struct{}{}
+			continue
+		}
+		blobSizes[loc.Blob] = uint64(info.Size)
 	}
 
 	// A malformed range means the persisted index cannot safely describe that
 	// blob. Drop all of its entries so every affected chunk is requested again.
-	for _, loc := range indexed {
+	for i, loc := range locs {
+		if !found[i] {
+			continue
+		}
 		size, valid := blobSizes[loc.Blob]
 		if !valid || loc.Offset > size || loc.Len > size-loc.Offset {
 			invalidBlobs[loc.Blob] = struct{}{}
 		}
 	}
-	if len(invalidBlobs) > 0 {
-		for blob := range invalidBlobs {
-			c.chunkIndex.Drop(blob)
-		}
-		if err := c.chunkIndex.Save(); err != nil {
-			return nil, fmt.Errorf("saving pruned chunk index: %w", err)
+	for blob := range invalidBlobs {
+		if err := c.chunkIndex.Drop(blob); err != nil {
+			return nil, fmt.Errorf("pruning chunk index: %w", err)
 		}
 	}
 
 	var missing [][32]byte
-	for _, h := range hashes {
-		if c.staging.has(h) {
+	for i, h := range candidates {
+		if !found[i] {
+			missing = append(missing, h)
 			continue
 		}
-		if _, ok := c.chunkIndex.Has(h); !ok {
+		if _, invalid := invalidBlobs[locs[i].Blob]; invalid {
 			missing = append(missing, h)
 		}
 	}
@@ -305,7 +311,9 @@ func (c *Client) readIndexedChunk(ctx context.Context, loc chunkLoc) ([]byte, er
 	ra, err := cs.ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			c.chunkIndex.Drop(loc.Blob)
+			if derr := c.chunkIndex.Drop(loc.Blob); derr != nil {
+				c.logger.Warn("Dropping stale chunk-index entries failed", zap.String("blob", loc.Blob), zap.Error(derr))
+			}
 			return nil, nil
 		}
 		return nil, err
@@ -440,8 +448,7 @@ func (c *Client) indexLayerBlob(ctx context.Context, diffID string) error {
 	if err != nil {
 		return err
 	}
-	c.chunkIndex.AddLayer(diffID, refs)
-	if err := c.chunkIndex.Save(); err != nil {
+	if err := c.chunkIndex.AddLayer(diffID, refs); err != nil {
 		c.logger.Warn("failed to persist chunk index", zap.Error(err))
 	}
 	return nil
