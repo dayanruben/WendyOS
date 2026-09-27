@@ -342,14 +342,9 @@ func TestMissingChunksSurvivesAFailedDrop(t *testing.T) {
 	}
 }
 
-// newLocalStoreClient builds a Client over containerd's on-disk content store,
-// so assembly runs the real WriteBlob/Commit path without a daemon.
-func newLocalStoreClient(t *testing.T) (*Client, content.Store) {
+// newStoreClient builds a Client over the provided content store.
+func newStoreClient(t *testing.T, store content.Store) *Client {
 	t.Helper()
-	store, err := local.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	client, err := containerdclient.New("",
 		containerdclient.WithDefaultNamespace("default"),
 		containerdclient.WithServices(containerdclient.WithContentStore(store)),
@@ -364,7 +359,18 @@ func newLocalStoreClient(t *testing.T) (*Client, content.Store) {
 		namespace:  "default",
 		chunkIndex: newTestChunkIndex(t),
 		staging:    newStaging(filepath.Join(t.TempDir(), "staging")),
-	}, store
+	}
+}
+
+// newLocalStoreClient builds a Client over containerd's on-disk content store,
+// so assembly runs the real WriteBlob/Commit path without a daemon.
+func newLocalStoreClient(t *testing.T) (*Client, content.Store) {
+	t.Helper()
+	store, err := local.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newStoreClient(t, store), store
 }
 
 // TestAssembleLayerFromChunksIndexesTheManifestRanges proves the index entries
