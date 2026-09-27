@@ -152,7 +152,7 @@ func TestRunDeviceCachePruneRPCReportsRemovedStaging(t *testing.T) {
 	}
 	const want = "Released: 1.0 kB across 1 layer blobs and 0 snapshots.\n" +
 		"Containerd reclaimed 5.0 kB on the container storage filesystem.\n" +
-		"Removed 12 staged chunk(s) (786.4 kB) left by interrupted deploys.\n"
+		"Removed 12 staged chunk(s) (786.4 kB) left over from earlier deploys and builds.\n"
 	if out.String() != want {
 		t.Fatalf("output = %q, want %q", out.String(), want)
 	}
@@ -170,7 +170,7 @@ func TestRunDeviceCachePruneRPCDryRunReportsStagingWhenNoPinIsEligible(t *testin
 		t.Fatalf("runDeviceCachePruneRPC: %v", err)
 	}
 	const want = "No cache entries older than 24h are eligible for pruning.\n" +
-		"Would remove 3 staged chunk(s) (3.0 kB) left by interrupted deploys.\n"
+		"Would remove 3 staged chunk(s) (3.0 kB) left over from earlier deploys and builds.\n"
 	if out.String() != want {
 		t.Fatalf("output = %q, want %q", out.String(), want)
 	}
@@ -182,9 +182,23 @@ func TestRunDeviceCachePruneRPCReportsStagingInUse(t *testing.T) {
 	if err := runDeviceCachePruneRPC(context.Background(), fake, &out, &bytes.Buffer{}, devicePruneOptions{}); err != nil {
 		t.Fatalf("runDeviceCachePruneRPC: %v", err)
 	}
-	const want = "Staged chunk uploads were left alone: a deploy is using them.\n"
-	if !strings.HasSuffix(out.String(), want) {
-		t.Fatalf("output = %q, want it to end with %q", out.String(), want)
+	const want = "No cache entries older than 24h are eligible for pruning.\n" +
+		"Staged chunk uploads were left alone: a deploy or build is using the device's chunk store.\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRunDeviceCachePruneRPCDryRunReportsStagingInUse(t *testing.T) {
+	fake := &fakeDeviceCachePruneClient{response: &agentpbv2.PruneCacheResponse{MinimumAgeSeconds: 86400, StagingInUse: true}}
+	var out bytes.Buffer
+	if err := runDeviceCachePruneRPC(context.Background(), fake, &out, &bytes.Buffer{}, devicePruneOptions{dryRun: true}); err != nil {
+		t.Fatalf("runDeviceCachePruneRPC: %v", err)
+	}
+	const want = "No cache entries older than 24h are eligible for pruning.\n" +
+		"Staged chunk uploads would be left alone: a deploy or build is using the device's chunk store.\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
 	}
 }
 
@@ -217,6 +231,29 @@ func TestRunDeviceCachePruneRPCJSONIncludesChunkStore(t *testing.T) {
 		t.Fatalf("JSON: %v", err)
 	}
 	if got["stagedChunks"] != float64(12) || got["stagedBytes"] != float64(786_432) || got["stagingInUse"] != false || got["chunkIndexBlobsDropped"] != float64(3) {
+		t.Fatalf("JSON = %v", got)
+	}
+}
+
+// TestRunDeviceCachePruneRPCDryRunJSONNullsChunkIndexBlobsDropped: a dry run
+// never reconciles the index, so its 0 is not a prediction; like
+// reclaimedBytes, the field is null rather than a number.
+func TestRunDeviceCachePruneRPCDryRunJSONNullsChunkIndexBlobsDropped(t *testing.T) {
+	fake := &fakeDeviceCachePruneClient{response: &agentpbv2.PruneCacheResponse{
+		MinimumAgeSeconds: 86400, StagedChunks: 12, StagedBytes: 786_432,
+	}}
+	var out bytes.Buffer
+	if err := runDeviceCachePruneRPC(context.Background(), fake, &out, &bytes.Buffer{}, devicePruneOptions{dryRun: true, jsonOut: true}); err != nil {
+		t.Fatalf("runDeviceCachePruneRPC: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if dropped, ok := got["chunkIndexBlobsDropped"]; !ok || dropped != nil {
+		t.Fatalf("chunkIndexBlobsDropped = %v (present %v), want null on a dry run", dropped, ok)
+	}
+	if got["stagedChunks"] != float64(12) || got["stagedBytes"] != float64(786_432) || got["reclaimedBytes"] != nil {
 		t.Fatalf("JSON = %v", got)
 	}
 }

@@ -950,16 +950,19 @@ type PruneCacheResponse struct {
 	// containerd GC pass the agent forces after releasing pins. Absent on
 	// dry runs and when the agent could not force GC or measure the delta.
 	ReclaimedBytes *uint64 `protobuf:"varint,6,opt,name=reclaimed_bytes,json=reclaimedBytes,proto3,oneof" json:"reclaimed_bytes,omitempty"`
-	// Chunk-diff uploads staged on the device but never assembled
-	// (interrupted or failed deploys) that were (or would be, for dry_run)
-	// removed. The pin age does not apply to them. WDY-3217.
+	// Chunk uploads left staged on the device by earlier deploys and builds
+	// (interrupted deploys, remote build contexts, and every deploy while the
+	// chunk index is disabled) that were (or would be, for dry_run) removed.
+	// The pin age does not apply to them. WDY-3217.
 	StagedChunks uint64 `protobuf:"varint,7,opt,name=staged_chunks,json=stagedChunks,proto3" json:"staged_chunks,omitempty"`
 	StagedBytes  uint64 `protobuf:"varint,8,opt,name=staged_bytes,json=stagedBytes,proto3" json:"staged_bytes,omitempty"`
-	// A deploy used the chunk store within the last minute, so the staged
-	// chunks were left alone.
+	// A deploy or build was using the chunk store (a chunk RPC within the
+	// last minute, or an image preparation or layer assembly in flight), so
+	// the staged chunks were (or would be, for dry_run) left alone.
 	StagingInUse bool `protobuf:"varint,9,opt,name=staging_in_use,json=stagingInUse,proto3" json:"staging_in_use,omitempty"`
 	// Layer blobs whose chunk-index entries were dropped because containerd
-	// no longer holds them, counted after the forced GC. WDY-3212.
+	// no longer holds them, counted after the forced GC. Zero on dry runs and
+	// while staging_in_use, when the agent defers this reconcile. WDY-3212.
 	ChunkIndexBlobsDropped uint64 `protobuf:"varint,10,opt,name=chunk_index_blobs_dropped,json=chunkIndexBlobsDropped,proto3" json:"chunk_index_blobs_dropped,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache

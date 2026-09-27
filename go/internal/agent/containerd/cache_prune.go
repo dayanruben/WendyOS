@@ -57,12 +57,12 @@ type snapshotCacheCandidate struct {
 // delta on the container-storage filesystem as ReclaimedBytes.
 //
 // Every prune, dry or not, then extends to the chunk store (pruneChunkStore):
-// staged chunks of interrupted deploys are removed (or counted) while no
-// deploy is using the store, and a real prune of an idle store drops the
-// chunk-index entries of the blobs the GC collected (while the store is in
-// use, that waits for idle maintenance or the next prune). The pin age does
-// not apply to staged chunks; the chunk store's own activity tracking
-// protects a deploy in flight.
+// staged chunks left over from earlier deploys and builds are removed (or
+// counted) while no deploy or build is using the store, and a real prune of
+// an idle store drops the chunk-index entries of the blobs the GC collected
+// (while the store is in use, that waits for idle maintenance or the next
+// prune). The pin age does not apply to staged chunks; the chunk store's own
+// activity tracking protects a deploy in flight.
 //
 // c.mu is held only around the label walk/update (pruneCacheRoots) and, on a
 // real (non-dry) run, the "before" free-space measurement taken immediately
