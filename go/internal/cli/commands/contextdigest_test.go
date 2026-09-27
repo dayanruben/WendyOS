@@ -320,6 +320,38 @@ func TestContextDigestCacheIsBounded(t *testing.T) {
 	}
 }
 
+// TestContextDigestCacheDropsAnOversizedFile: a cache file over
+// contextDigestMaxFileBytes is never read back, so save removes the old one
+// rather than write a file that only costs a rewrite on every run.
+func TestContextDigestCacheDropsAnOversizedFile(t *testing.T) {
+	requireFileIdentity(t)
+	useContextDigestCacheDir(t)
+	cwd := t.TempDir()
+	writeFile(t, cwd, "app.py", "print('v1')\n")
+	p, _ := contextDigestCachePath(cwd, filepath.Join(cwd, "Dockerfile"))
+	digestOf(t, cwd, "app.py", settledNow())
+	if !fileExists(p) {
+		t.Fatal("test setup: no cache was written")
+	}
+
+	orig := contextDigestMaxFileBytes
+	contextDigestMaxFileBytes = 64 // below any one-entry cache
+	t.Cleanup(func() { contextDigestMaxFileBytes = orig })
+	if _, reads := digestOf(t, cwd, "app.py", settledNow()); reads != 1 {
+		t.Fatalf("an oversized cache was used: reads %d", reads)
+	}
+	if fileExists(p) {
+		t.Fatal("an oversized cache file was kept")
+	}
+
+	fresh := t.TempDir()
+	writeFile(t, fresh, "app.py", "print('v1')\n")
+	digestOf(t, fresh, "app.py", settledNow())
+	if p, _ := contextDigestCachePath(fresh, filepath.Join(fresh, "Dockerfile")); fileExists(p) {
+		t.Fatal("an oversized cache file was written")
+	}
+}
+
 // TestContextDigestCacheConcurrentRuns: runs racing on one project (two
 // terminals, or Compose services sharing a context) leave a valid cache.
 func TestContextDigestCacheConcurrentRuns(t *testing.T) {

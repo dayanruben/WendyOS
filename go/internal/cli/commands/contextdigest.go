@@ -35,9 +35,9 @@ import (
 // different ignore files, so they keep separate caches instead of evicting
 // each other's entries.
 //
-// Bounds: at most contextDigestMaxEntries entries per cache file (a larger
-// context is hashed without a cache), and at most contextDigestMaxFiles cache
-// files, least recently used first out.
+// Bounds: at most contextDigestMaxEntries entries and contextDigestMaxFileBytes
+// bytes per cache file (a larger context is hashed without a cache), and at
+// most contextDigestMaxFiles cache files, least recently used first out.
 //
 // Concurrency: a cache file is replaced by an atomic rename, so a reader
 // sees either the old or the new file, never a torn one. Concurrent runs on
@@ -48,11 +48,14 @@ import (
 const (
 	contextDigestCacheVersion = 1
 	contextDigestMaxFiles     = 64
-	contextDigestMaxFileBytes = 32 << 20
 )
 
-// contextDigestMaxEntries is a var so the size-bound test can lower it.
-var contextDigestMaxEntries = 100_000
+// contextDigestMaxEntries and contextDigestMaxFileBytes are vars so the
+// size-bound tests can lower them.
+var (
+	contextDigestMaxEntries   = 100_000
+	contextDigestMaxFileBytes = int64(32 << 20)
+)
 
 // contextDigestCacheTestDir, when non-empty, overrides the cache directory.
 var contextDigestCacheTestDir string
@@ -236,6 +239,12 @@ func (c *contextDigestCache) save() {
 	}
 	data, err := json.Marshal(contextDigestFile{Version: contextDigestCacheVersion, Entries: c.next})
 	if err != nil {
+		return
+	}
+	if int64(len(data)) > contextDigestMaxFileBytes {
+		// openContextDigestCache would never read it back; writing it would
+		// only cost a rewrite on every run. Drop the old one too.
+		_ = os.Remove(c.path)
 		return
 	}
 	dir := filepath.Dir(c.path)
