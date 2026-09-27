@@ -165,6 +165,10 @@ type Client struct {
 	// following AssembleLayerFromChunks consumes them.
 	chunkIndex *ChunkIndex
 	staging    *staging
+	// chunkActivity and chunkSweepMu keep maintenance from sweeping staged
+	// chunks a deploy relies on; see chunkmaint.go.
+	chunkActivity chunkActivity
+	chunkSweepMu  sync.RWMutex
 
 	// snapshotter is the containerd snapshotter to use for new snapshots.
 	// Defaults to "overlayfs" when supported; falls back to "native" on kernels

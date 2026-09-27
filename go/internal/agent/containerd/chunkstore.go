@@ -176,6 +176,12 @@ func (s *chunkStream) Read(p []byte) (int, error) {
 }
 
 func (c *Client) MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]byte, error) {
+	// Maintenance never sweeps staged chunks while a query holds this: a chunk
+	// reported present stays present for the assembly that relies on it.
+	c.chunkSweepMu.RLock()
+	defer c.chunkSweepMu.RUnlock()
+	c.chunkActivity.touch()
+
 	// The chunk index outlives containerd's content GC. Validate each backing
 	// blob once before reporting its chunks as present; otherwise a stale index
 	// entry makes the CLI skip the upload and assembly fails much later when it
@@ -287,6 +293,12 @@ func (c *Client) PresentLayers(ctx context.Context, diffIDs []string) (map[strin
 }
 
 func (c *Client) StageChunk(_ context.Context, h [32]byte, data []byte) error {
+	// Maintenance never sweeps staged chunks while a stage holds this: see
+	// MissingChunks above.
+	c.chunkSweepMu.RLock()
+	defer c.chunkSweepMu.RUnlock()
+	c.chunkActivity.touch()
+
 	if len(data) > maxStagedChunkBytes {
 		return status.Errorf(codes.ResourceExhausted, "chunk too large: %d > %d bytes", len(data), maxStagedChunkBytes)
 	}
@@ -353,6 +365,7 @@ func (c *Client) chunkLen(h [32]byte) (int64, bool) {
 // caller reassembling something it will then execute — a build context — gets
 // either every requested byte or an error, never a silently short prefix.
 func (c *Client) OpenChunkStream(ctx context.Context, hashes [][32]byte) io.Reader {
+	c.chunkActivity.touch()
 	nsCtx := c.withNamespace(ctx)
 	src := func(h [32]byte) ([]byte, error) {
 		if b, err := c.staging.read(h); err == nil {
@@ -373,6 +386,7 @@ func (c *Client) OpenChunkStream(ctx context.Context, hashes [][32]byte) io.Read
 }
 
 func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, hashes [][32]byte) error {
+	defer c.chunkActivity.begin()()
 	nsCtx := c.withNamespace(ctx)
 
 	// Fast path: if the (uncompressed) layer blob already exists in the content
