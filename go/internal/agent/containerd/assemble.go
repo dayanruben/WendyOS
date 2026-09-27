@@ -3,6 +3,7 @@ package containerd
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -217,14 +218,22 @@ func (r *segmentReader) readBlob(blob string, off uint64, dst []byte) error {
 		}
 		r.readers[blob] = ra
 	}
-	n, err := ra.ReadAt(dst, int64(off))
+	if err := readFullAt(ra, dst, int64(off)); err != nil {
+		return fmt.Errorf("reading %d bytes at %d of %s: %w", len(dst), off, blob, err)
+	}
+	return nil
+}
+
+// readFullAt fills dst from ra at off.
+func readFullAt(ra content.ReaderAt, dst []byte, off int64) error {
+	n, err := ra.ReadAt(dst, off)
 	if n == len(dst) {
 		return nil // a full read may still report io.EOF at the blob's end
 	}
 	if err == nil {
 		err = io.ErrUnexpectedEOF
 	}
-	return fmt.Errorf("reading %d bytes at %d of %s: %w", len(dst), off, blob, err)
+	return err
 }
 
 // readInto fills dst with the staged chunk h. A chunk that is not staged
@@ -247,13 +256,20 @@ func (s *staging) readInto(h [32]byte, dst []byte) error {
 // already holds, so concurrent assemblies of the same layer still serialize on
 // containerd's per-ref lock rather than clobbering each other.
 //
-// verified reports whether this call itself read and hash-checked diffID's
-// chunks. False only when OpenWriter reports the blob already committed
-// before this call read or checked anything. True even when a concurrent
-// assembly commits the blob first and Commit then reports AlreadyExists:
-// containerd's local writer checks the digest before it detects the existing
-// target (plugins/content/local/writer.go), so that outcome still means every
-// byte this call wrote hashed to diffID.
+// verified reports that every chunk of the manifest was hash-checked against
+// the bytes now committed as diffID: the reader checked each chunk it wrote,
+// and checkResumedPrefix read back and checked the prefix the reader skipped.
+// Only then may the manifest's ranges be indexed. It is false, with a nil
+// error, whenever this call committed nothing it checked:
+//   - OpenWriter or Commit reports the blob already exists. A concurrent
+//     assembly committed it first, and over the proxy the content server
+//     answers a Commit with AlreadyExists before it hashes a byte of this
+//     ingest, so the outcome says nothing about this manifest.
+//   - The resumed prefix read back from the blob does not match the manifest,
+//     or could not be read.
+//
+// The blob itself is valid either way: its digest was verified when it was
+// committed. Only the manifest is unproven.
 func (c *Client) writeAssembledLayer(ctx context.Context, diffID string, size int64, segs []assemblySegment) (verified bool, err error) {
 	dgst, err := digest.Parse(diffID)
 	if err != nil {
@@ -295,10 +311,94 @@ func (c *Client) writeAssembledLayer(ctx context.Context, diffID string, size in
 	if err := w.Commit(ctx, size, dgst, content.WithLabels(labels)); err != nil {
 		if errdefs.IsAlreadyExists(err) {
 			c.logger.Debug("Layer already exists in content store", zap.String("digest", diffID))
-			return true, nil
+			return false, nil
 		}
 		return false, fmt.Errorf("committing layer %s: %w", diffID, err)
 	}
 	c.logger.Info("Wrote layer to content store", zap.String("digest", diffID), zap.Int64("size", size))
+	if st.Offset > 0 {
+		return c.checkResumedPrefix(ctx, dgst, segs, st.Offset), nil
+	}
 	return true, nil
+}
+
+// errPrefixMismatch marks a resumed prefix that does not hold the manifest's
+// chunks.
+var errPrefixMismatch = errors.New("resumed prefix does not match the manifest")
+
+// checkResumedPrefix reports whether the first prefix bytes of the committed
+// blob dgst hold the chunks segs names there. The reader skipped those bytes:
+// an earlier attempt wrote them, or, under containerd's shared-content policy,
+// the writer already held a blob another namespace committed. Commit vouched
+// for them as part of the blob, not as this manifest's chunks. So every chunk
+// that starts in the prefix is read back and hash-checked, in pieces of at most
+// maxSegmentBytes. A mismatch or a failed read is logged and reported false:
+// the blob is valid, but the manifest must not be indexed.
+func (c *Client) checkResumedPrefix(ctx context.Context, dgst digest.Digest, segs []assemblySegment, prefix int64) bool {
+	err := c.verifyPrefix(ctx, dgst, segs, prefix)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, errPrefixMismatch):
+		c.logger.Warn("Resumed layer prefix does not match its chunk manifest; not indexing it",
+			zap.String("digest", dgst.String()), zap.Int64("resumed_bytes", prefix), zap.Error(err))
+	default:
+		c.logger.Warn("Could not read back a resumed layer prefix; not indexing it",
+			zap.String("digest", dgst.String()), zap.Int64("resumed_bytes", prefix), zap.Error(err))
+	}
+	return false
+}
+
+// verifyPrefix checks the chunks of segs that start in the first prefix bytes
+// of the blob dgst against their hashes; see checkResumedPrefix.
+func (c *Client) verifyPrefix(ctx context.Context, dgst digest.Digest, segs []assemblySegment, prefix int64) error {
+	ra, err := c.client.ContentStore().ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
+	if err != nil {
+		return fmt.Errorf("opening committed layer: %w", err)
+	}
+	defer ra.Close()
+	buf := make([]byte, maxSegmentBytes)
+
+	var (
+		start   int64 // offset of the pending piece in the blob
+		pending []assemblyChunk
+		size    uint64 // bytes pending
+	)
+	check := func() error {
+		piece := buf[:size]
+		if err := readFullAt(ra, piece, start); err != nil {
+			return fmt.Errorf("reading %d bytes at %d of the committed layer: %w", size, start, err)
+		}
+		var off uint64
+		for _, ch := range pending {
+			if sha256.Sum256(piece[off:off+ch.len]) != ch.hash {
+				return fmt.Errorf("%w: chunk %x at %d", errPrefixMismatch, ch.hash, start+int64(off))
+			}
+			off += ch.len
+		}
+		start += int64(size)
+		pending, size = pending[:0], 0
+		return nil
+	}
+	pos := int64(0) // offset of the next chunk in the blob
+chunks:
+	for _, seg := range segs {
+		for _, ch := range seg.chunks {
+			if pos >= prefix {
+				break chunks
+			}
+			if size+ch.len > maxSegmentBytes {
+				if err := check(); err != nil {
+					return err
+				}
+			}
+			pending = append(pending, ch)
+			size += ch.len
+			pos += int64(ch.len)
+		}
+	}
+	if size == 0 {
+		return nil
+	}
+	return check()
 }

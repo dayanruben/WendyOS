@@ -430,24 +430,19 @@ func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, has
 	// CLI's MissingChunks, already counted them present. When this returns
 	// early, retire and the sweep reclaim them.
 	if !verified {
-		// A concurrent assembly of the same layer committed the blob first, so
-		// nothing here checked this manifest against it. The assembly that
-		// wrote the blob indexed it.
+		// Nothing proved that this manifest describes the committed blob: a
+		// concurrent assembly of the same layer committed it first, or the
+		// prefix this call resumed does not match. Indexing the manifest
+		// would send later assemblies to ranges that fail their hashes.
 		return nil
 	}
 
 	// Index the new blob from its manifest. Commit verified the blob digest and
 	// the segment reader verified each chunk's hash as it read it, so these
 	// ranges are exact; re-reading and re-chunking the blob to rediscover them
-	// cost ~1 s per 430 MB on an Orin Nano (WDY-3214).
-	//
-	// One residual: when writeAssembledLayer resumes an interrupted write of
-	// the same layer, the reader skips the prefix the ingest already holds
-	// without reading it. So neither those chunks' hashes nor the manifest's
-	// ranges there are checked; the blob digest vouches for the earlier
-	// write's bytes, not for this manifest. Every read re-verifies a chunk's
-	// hash, so a wrong entry makes an assembly fail rather than use wrong
-	// bytes, until the blob is collected.
+	// cost ~1 s per 430 MB on an Orin Nano (WDY-3214). A resumed prefix, which
+	// the reader skips, is read back from the blob and checked, so the index
+	// never records a range this call did not verify.
 	if err := c.chunkIndex.AddLayer(diffID, refs); err != nil {
 		c.logger.Warn("failed to index reassembled layer", zap.String("diff_id", diffID), zap.Error(err))
 		return nil
