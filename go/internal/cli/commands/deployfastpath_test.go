@@ -3,6 +3,7 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -203,6 +204,123 @@ func TestComputeBuildInputHash_FollowsASymlinkedContextRoot(t *testing.T) {
 	}
 }
 
+// TestComputeBuildInputHash_TracksSpecialModeBits: COPY keeps setuid, setgid
+// and sticky along with the permission bits, so chmod u+s must change the
+// hash.
+func TestComputeBuildInputHash_TracksSpecialModeBits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no setuid bit")
+	}
+	useContextDigestCacheDir(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile", "FROM scratch\nCOPY . /app\n")
+	writeFile(t, dir, "tool", "#!/bin/sh\n")
+	p := filepath.Join(dir, "tool")
+	if err := os.Chmod(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := hashOrFatal(t, dir, nil)
+	if err := os.Chmod(p, 0o755|os.ModeSetuid); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(p); err != nil || info.Mode()&os.ModeSetuid == 0 {
+		t.Skipf("cannot set the setuid bit here (%v)", err)
+	}
+	if got := hashOrFatal(t, dir, nil); got == base {
+		t.Fatal("chmod u+s did not change the hash")
+	}
+}
+
+// TestComputeBuildInputHash_TracksSymlinks: COPY copies a symlink as a
+// symlink, so retargeting one changes the image even though no file changed.
+func TestComputeBuildInputHash_TracksSymlinks(t *testing.T) {
+	useContextDigestCacheDir(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile", "FROM scratch\nCOPY . /app\n")
+	writeFile(t, dir, "config/v1.yaml", "mode: a\n")
+	writeFile(t, dir, "config/v2.yaml", "mode: b\n")
+	link := filepath.Join(dir, "config", "current.yaml")
+	if err := os.Symlink("v1.yaml", link); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+	base := hashOrFatal(t, dir, nil)
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("v2.yaml", link); err != nil {
+		t.Fatal(err)
+	}
+	if got := hashOrFatal(t, dir, nil); got == base {
+		t.Fatal("retargeting a symlink in the context did not change the hash")
+	}
+}
+
+// TestComputeBuildInputHash_TracksEmptyDirectories: COPY creates the empty
+// directories it finds, with their mode bits, so adding one or changing its
+// mode changes the image. An ignored one does not.
+func TestComputeBuildInputHash_TracksEmptyDirectories(t *testing.T) {
+	useContextDigestCacheDir(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile", "FROM scratch\nCOPY . /app\n")
+	writeFile(t, dir, ".dockerignore", "cache/\n")
+	writeFile(t, dir, "app.py", "print('hi')\n")
+	base := hashOrFatal(t, dir, nil)
+
+	if err := os.Mkdir(filepath.Join(dir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := hashOrFatal(t, dir, nil); got != base {
+		t.Fatal("adding an ignored empty directory changed the hash")
+	}
+	uploads := filepath.Join(dir, "uploads")
+	if err := os.Mkdir(uploads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withUploads := hashOrFatal(t, dir, nil)
+	if withUploads == base {
+		t.Fatal("adding an empty directory did not change the hash")
+	}
+	if runtime.GOOS == "windows" {
+		return // no directory mode bits to change
+	}
+	if err := os.Chmod(uploads, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := hashOrFatal(t, dir, nil); got == withUploads {
+		t.Fatal("chmod on a directory did not change the hash")
+	}
+}
+
+// TestComputeBuildInputHash_ArgAndEnvLinesAreUnambiguous: a value holding a
+// newline or an '=' must not be able to spell another set of args or env.
+func TestComputeBuildInputHash_ArgAndEnvLinesAreUnambiguous(t *testing.T) {
+	useContextDigestCacheDir(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile", "FROM scratch\n")
+	hash := func(args map[string]string, env []string) string {
+		t.Helper()
+		h, err := computeBuildInputHash(dir, "", "linux/arm64", "", args, env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	for _, tc := range []struct {
+		name         string
+		args1, args2 map[string]string
+	}{
+		{"newline in a value", map[string]string{"A": "1\narg B=2"}, map[string]string{"A": "1", "B": "2"}},
+		{"'=' in a key", map[string]string{"A=1": "2"}, map[string]string{"A": "1=2"}},
+	} {
+		if hash(tc.args1, nil) == hash(tc.args2, nil) {
+			t.Errorf("build args %q and %q hash the same (%s)", tc.args1, tc.args2, tc.name)
+		}
+	}
+	if hash(nil, []string{"A=1\nenv B=2"}) == hash(nil, []string{"A=1", "B=2"}) {
+		t.Error(`env ["A=1\nenv B=2"] and ["A=1", "B=2"] hash the same`)
+	}
+}
+
 // A directory with a re-included descendant must stay walkable: with
 // "*" + "!src/app.py", the walk may not SkipDir at src/ or the allowlisted
 // file's changes would be missed entirely (stale-skip, the unsafe direction).
@@ -298,9 +416,10 @@ func TestComputeBuildInputHash_EnvChangesHash(t *testing.T) {
 func TestBuildInputHashSalt(t *testing.T) {
 	// The fingerprint is salted so a change to the hash inputs can invalidate
 	// every recorded fingerprint by changing the salt. v3 (WDY-3216) marks the
-	// switch to per-file digests with permission bits. Earlier salts (v1, v2,
-	// then the bare string) must never come back: a fingerprint recorded under
-	// one of them could match again.
+	// switch to one line per context entry (files with mode bits and content
+	// digests, directories, symlinks) and quoted args and env. Earlier salts
+	// (v1, v2, then the bare string) must never come back: a fingerprint
+	// recorded under one of them could match again.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
 		t.Fatal(err)

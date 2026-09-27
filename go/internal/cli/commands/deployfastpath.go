@@ -233,17 +233,19 @@ func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs 
 	// Salt for the deploy fingerprint. Changing this string invalidates every
 	// recorded fingerprint, forcing one honest rebuild per app — do that
 	// whenever the hash inputs below change (as they did when the effective
-	// Stagefile backend was added, and again when context files became
-	// per-file digests with their permission bits, WDY-3216). Never reuse an
-	// earlier salt: v1, v2 and the bare string are taken.
+	// Stagefile backend was added, and again when the context became one
+	// line per file, directory and symlink, with mode bits, content digests
+	// and quoted args and env, WDY-3216). Never reuse an earlier salt: v1, v2
+	// and the bare string are taken.
 	io.WriteString(h, "wendy-deploy-fingerprint-v3\n")
 	io.WriteString(h, "platform="+platform+"\n")
 	io.WriteString(h, "backend="+backend+"\n")
 
 	// deployEnv arrives sorted from resolveServiceEnv; --env order is the
-	// user's and is hashed as given.
+	// user's and is hashed as given. Env entries, arg names and arg values
+	// are quoted so a newline or '=' inside one cannot spell another set.
 	for _, kv := range deployEnv {
-		io.WriteString(h, "env "+kv+"\n")
+		fmt.Fprintf(h, "env %q\n", kv)
 	}
 
 	keys := make([]string, 0, len(buildArgs))
@@ -252,7 +254,7 @@ func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs 
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		io.WriteString(h, "arg "+k+"="+buildArgs[k]+"\n")
+		fmt.Fprintf(h, "arg %q=%q\n", k, buildArgs[k])
 	}
 
 	// Resolve and hash the Dockerfile.
@@ -276,11 +278,12 @@ func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs 
 	// (the Stagefile flow derives a deny-all allowlist there), so the walk must
 	// follow the same file or it hashes paths the build can never see.
 	ignore := loadDockerIgnoreForBuild(root, dfPath)
-	type contextFile struct {
-		rel  string
-		info fs.FileInfo
+	type contextEntry struct {
+		rel    string
+		info   fs.FileInfo
+		target string // a symlink's target
 	}
-	var files []contextFile
+	var entries []contextEntry
 	err = filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -290,49 +293,66 @@ func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs 
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if rel == "." {
-			return nil
-		}
 		if d.IsDir() {
-			if ignore.matches(rel + "/") {
+			if rel != "." && ignore.matches(rel+"/") {
 				return filepath.SkipDir
 			}
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		if ignore.matches(rel) {
+		} else if ignore.matches(rel) {
 			return nil
 		}
 		info, err := d.Info()
 		if err != nil {
 			return err
 		}
-		files = append(files, contextFile{rel: rel, info: info})
+		e := contextEntry{rel: rel, info: info}
+		switch mode := info.Mode(); {
+		case mode.IsDir(), mode.IsRegular():
+		case mode&fs.ModeSymlink != 0:
+			if e.target, err = os.Readlink(p); err != nil {
+				return err
+			}
+		default:
+			return nil // sockets, pipes and devices: COPY does not recreate them
+		}
+		entries = append(entries, e)
 		return nil
 	})
 	if err != nil {
 		return "", fmt.Errorf("walking build context for fingerprint: %w", err)
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
+	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
 
-	// Each file contributes its quoted path, permission bits (COPY keeps
-	// them) and content digest. A settled file's digest comes from the
-	// context digest cache while its identity is unchanged, so a warm run
-	// stats the context instead of reading it.
+	// Each entry contributes one line with its quoted path, for everything
+	// COPY recreates: a directory (empty ones too) with its mode bits, a
+	// symlink (copied as a link) with its target, and a file with its mode
+	// bits and content digest. A settled file's digest comes from the context
+	// digest cache while its identity is unchanged, so a warm run stats the
+	// context instead of reading it.
 	digests := openContextDigestCache(root, dfPath, contextDigestClock())
-	for _, f := range files {
-		digest, err := digests.fileDigest(filepath.Join(root, filepath.FromSlash(f.rel)), f.rel, f.info)
-		if err != nil {
-			return "", err
+	for _, e := range entries {
+		switch mode := e.info.Mode(); {
+		case mode.IsDir():
+			fmt.Fprintf(h, "dir %q %v\n", e.rel, mode&copiedModeBits)
+		case mode&fs.ModeSymlink != 0:
+			fmt.Fprintf(h, "link %q %q\n", e.rel, e.target)
+		default:
+			digest, err := digests.fileDigest(filepath.Join(root, filepath.FromSlash(e.rel)), e.rel, e.info)
+			if err != nil {
+				return "", err
+			}
+			fmt.Fprintf(h, "file %q %v %s\n", e.rel, mode&copiedModeBits, digest)
 		}
-		fmt.Fprintf(h, "file %q %04o %s\n", f.rel, f.info.Mode().Perm(), digest)
 	}
 	digests.save()
 
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// copiedModeBits are the mode bits COPY keeps: the permissions plus setuid,
+// setgid and sticky. computeBuildInputHash prints them with %v, which never
+// contains a space: 'u', 'g' and 't' for those three (or '-' for none), then
+// the nine permission characters, as in "urwxr-xr-x".
+const copiedModeBits = fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky
 
 // errBasesNotPinned means the Dockerfile builds FROM a mutable tag, so no
 // persistent build skip is possible and its build context is never hashed.
