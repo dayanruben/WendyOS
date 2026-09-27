@@ -21,6 +21,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 )
 
@@ -305,5 +306,125 @@ func TestMaintainIdleChunkStoreSkipsWhileADeployIsActive(t *testing.T) {
 	c.maintainIdleChunkStore(context.Background(), time.Now().Add(chunkStoreIdleAfter+time.Minute))
 	if c.staging.has(h) {
 		t.Fatal("idle maintenance kept a chunk older than stagingRetention")
+	}
+}
+
+func TestPruneChunkStoreRemovesStagingAndReconcilesTheIndex(t *testing.T) {
+	kept := digest.FromString("layer containerd still holds")
+	collected := digest.FromString("layer the prune let containerd collect")
+	c, _ := newMaintenanceClient(t, kept)
+	for i, blob := range []digest.Digest{kept, collected} {
+		if err := c.chunkIndex.AddLayer(blob.String(), []chunk.Ref{{Hash: [32]byte{byte(i + 1)}, Len: 1}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data := []byte("chunk of a cancelled deploy")
+	h := stageAged(t, c.staging, data, 5*time.Minute)
+
+	var result services.CachePruneResult
+	c.pruneChunkStore(context.Background(), time.Now(), false, &result)
+	if result.StagedChunks != 1 || result.StagedBytes != uint64(len(data)) || result.StagingInUse || c.staging.has(h) {
+		t.Fatalf("staging not pruned: %+v, staged chunk present %v", result, c.staging.has(h))
+	}
+	if result.ChunkIndexBlobsDropped != 1 {
+		t.Fatalf("ChunkIndexBlobsDropped = %d, want 1", result.ChunkIndexBlobsDropped)
+	}
+	if _, ok := c.chunkIndex.Has([32]byte{2}); ok {
+		t.Fatal("the entry of a blob containerd no longer holds survived the prune")
+	}
+	if _, ok := c.chunkIndex.Has([32]byte{1}); !ok {
+		t.Fatal("the prune dropped the entry of a blob containerd still holds")
+	}
+}
+
+func TestPruneChunkStoreDryRunCountsStagingAndChangesNothing(t *testing.T) {
+	collected := digest.FromString("layer containerd no longer holds")
+	c, _ := newMaintenanceClient(t)
+	if err := c.chunkIndex.AddLayer(collected.String(), []chunk.Ref{{Hash: [32]byte{3}, Len: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("chunk of a cancelled deploy")
+	h := stageAged(t, c.staging, data, 5*time.Minute)
+
+	var result services.CachePruneResult
+	c.pruneChunkStore(context.Background(), time.Now(), true, &result)
+	if result.StagedChunks != 1 || result.StagedBytes != uint64(len(data)) || !c.staging.has(h) {
+		t.Fatalf("dry run: %+v, staged chunk present %v; want it counted and kept", result, c.staging.has(h))
+	}
+	if _, ok := c.chunkIndex.Has([32]byte{3}); !ok || result.ChunkIndexBlobsDropped != 0 {
+		t.Fatalf("a dry run changed the index: entry present %v, dropped %d", ok, result.ChunkIndexBlobsDropped)
+	}
+}
+
+// TestPruneChunkStoreLeavesStagingOfAnActiveDeploy: a chunk QueryChunks
+// reported present must still be staged when the deploy assembles its layer,
+// however young the chunk and however explicit the prune.
+func TestPruneChunkStoreLeavesStagingOfAnActiveDeploy(t *testing.T) {
+	c, _ := newMaintenanceClient(t)
+	h := stageAged(t, c.staging, []byte("chunk a deploy is about to use"), time.Hour)
+
+	c.chunkActivity.touch()
+	var result services.CachePruneResult
+	c.pruneChunkStore(context.Background(), time.Now(), false, &result)
+	if !result.StagingInUse || result.StagedChunks != 0 || !c.staging.has(h) {
+		t.Fatalf("a deploy's staging was pruned seconds after its last chunk RPC: %+v", result)
+	}
+
+	end := c.chunkActivity.begin()
+	result = services.CachePruneResult{}
+	c.pruneChunkStore(context.Background(), time.Now().Add(time.Hour), false, &result)
+	end()
+	if !result.StagingInUse || !c.staging.has(h) {
+		t.Fatalf("staging was pruned while an assembly was in flight: %+v", result)
+	}
+
+	result = services.CachePruneResult{}
+	c.pruneChunkStore(context.Background(), time.Now().Add(cachePruneStagingIdleAfter+time.Second), false, &result)
+	if result.StagingInUse || result.StagedChunks != 1 || c.staging.has(h) {
+		t.Fatalf("staging a quiet store holds was not pruned: %+v", result)
+	}
+}
+
+// TestPruneChunkStoreKeepsGoingWhenStagingCannotBeRemoved: the cache-root
+// release before the chunk-store step already happened, so a staging failure
+// is logged, not returned, and the index is still reconciled.
+func TestPruneChunkStoreKeepsGoingWhenStagingCannotBeRemoved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, directory permissions do not deny deletes")
+	}
+	c, _ := newMaintenanceClient(t)
+	core, logs := observer.New(zap.WarnLevel)
+	c.logger = zap.New(core)
+	if err := c.chunkIndex.AddLayer(digest.FromString("collected layer").String(), []chunk.Ref{{Hash: [32]byte{4}, Len: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	h := stageAged(t, c.staging, []byte("chunk in a read-only staging dir"), 5*time.Minute)
+	if err := os.Chmod(c.staging.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(c.staging.dir, 0o700) })
+
+	var result services.CachePruneResult
+	c.pruneChunkStore(context.Background(), time.Now(), false, &result)
+	if result.StagedChunks != 0 || !c.staging.has(h) {
+		t.Fatalf("reported %d staged chunks removed from a read-only dir", result.StagedChunks)
+	}
+	if logs.FilterMessage("Pruning chunk staging failed").Len() != 1 {
+		t.Fatalf("staging failure not logged once: %v", logs.All())
+	}
+	if result.ChunkIndexBlobsDropped != 1 {
+		t.Fatalf("ChunkIndexBlobsDropped = %d, want 1: a staging failure must not skip the reconcile", result.ChunkIndexBlobsDropped)
+	}
+}
+
+// TestPruneChunkStoreSkipsWhatABareClientLacks: PruneCache runs on Clients
+// built without a staging area or an index (cache_prune_test.go builds them),
+// and must not dereference either.
+func TestPruneChunkStoreSkipsWhatABareClientLacks(t *testing.T) {
+	c := &Client{logger: zap.NewNop()}
+	var result services.CachePruneResult
+	c.pruneChunkStore(context.Background(), time.Now(), false, &result)
+	if result != (services.CachePruneResult{}) {
+		t.Fatalf("result = %+v, want zero", result)
 	}
 }

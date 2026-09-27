@@ -13,6 +13,8 @@ import (
 	"github.com/containerd/errdefs"
 	digest "github.com/opencontainers/go-digest"
 	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 )
 
 const (
@@ -26,8 +28,8 @@ const (
 	// enough for the user's next attempt to resume from them (WDY-3217).
 	stagingRetention = 6 * time.Hour
 	// cachePruneStagingIdleAfter is the quiet period an explicit cache prune
-	// requires before it removes every staged chunk (used by the cache-prune
-	// integration, PR 3b).
+	// requires before it removes every staged chunk, whatever its age: a
+	// deploy touches the store at least once per chunk it sends.
 	cachePruneStagingIdleAfter = time.Minute
 	// retiredStagingSuffix marks a staging directory from an earlier agent run.
 	retiredStagingSuffix = ".retired-"
@@ -284,4 +286,56 @@ func (c *Client) reconcileChunkIndex(ctx context.Context) (int, error) {
 	// import can find hundreds of stale blobs.
 	dropped, err := c.chunkIndex.DropBlobs(stale)
 	return dropped, errors.Join(checkErr, err)
+}
+
+// pruneChunkStore extends a cache prune to the chunk store (WDY-3212,
+// WDY-3217). It removes every staged chunk, or on a dry run counts them,
+// unless a deploy used the store within cachePruneStagingIdleAfter. A real
+// prune then drops the index entries of every layer blob containerd no longer
+// holds; PruneCache calls it after the forced GC, so that includes the blobs
+// the prune just let containerd collect.
+//
+// Failures are logged, not returned: the cache-root release before this step
+// already happened and stands on its own. A Client built without a staging
+// area or an index, as some tests build it, skips that part.
+func (c *Client) pruneChunkStore(ctx context.Context, now time.Time, dryRun bool, result *services.CachePruneResult) {
+	if c.staging != nil {
+		files, bytes, inUse, err := c.pruneStaging(now, dryRun)
+		if err != nil {
+			c.logger.Warn("Pruning chunk staging failed", zap.Error(err))
+		}
+		result.StagedChunks, result.StagedBytes, result.StagingInUse = uint64(files), uint64(bytes), inUse
+	}
+	if dryRun || c.chunkIndex == nil {
+		return
+	}
+	dropped, err := c.reconcileChunkIndex(ctx)
+	if err != nil {
+		c.logger.Warn("Reconciling chunk index after cache prune failed", zap.Error(err))
+	}
+	result.ChunkIndexBlobsDropped = uint64(dropped)
+	c.logger.Info("Cache prune pruned the chunk store",
+		zap.Uint64("staged_chunks_removed", result.StagedChunks),
+		zap.Uint64("staged_bytes_removed", result.StagedBytes),
+		zap.Bool("staging_in_use", result.StagingInUse),
+		zap.Uint64("index_blobs_dropped", result.ChunkIndexBlobsDropped))
+}
+
+// pruneStaging removes, or with dryRun counts, every staged chunk unless a
+// deploy used the store within cachePruneStagingIdleAfter; inUse reports that
+// it left staging alone. Like sweepIdleStaging, it checks idleness under
+// chunkSweepMu, so an in-flight query or stage finishes, and touches the
+// store, first, and it unlocks in a defer.
+func (c *Client) pruneStaging(now time.Time, dryRun bool) (files int, bytes int64, inUse bool, err error) {
+	c.chunkSweepMu.Lock()
+	defer c.chunkSweepMu.Unlock()
+	if !c.chunkActivity.idleFor(cachePruneStagingIdleAfter, now) {
+		return 0, 0, true, nil
+	}
+	if dryRun {
+		files, bytes, err = c.staging.usage(now)
+	} else {
+		files, bytes, err = c.staging.sweep(now)
+	}
+	return files, bytes, false, err
 }
