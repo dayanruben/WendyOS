@@ -197,6 +197,12 @@ func (s *chunkStream) Read(p []byte) (int, error) {
 	}
 }
 
+// consumed reports whether every chunk was loaded, verified and read out: only
+// then did the reader receive exactly the bytes the manifest names.
+func (s *chunkStream) consumed() bool {
+	return s.idx == len(s.order) && (s.cur == nil || s.cur.Len() == 0)
+}
+
 func (c *Client) MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]byte, error) {
 	// Maintenance never sweeps staged chunks while a query holds this, and
 	// staging.retain keeps each staged chunk this reports present clear of the
@@ -277,9 +283,10 @@ func (c *Client) MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]by
 	}
 	// In batches, not a transaction per blob: the first query after the legacy
 	// import can find hundreds of stale blobs, and this runs under the sweep
-	// lock's read side.
+	// lock's read side. A failed drop costs nothing here, since those chunks
+	// are reported missing below; the next query or reconcile retries it.
 	if _, err := c.chunkIndex.DropBlobs(slices.Collect(maps.Keys(invalidBlobs))); err != nil {
-		return nil, fmt.Errorf("pruning chunk index: %w", err)
+		c.logger.Warn("Dropping stale chunk-index entries failed", zap.Int("blobs", len(invalidBlobs)), zap.Error(err))
 	}
 
 	var missing [][32]byte
@@ -462,15 +469,39 @@ func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, has
 		return err
 	}
 
+	// Staged chunks go only once the index holds them. Until then a concurrent
+	// assembly of another layer may rely on them: its waitForChunks, or its
+	// CLI's MissingChunks, already counted them present. When this returns
+	// early, retire and the sweep reclaim them.
+	if !stream.consumed() {
+		// WriteLayer found the blob already committed, by a concurrent
+		// assembly of the same layer, and never read the stream, so nothing
+		// checked this manifest against the blob. The assembly that wrote
+		// the blob indexed it.
+		return nil
+	}
+
 	// Index the new blob from its manifest. WriteLayer verified the blob digest
 	// and chunkStream verified each chunk's hash in order, so these ranges are
 	// exact; re-reading and re-chunking the blob to rediscover them cost ~1 s
 	// per 430 MB on an Orin Nano (WDY-3214).
+	//
+	// One residual: when content.Copy resumes an interrupted write of the
+	// same layer, it discards the stream's prefix (still verifying each chunk),
+	// and the blob digest vouches for the earlier write's bytes there, not for
+	// these. A manifest wrong in exactly that prefix, from a buggy or hostile
+	// client, could then index ranges that do not hold their chunks. Every
+	// read re-verifies the chunk's hash, so an assembly relying on such an
+	// entry fails rather than using wrong bytes, until the blob is collected.
 	if err := c.chunkIndex.AddLayer(diffID, refs); err != nil {
 		c.logger.Warn("failed to index reassembled layer", zap.String("diff_id", diffID), zap.Error(err))
+		return nil
+	}
+	if c.chunkIndex.disabled() {
+		return nil // nothing was recorded
 	}
 
-	// Release the staged chunks now embedded in the blob.
+	// Release the staged chunks now embedded in the blob and indexed.
 	for _, h := range hashes {
 		c.staging.remove(h)
 	}

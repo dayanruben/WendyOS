@@ -16,7 +16,9 @@ import (
 	"github.com/containerd/errdefs"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	bolt "go.etcd.io/bbolt"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -162,7 +164,7 @@ func newChunkAvailabilityClient(t *testing.T, cs content.Store, index *ChunkInde
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { client.Close() })
-	return &Client{client: client, chunkIndex: index, staging: newStaging(stagingDir)}
+	return &Client{client: client, logger: zap.NewNop(), chunkIndex: index, staging: newStaging(stagingDir)}
 }
 
 func TestMissingChunksPrunesIndexEntriesWhoseBlobWasGarbageCollected(t *testing.T) {
@@ -275,7 +277,6 @@ func TestMissingChunksTreatsIndexLookupErrorAsNotIndexed(t *testing.T) {
 
 	cs := &chunkAvailabilityContentStore{blobs: map[digest.Digest]content.Info{}}
 	c := newChunkAvailabilityClient(t, cs, index, filepath.Join(dir, "staging"))
-	c.logger = zap.NewNop()
 	data := []byte("chunk whose index lookup errors because the index is closed")
 	hash := sha256.Sum256(data)
 
@@ -285,6 +286,53 @@ func TestMissingChunksTreatsIndexLookupErrorAsNotIndexed(t *testing.T) {
 	}
 	if len(missing) != 1 || missing[0] != hash {
 		t.Fatalf("missing = %x, want the one candidate reported missing", missing)
+	}
+}
+
+// readOnlyChunkIndex returns an index holding refs as ranges of blob, on which
+// every write fails, as on a full or failing disk.
+func readOnlyChunkIndex(t *testing.T, blob string, refs ...chunk.Ref) *ChunkIndex {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "chunk-index.db")
+	ix, err := OpenChunkIndex(path, "", zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.AddLayer(blob, refs); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return &ChunkIndex{db: db, path: path}
+}
+
+// TestMissingChunksSurvivesAFailedDrop: pruning stale entries is best effort.
+// A drop that fails (here on a read-only index; on a device ENOSPC or EIO) must
+// not fail the query, since the stale chunks are reported missing anyway.
+func TestMissingChunksSurvivesAFailedDrop(t *testing.T) {
+	data := []byte("chunk whose indexed layer was garbage collected")
+	hash := sha256.Sum256(data)
+	index := readOnlyChunkIndex(t, digest.FromString("stale layer").String(), chunk.Ref{Hash: hash, Len: uint64(len(data))})
+	cs := &chunkAvailabilityContentStore{blobs: map[digest.Digest]content.Info{}}
+	c := newChunkAvailabilityClient(t, cs, index, filepath.Join(t.TempDir(), "staging"))
+	core, logs := observer.New(zap.WarnLevel)
+	c.logger = zap.New(core)
+
+	missing, err := c.MissingChunks(context.Background(), [][32]byte{hash})
+	if err != nil {
+		t.Fatalf("a failed drop must not fail the query: %v", err)
+	}
+	if len(missing) != 1 || missing[0] != hash {
+		t.Fatalf("missing = %x, want the stale chunk %x", missing, hash)
+	}
+	if n := logs.FilterMessage("Dropping stale chunk-index entries failed").Len(); n != 1 {
+		t.Fatalf("logged %d failed drops, want 1", n)
 	}
 }
 
@@ -356,6 +404,117 @@ func TestAssembleLayerFromChunksIndexesTheManifestRanges(t *testing.T) {
 		}
 		if c.staging.has(r.Hash) {
 			t.Fatalf("chunk %d still staged after assembly", i)
+		}
+	}
+}
+
+// stageLayer stages a random layer's chunks and returns its diff ID and chunk
+// hashes, in order.
+func stageLayer(t *testing.T, c *Client, size int, seed int64) (digest.Digest, [][32]byte) {
+	t.Helper()
+	layer := make([]byte, size)
+	rand.New(rand.NewSource(seed)).Read(layer)
+	refs, err := chunk.ChunkBytes(layer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashes := make([][32]byte, len(refs))
+	for i, r := range refs {
+		hashes[i] = r.Hash
+		if err := c.StageChunk(context.Background(), r.Hash, layer[r.Offset:r.Offset+r.Len]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return digest.FromBytes(layer), hashes
+}
+
+// TestAssembleLayerFromChunksKeepsStagedChunksItCouldNotIndex: staged chunks
+// go only once the index holds them. A concurrent assembly of another layer
+// sharing them may already count on them, and would otherwise find them in
+// neither staging nor the index.
+func TestAssembleLayerFromChunksKeepsStagedChunksItCouldNotIndex(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		index func(t *testing.T) *ChunkIndex
+	}{
+		{"disabled index", func(*testing.T) *ChunkIndex { return &ChunkIndex{} }},
+		{"index broken by a corrupt page", func(t *testing.T) *ChunkIndex {
+			ix := newTestChunkIndex(t)
+			ix.broken.Store(true)
+			return ix
+		}},
+		{"index write fails", func(t *testing.T) *ChunkIndex {
+			return readOnlyChunkIndex(t, digest.FromString("another layer").String(), chunk.Ref{Hash: [32]byte{9}, Len: 1})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, store := newLocalStoreClient(t)
+			c.chunkIndex = tc.index(t)
+			diffID, hashes := stageLayer(t, c, 300_000, 5)
+
+			if err := c.AssembleLayerFromChunks(context.Background(), diffID.String(), hashes); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Info(context.Background(), diffID); err != nil {
+				t.Fatalf("layer not committed: %v", err)
+			}
+			for i, h := range hashes {
+				if !c.staging.has(h) {
+					t.Fatalf("chunk %d unstaged although the index did not record it", i)
+				}
+			}
+		})
+	}
+}
+
+// racedContentStore acts as if a concurrent assembly of the same diff ID
+// committed the blob between the fast-path check and the write: the first Info
+// misses, and the writer then finds the blob already there.
+type racedContentStore struct {
+	content.Store
+	infoCalls int
+	size      int64
+}
+
+func (s *racedContentStore) Info(_ context.Context, d digest.Digest) (content.Info, error) {
+	s.infoCalls++
+	if s.infoCalls == 1 {
+		return content.Info{}, errdefs.ErrNotFound
+	}
+	return content.Info{Digest: d, Size: s.size}, nil
+}
+
+func (s *racedContentStore) Writer(context.Context, ...content.WriterOpt) (content.Writer, error) {
+	return nil, errdefs.ErrAlreadyExists
+}
+
+// TestAssembleLayerFromChunksDoesNotIndexAManifestItNeverVerified: when a
+// concurrent assembly commits the same layer first, WriteLayer returns without
+// reading the chunks, so nothing checked this manifest against the blob. A
+// wrong one, from a buggy or hostile client, must not be indexed: MissingChunks
+// would report its chunks present, and every later assembly would then fail
+// to verify them.
+func TestAssembleLayerFromChunksDoesNotIndexAManifestItNeverVerified(t *testing.T) {
+	a, b := []byte("chunk A, which is not in the layer"), []byte("chunk B, which is not in it either")
+	committed := make([]byte, len(a)+len(b)) // the winning assembly wrote other bytes
+	diffID := digest.FromBytes(committed)
+	c := newChunkAvailabilityClient(t, &racedContentStore{size: int64(len(committed))}, newTestChunkIndex(t), filepath.Join(t.TempDir(), "staging"))
+	ha, hb := sha256.Sum256(a), sha256.Sum256(b)
+	for h, data := range map[[32]byte][]byte{ha: a, hb: b} {
+		if err := c.StageChunk(context.Background(), h, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := c.AssembleLayerFromChunks(context.Background(), diffID.String(), [][32]byte{ha, hb}); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range [][32]byte{ha, hb} {
+		if loc, ok := c.chunkIndex.Has(h); ok {
+			t.Fatalf("an unverified manifest was indexed: chunk %x at %+v", h, loc)
+		}
+		if !c.staging.has(h) {
+			t.Fatalf("chunk %x unstaged although nothing indexed it", h)
 		}
 	}
 }
