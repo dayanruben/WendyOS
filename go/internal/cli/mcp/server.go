@@ -11,6 +11,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/onboarding"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -29,6 +30,7 @@ type commandTarget struct {
 	Transport string `json:"transport"`
 	CloudGRPC string `json:"cloud_grpc,omitempty"`
 	BrokerURL string `json:"broker_url,omitempty"`
+	Selector  string `json:"selector,omitempty"` // cloud identity, including tenant/org and asset
 }
 
 type mcpServer struct {
@@ -44,6 +46,8 @@ type mcpServer struct {
 	mu               sync.RWMutex
 	proxyDiag        []proxyDiagEntry
 	containerMCP     *containerMCPManager
+	runCommandFn     func(context.Context, []string, commandTarget, int) (string, bool, error)
+	installation     onboarding.Backend
 }
 
 // SetStartupConnect configures the optional device connection attempted after
@@ -230,6 +234,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	s.registerCameraTools(srv)
 	s.registerProvisioningTools(srv)
 	s.registerOSTools(srv)
+	s.registerInstallationTools(srv)
 	s.registerCloudTools(srv)
 	registerToolAnalytics(srv)
 

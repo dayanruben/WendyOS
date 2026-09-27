@@ -11,7 +11,7 @@ Use this for normal operator/developer workflows around Wendy apps, not only deb
 
 Avoid Bubble Tea pickers and dashboards unless the user explicitly wants an interactive terminal UI. Coding agents should generally use:
 
-- `--device <hostname>` or a configured default device.
+- An explicit `--device <selector>` so a stale default cannot redirect deployment.
 - `--json` for list/status/log records when supported.
 - `--yes` for `wendy run` when it may need to create `wendy.json` or accept prompts.
 - Explicit app names for `device apps start|stop|remove`.
@@ -89,7 +89,14 @@ wendy run --yes --chunking off --device <hostname>     # registry push only, ski
 wendy run --yes --chunking force --device <hostname>   # chunk-diff only, no fallback
 ```
 
-Attached `wendy run` starts the container and streams output. Ctrl+C stops the container. Detached `wendy run --detach` starts the container, waits for readiness when configured, fires post-start hooks, and exits.
+Attached `wendy run` starts the container and streams output. Ctrl+C stops the container. Detached `wendy run --detach` returns after starting; it skips waiting for readiness and opening the app URL. Verify container state, startup logs and an application health check separately.
+
+The MCP `run` tool uses an explicit `device` selector or the currently connected
+target, including its cloud endpoint when applicable. Legacy `device_name` selects
+a cloud device. Inspect the returned target and status. A created or started
+container does not establish sensor, HTTP or robot behavior; use `wendy-robot-deploy`
+for robot checks. If the installed server exposes only the older cloud-only run
+tool, use the CLI with an explicit target or update and restart the MCP host.
 
 `--deploy` creates the container but does not start it. To start that existing app later, use `wendy device apps start <app-id>`, knowing that the current agent-backed start path attaches to the app stream. There is no `wendy device apps start --detach` flag.
 

@@ -231,6 +231,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 	}
 
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed WendyOS %s — power-cycle the Thor out of recovery to boot it. (press the right button once)", plan.version)))
+	printFirstBootVerification(thorDeviceType, plan.version)
 	return nil
 }
 

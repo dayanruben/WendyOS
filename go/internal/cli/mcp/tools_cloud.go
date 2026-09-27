@@ -8,8 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"os/exec"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -161,13 +160,14 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("cloud_ping", pingOpts...), s.handleCloudPing)
 
 	runOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Build and deploy a local project to a cloud-enrolled device. Runs 'wendy cloud run' with your configured cloud credentials. The project's wendy.json entitlements (e.g. gpu, network, persistence) apply on the device; if a required entitlement is denied, the run fails with error_code ENTITLEMENT_DENIED."),
+		mcpgo.WithDescription("Build and deploy a local project to an explicit device or the current session's target, preserving direct, simulator, or cloud routing. Returns deployment status and the end of the build log. Detached success does not establish application readiness; inspect container_list and telemetry_logs after deployment."),
 		mcpgo.WithString("project_path",
 			mcpgo.Required(),
 			mcpgo.Description("Project directory containing wendy.json"),
 		),
+		mcpgo.WithString("device", mcpgo.Description("Explicit CLI device selector (LAN address, vm:name, or cloud selector). Cannot be combined with device_name or cloud endpoint overrides.")),
 		mcpgo.WithString("device_name",
-			mcpgo.Description("Cloud device name"),
+			mcpgo.Description("Explicit cloud device name (legacy cloud-only selector); otherwise use device or the connected session"),
 		),
 		mcpgo.WithString("cloud_grpc",
 			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
@@ -176,13 +176,13 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Tunnel broker host:port; omit to use the default derived from cloud_grpc (port 443 when cloud_grpc ends in :443, otherwise port 50052)"),
 		),
 		mcpgo.WithString("build_type",
-			mcpgo.Description("Build type: docker, swift, or python"),
+			mcpgo.Description("Build type: docker, compose, swift, or python"),
 		),
 		mcpgo.WithString("product",
 			mcpgo.Description("Swift Package Manager product to build and run"),
 		),
 		mcpgo.WithBoolean("debug",
-			mcpgo.Description("Enable debug logging"),
+			mcpgo.Description("Start the application under a debugger"),
 		),
 		mcpgo.WithBoolean("deploy",
 			mcpgo.Description("Create container but do not start it"),
@@ -493,73 +493,6 @@ func mcpPingResult(stats mcpPingStats, name string) *mcpgo.CallToolResult {
 	return okResult(out)
 }
 
-func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	projectPath := stringParam(req, "project_path")
-	if projectPath == "" {
-		return errResult(errCodeInvalidArgument, "project_path is required"), nil
-	}
-	timeout := time.Duration(intParam(req, "timeout_seconds", 300)) * time.Second
-	if timeout <= 0 {
-		timeout = 300 * time.Second
-	}
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	bin, err := os.Executable()
-	if err != nil || bin == "" {
-		bin = "wendy"
-	}
-	args := []string{"cloud", "run", "--prefix", projectPath, "--yes"}
-	if v := stringParam(req, "cloud_grpc"); v != "" {
-		args = append(args, "--cloud-grpc", v)
-	}
-	if v := stringParam(req, "device_name"); v != "" {
-		args = append(args, "--device", v)
-	}
-	if v := stringParam(req, "broker_url"); v != "" {
-		args = append(args, "--broker-url", v)
-	}
-	if v := stringParam(req, "build_type"); v != "" {
-		args = append(args, "--build-type", v)
-	}
-	if v := stringParam(req, "product"); v != "" {
-		args = append(args, "--product", v)
-	}
-	if req.GetBool("debug", false) {
-		args = append(args, "--debug")
-	}
-	if req.GetBool("deploy", false) {
-		args = append(args, "--deploy")
-	}
-	if req.GetBool("detach", true) {
-		args = append(args, "--detach")
-	}
-
-	tok := progressToken(req)
-	cmd := exec.CommandContext(runCtx, bin, args...)
-	reportProgress(ctx, tok, 0, 0, "running wendy…")
-	out, err := cmd.CombinedOutput()
-	s.refreshContainerMCPTools()
-	reportProgress(ctx, tok, 1, 1, "done")
-	text := strings.TrimSpace(string(out))
-	if runCtx.Err() != nil {
-		if text == "" {
-			text = runCtx.Err().Error()
-		}
-		return errResultf(errCodeTimeout, "%s", text), nil
-	}
-	if err != nil {
-		if text == "" {
-			text = err.Error()
-		}
-		return errResultf(errCodeInternal, "%s", text), nil
-	}
-	if text == "" {
-		text = "cloud run completed"
-	}
-	return okTextBounded(text, "reduce timeout_seconds, redirect the app's own output, or raise max_bytes", intParam(req, "max_bytes", 100000)), nil
-}
-
 // cloudResolveErr is returned by the cloud auth/asset-resolution helpers
 // carrying the precise error_code the MCP layer should surface.
 type cloudResolveErr struct {
@@ -596,12 +529,28 @@ func cloudCommandTarget(auth *config.AuthConfig, asset interface{ GetName() stri
 	if auth == nil || auth.CloudGRPC == "" || asset.GetName() == "" {
 		return commandTarget{}
 	}
-	return commandTarget{
+	target := commandTarget{
 		Device:    asset.GetName(),
 		Transport: "cloud",
 		CloudGRPC: auth.CloudGRPC,
 		BrokerURL: brokerURL,
 	}
+	// A subprocess reloads credentials from disk. Pin the org/tenant and asset
+	// as well as the endpoint so a concurrent context switch cannot redirect it
+	// to a same-named robot in another organization.
+	if device, ok := asset.(mcpCloudDevice); ok && len(auth.Certificates) > 0 {
+		cert := auth.Certificates[0]
+		var path string
+		if device.isV2 && cert.TenantUUID() != "" && device.key != "" {
+			path = fmt.Sprintf("/tenant/%s/asset/%s", cert.TenantUUID(), device.key)
+		} else if !device.isV2 && cert.OrganizationID > 0 && device.legacyID > 0 {
+			path = fmt.Sprintf("/org/%d/asset/%d", cert.OrganizationID, device.legacyID)
+		}
+		if path != "" {
+			target.Selector = (&url.URL{Scheme: "cloud", Host: auth.CloudGRPC, Path: path}).String()
+		}
+	}
+	return target
 }
 
 func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, mcpCloudDevice, commandTarget, error) {

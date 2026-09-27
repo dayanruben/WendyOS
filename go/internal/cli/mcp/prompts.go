@@ -16,7 +16,7 @@ func (s *mcpServer) registerPrompts(srv *server.MCPServer) {
 		mcpgo.NewPrompt("deploy_app",
 			mcpgo.WithPromptDescription("Walks through connecting to a device and deploying a project with the run tool."),
 			mcpgo.WithArgument("project_path", mcpgo.ArgumentDescription("Path to the project to deploy (defaults to the current directory).")),
-			mcpgo.WithArgument("device_name", mcpgo.ArgumentDescription("Cloud device name to target the run at (defaults to the currently connected/default device).")),
+			mcpgo.WithArgument("device_name", mcpgo.ArgumentDescription("Explicit cloud device name; omit to reuse the current direct, simulator or cloud session target.")),
 		),
 		s.handleDeployAppPrompt,
 	)
@@ -61,9 +61,9 @@ func (s *mcpServer) handleDeployAppPrompt(_ context.Context, req mcpgo.GetPrompt
 
 	text := fmt.Sprintf(`Deploy the project at %s to %s.
 
-1. Make sure a device is connected: use device_connect (for a LAN/direct device by host:port) or cloud_connect (for a cloud-enrolled device). If already connected, you can skip this.
+1. Confirm the intended target with wendy_status: use device_connect for LAN/simulator or cloud_connect for cloud. Reuse a connection only if it is the intended target. On blank hardware, use os_install_plan and verify first boot before connecting.
 2. Deploy with the run tool: run(project_path=%q%s). This builds the project and starts it on the device.
-3. Verify it came up: check container_list for the app's running_state, and tail telemetry_logs for startup errors.
+3. Check the returned target. Detached run does not wait for readiness: check container_list for the app's running_state, telemetry_logs for startup errors, and the app's actual health endpoint or ROS output. Do not infer physical motion from deployment success.
 `, projectPath, deviceClause, projectPath, deviceArg(device))
 
 	return mcpgo.NewGetPromptResult(
@@ -75,8 +75,7 @@ func (s *mcpServer) handleDeployAppPrompt(_ context.Context, req mcpgo.GetPrompt
 }
 
 // deviceArg renders the optional device_name argument suffix for the run tool
-// call shown in the deploy_app prompt text. The run tool's device selector is
-// device_name (not device), so the rendered example must match that param.
+// call shown in the deploy_app prompt text; this legacy prompt arg is cloud-only.
 func deviceArg(device string) string {
 	if device == "" {
 		return ""

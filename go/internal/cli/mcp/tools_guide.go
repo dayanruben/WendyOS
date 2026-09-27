@@ -44,6 +44,20 @@ Cloud-enrolled devices:
 - os_update
 - provisioning_start / provisioning_status
 
+## New hardware without an agent
+
+Initial installation does not require an MCP device connection:
+1. os_install_plan — choose the board/carrier, published version and installation method.
+2. os_list_drives — inspect host media for raw-image writes, then plan with the exact drive.
+3. Execute the returned CLI argument array in a terminal for elevation and flash progress.
+4. Follow the power/recovery steps, discover the expected device, and call os_install_verify
+   with its explicit address and planned OS version/type. Pin a known public key if available.
+
+An empty discovery scan does not prove a network failure. Confirm whether the board
+has an OS/Agent first. Unitree G1 PC2 keeps its vendor OS and receives the Agent.
+provisioning_start enrolls an existing agent with Cloud; it cannot flash a blank board.
+Verification reports boot/OS/enrollment separately; application behavior needs its own check.
+
 Use container_exec with app_name and an explicit command argument array to run
 a bounded command in an existing container through the active direct or cloud
 connection. Use telemetry_logs for passive logs. container_attach starts or
@@ -107,7 +121,10 @@ and the boundary between remote observation and local robot control.
 
 ## Deploying a workload
 
-Use the run tool to build and deploy a local project to a cloud-enrolled device:
+Use the run tool to build and deploy to an explicit device or the connected target:
+  run(project_path="/path/to/project", device="vm:go2")
+  run(project_path="/path/to/project") // reuse current direct/cloud session target
+Legacy cloud-only targeting is also supported:
   run(project_path="/path/to/project", device_name="mydevice")
 
 ## Disconnecting

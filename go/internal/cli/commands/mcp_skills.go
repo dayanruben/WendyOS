@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -43,7 +44,7 @@ func wendySkillNames() []string {
 		if !e.IsDir() {
 			continue
 		}
-		if _, err := assets.FS.Open("skills/" + e.Name() + "/SKILL.md"); err == nil {
+		if _, err := fs.Stat(assets.FS, "skills/"+e.Name()+"/SKILL.md"); err == nil {
 			names = append(names, e.Name())
 		}
 	}
@@ -86,12 +87,16 @@ func installClaudeCodeSkills() *mcpSetupResult {
 
 // extractSkillDir copies assets/skills/<name>/** into dstDir/skills/<name>/.
 func extractSkillDir(skillName, dstDir string) error {
+	return extractSkillFiles(skillName, filepath.Join(dstDir, "skills", skillName))
+}
+
+func extractSkillFiles(skillName, target string) error {
 	return fs.WalkDir(assets.FS, "skills/"+skillName, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
 		rel := strings.TrimPrefix(p, "skills/"+skillName+"/")
-		dst := filepath.Join(dstDir, "skills", skillName, rel)
+		dst := filepath.Join(target, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
@@ -183,11 +188,76 @@ func installCodexSkills() *mcpSetupResult {
 		}
 	}
 
-	target := filepath.Join(codexDir, "wendy-skills.md")
-	if err := writeSkillsMarkdown(target); err != nil {
+	// Codex discovers individual SKILL.md directories, including their relative
+	// references. A loose concatenated Markdown file is not a discoverable skill.
+	target := filepath.Join(home, ".agents", "skills")
+	if err := installWendySkillDirs(target); err != nil {
 		return &mcpSetupResult{tool: "Codex skills", err: err}
 	}
 	return &mcpSetupResult{tool: "Codex skills", path: target}
+}
+
+func installWendySkillDirs(target string) error {
+	for _, name := range wendySkillNames() {
+		if name != "wendy" && !strings.HasPrefix(name, "wendy-") {
+			continue
+		}
+		if err := installManagedSkill(name, filepath.Join(target, name)); err != nil {
+			return fmt.Errorf("installing %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// The shared user skill directory can contain hand-written or plugin-sourced
+// Wendy skills. Only replace files from our previous install that remain
+// unmodified, or files that already equal the current embedded version.
+func installManagedSkill(name, target string) error {
+	marker := filepath.Join(target, ".wendy-managed.json")
+	previous := map[string]string{}
+	if data, err := os.ReadFile(marker); err == nil {
+		if err := json.Unmarshal(data, &previous); err != nil {
+			return fmt.Errorf("reading skill ownership: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	next := map[string]string{}
+	err := fs.WalkDir(assets.FS, "skills/"+name, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel := strings.TrimPrefix(p, "skills/"+name+"/")
+		data, err := assets.FS.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		next[rel] = fmt.Sprintf("%x", sha256.Sum256(data))
+		path := filepath.Join(target, rel)
+		existing, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		hash := fmt.Sprintf("%x", sha256.Sum256(existing))
+		if hash != next[rel] && hash != previous[rel] {
+			return fmt.Errorf("preserving existing or edited skill file %s; move that skill aside before reinstalling Wendy's version", path)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := extractSkillFiles(name, target); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(marker, data, 0o644)
 }
 
 // ---- Opencode -------------------------------------------------------------------

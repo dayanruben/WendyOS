@@ -1,8 +1,6 @@
 ---
 name: wendy
 description: 'Expert guidance on building and deploying apps to WendyOS edge devices. Use when developers mention: (1) Wendy or WendyOS, (2) wendy CLI commands, (3) wendy.json or entitlements, (4) deploying apps to edge devices, (5) remote debugging Swift on ARM64, (6) NVIDIA Jetson or Raspberry Pi apps, (7) cross-compiling Swift for ARM64.'
-references:
-  - wendy.json.md
 ---
 
 # WendyOS
@@ -21,7 +19,7 @@ wendy --help
 wendy <command> --help
 ```
 
-Whenever you invoke a wendy command, pass the persistent `--json` flag for structured output. This also prevents interactive dialogs and the errors they cause in a non-interactive session. (There is no `-j` shorthand.)
+Use `--json` for list/status commands that support it. Build, run and flash commands still emit progress text; use exit status and follow-up checks. Supply explicit targets and choices to avoid interactive pickers. (There is no `-j` shorthand.)
 
 ## Common Tasks
 
@@ -34,25 +32,18 @@ Whenever you invoke a wendy command, pass the persistent `--json` flag for struc
 - Set a device as default using `wendy device set-default`
 - Check the default device with `wendy device get-default`
 
-### `wendy init` — Create a New Wendy Lite Project
+### Create and deploy an app
 
-Creates a new Wendy Lite project with the required scaffolding:
+`wendy init` creates a WendyOS container project (Python, Swift, Rust, Node or C++).
+Use explicit template variables and `--assistant skip --git-init no` for unattended
+scaffolding. When already inside the requested destination, include `--here` so
+`--app-id` does not create another directory. See `wendy-template-app`.
 
-```bash
-wendy init
-```
-
-This sets up a new project directory with a `wendy.json` configuration file and the necessary structure for building and deploying a Wendy Lite app.
-
-### `wendy run` — Run a Wendy Lite Project
-
-Builds, uploads, and runs a Wendy Lite project on a connected device:
-
-```bash
-wendy run
-```
-
-This command handles the full development cycle: compiling the app, transferring the binary to the device, and starting execution. Use `--verbose` for detailed build output.
+`wendy run --device <selector> --detach --yes` builds, transfers and starts the app.
+The MCP `run` tool uses its explicit `device` or the connected session's target;
+legacy `device_name` selects cloud deployment. Verify the returned target, container
+state, logs and application health separately: detached run skips readiness waits.
+Wendy Lite uses a separate MCU/WASM workflow; see `wendy-lite` for ESP32.
 
 ### `wendy device wifi connect` — Set Up WiFi
 
@@ -68,8 +59,17 @@ This sends WiFi SSID and password to the device so it can connect to the local n
 
 Wendy CLI connects to a device over gRPC (TCP) port 50051. If Wendy CLI is not installed yet, run `curl -fsSL https://install.wendy.dev/cli.sh | bash`.
 
-Devices are discovered over USB or LAN. If a device is not found, ask the user to check the connection or to connect it over USB.
-If a device is not yet installed, use `wendy os install` to install the OS to an external drive. For NVIDIA Jetson devices, the OS is commonly installed to NVMe.
+Devices are discovered over USB or LAN. On Linux, USB tethering may need
+`sudo wendy device usb-setup`. An empty scan can also mean a blank board.
+Use `wendy-device-install` and `os_install_plan` for initial installation and
+`os_install_verify` for first boot. Full Jetson recovery updates boot firmware;
+rootfs-only media writes do not. Unitree G1 PC2 keeps vendor Ubuntu and receives
+the Agent, not a generic Jetson image.
+
+For robotics, use `wendy-robot-deploy`: inspect actual ROS topics, QoS, frames,
+clocks and DDS scope, test in simulation, deploy without automatic motion, and
+verify the app's output before any authorized physical test. Check the live MCP
+tool list; newer skill text cannot add tools to an older running server.
 
 ## Development
 
@@ -115,7 +115,7 @@ and fails fast rather than letting the app crash-loop with
 
 For **Swift** apps, attach with the WendyOS VS Code extension, which generates a
 debug configuration per executable target. See the
-[VS Code extension guide](../../docs/remote-debugging/vscode-extension.mdx) for
+[VS Code extension guide](https://docs.wendy.dev/latest/remote-debugging/vscode-extension) for
 the ports and prerequisites — the debugger wiring lives in that extension, not
 in this CLI.
 
