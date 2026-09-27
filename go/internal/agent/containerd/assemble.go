@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/errdefs"
@@ -26,7 +27,75 @@ const (
 	// assemblyReadAhead is how many verified segments may wait for the writer,
 	// so reading and hashing the next segments overlaps the current write.
 	assemblyReadAhead = 4
+	// assemblyBufferCount is how many segment buffers exist in the agent:
+	// assemblyReadAhead waiting, one being read and one being written, so a
+	// lone assembly keeps its whole pipeline.
+	assemblyBufferCount = assemblyReadAhead + 2
 )
+
+// assemblyBuffers is the segment buffer pool every assembly shares. Compose
+// prepares up to four services at once, and a build delivery prepares images
+// too; buffers per assembly put 121 MiB on the heap for four of them, on
+// devices with 1 GB of RAM. Shared, the agent holds at most
+// assemblyBufferCount × maxSegmentBytes (48 MiB) of them at any concurrency.
+var assemblyBuffers = newBufferPool(assemblyBufferCount, maxSegmentBytes)
+
+// bufferPool recycles at most n buffers of one size, each allocated on first
+// use.
+//
+// It cannot deadlock. Only readers take buffers: readSegments' goroutine, and
+// verifyPrefix, which holds no other buffer while it waits. Writers never do.
+// A reader gives back a buffer it could not deliver (a failed read, or its
+// context ending first), and the consumer gives back every buffer delivered
+// to it: after writing it, or, when it stops early, by cancelling the reader
+// and draining the channel. So every buffer out of the pool is held by a
+// goroutine that returns it without waiting on the pool, and a reader waiting
+// for one waits only on other assemblies' writes. Nor does an assembly hold a
+// buffer while it waits for another's per-ref ingest lock: its reader starts
+// only once OpenWriter has returned.
+type bufferPool struct {
+	// slots holds the buffers not in use; nil stands for one not yet made.
+	slots chan []byte
+	size  int
+
+	// allocated counts buffers made, outstanding those out of the pool, and
+	// peak the most ever out at once, for tests.
+	allocated, outstanding, peak atomic.Int64
+}
+
+func newBufferPool(n, size int) *bufferPool {
+	p := &bufferPool{slots: make(chan []byte, n), size: size}
+	for range n {
+		p.slots <- nil
+	}
+	return p
+}
+
+// acquire returns a buffer of the pool's size, waiting while every buffer is
+// out, or ctx's error if ctx ends first.
+func (p *bufferPool) acquire(ctx context.Context) ([]byte, error) {
+	var b []byte
+	select {
+	case b = <-p.slots:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if b == nil {
+		b = make([]byte, p.size)
+		p.allocated.Add(1)
+	}
+	out := p.outstanding.Add(1)
+	for peak := p.peak.Load(); out > peak && !p.peak.CompareAndSwap(peak, out); peak = p.peak.Load() {
+	}
+	return b, nil
+}
+
+// release returns a buffer acquire handed out. It never blocks: the pool has
+// a slot for every buffer it made.
+func (p *bufferPool) release(b []byte) {
+	p.outstanding.Add(-1)
+	p.slots <- b[:cap(b)]
+}
 
 // assemblySegment is a run of a layer's chunks read with one call: consecutive
 // staged chunk files (blob == ""), or consecutive chunks that sit back to back
@@ -102,9 +171,19 @@ func (c *Client) planAssembly(hashes [][32]byte) ([]assemblySegment, []chunk.Ref
 }
 
 // segmentData is one segment's verified bytes, or the error that ended reading.
+// data lives in buf, a buffer from assemblyBuffers that the consumer must
+// release once it is done with data; an error carries no buffer.
 type segmentData struct {
 	data []byte
+	buf  []byte
 	err  error
+}
+
+// release gives s's buffer back to the pool.
+func (s segmentData) release() {
+	if s.buf != nil {
+		assemblyBuffers.release(s.buf)
+	}
 }
 
 // readSegments reads segs in order on its own goroutine, verifies every chunk's
@@ -112,6 +191,10 @@ type segmentData struct {
 // assemblyReadAhead segments ahead of the consumer. The first skip bytes of the
 // layer are not delivered: a resumed ingest already holds them. The channel
 // closes after the last segment, after an error, or when ctx ends.
+//
+// Each segment is read into a buffer from assemblyBuffers; the consumer
+// releases every segment it receives (see segmentData), and one that stops
+// early cancels ctx and drains the channel, releasing the rest.
 func (c *Client) readSegments(ctx context.Context, segs []assemblySegment, skip int64) <-chan segmentData {
 	out := make(chan segmentData, assemblyReadAhead)
 	go func() {
@@ -125,16 +208,26 @@ func (c *Client) readSegments(ctx context.Context, segs []assemblySegment, skip 
 			if pos <= skip {
 				continue
 			}
-			data, err := r.read(seg)
-			if err == nil && skip > start {
+			buf, err := assemblyBuffers.acquire(ctx)
+			if err != nil {
+				return // ctx ended
+			}
+			data := buf[:seg.size]
+			if err := r.read(seg, data); err != nil {
+				assemblyBuffers.release(buf)
+				select {
+				case out <- segmentData{err: err}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			if skip > start {
 				data = data[skip-start:]
 			}
 			select {
-			case out <- segmentData{data: data, err: err}:
+			case out <- segmentData{data: data, buf: buf}:
 			case <-ctx.Done():
-				return
-			}
-			if err != nil {
+				assemblyBuffers.release(buf)
 				return
 			}
 		}
@@ -156,18 +249,18 @@ func (r *segmentReader) close() {
 	}
 }
 
-// read returns seg's bytes once every chunk in it matches its hash.
-func (r *segmentReader) read(seg assemblySegment) ([]byte, error) {
-	data := make([]byte, seg.size)
+// read fills data, seg.size bytes long, with seg's bytes, and fails unless
+// every chunk in it matches its hash.
+func (r *segmentReader) read(seg assemblySegment, data []byte) error {
 	if seg.blob != "" {
 		if err := r.readBlob(seg.blob, seg.offset, data); err != nil {
-			return nil, err
+			return err
 		}
 	} else {
 		var off uint64
 		for _, ch := range seg.chunks {
 			if err := r.readStaged(ch, data[off:off+ch.len]); err != nil {
-				return nil, err
+				return err
 			}
 			off += ch.len
 		}
@@ -175,11 +268,11 @@ func (r *segmentReader) read(seg assemblySegment) ([]byte, error) {
 	var off uint64
 	for _, ch := range seg.chunks {
 		if sha256.Sum256(data[off:off+ch.len]) != ch.hash {
-			return nil, fmt.Errorf("chunk %x hash mismatch", ch.hash)
+			return fmt.Errorf("chunk %x hash mismatch", ch.hash)
 		}
 		off += ch.len
 	}
-	return data, nil
+	return nil
 }
 
 // readStaged fills dst with a staged chunk. When another layer's assembly has
@@ -292,12 +385,23 @@ func (c *Client) writeAssembledLayer(ctx context.Context, diffID string, size in
 	}
 
 	readCtx, cancel := context.WithCancel(ctx)
-	defer cancel() // stops the reader if a write fails
-	for seg := range c.readSegments(readCtx, segs, st.Offset) {
+	segments := c.readSegments(readCtx, segs, st.Offset)
+	defer func() {
+		// However this returns, stop the reader and give back the buffers
+		// it still has queued. After the last segment the channel is
+		// already closed, and this finds nothing.
+		cancel()
+		for seg := range segments {
+			seg.release()
+		}
+	}()
+	for seg := range segments {
 		if seg.err != nil {
 			return false, fmt.Errorf("reassembling layer %s: %w", diffID, seg.err)
 		}
-		if _, err := w.Write(seg.data); err != nil {
+		_, err := w.Write(seg.data)
+		seg.release()
+		if err != nil {
 			return false, fmt.Errorf("writing layer %s: %w", diffID, err)
 		}
 	}
@@ -357,7 +461,11 @@ func (c *Client) verifyPrefix(ctx context.Context, dgst digest.Digest, segs []as
 		return fmt.Errorf("opening committed layer: %w", err)
 	}
 	defer ra.Close()
-	buf := make([]byte, maxSegmentBytes)
+	buf, err := assemblyBuffers.acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer assemblyBuffers.release(buf)
 
 	var (
 		start   int64 // offset of the pending piece in the blob

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	contentapi "github.com/containerd/containerd/api/services/content/v1"
 	"github.com/containerd/containerd/v2/core/content"
@@ -488,16 +489,30 @@ func TestAssemblyReadsAStagedChunkFromTheIndexOnceAnotherAssemblyConsumedIt(t *t
 	commitIndexedBlob(t, c, cs, shared) // the other assembly's blob holds the chunk…
 	c.staging.remove(h)                 // …and it released the staged file
 
-	var got []byte
-	for seg := range c.readSegments(context.Background(), segs, 0) {
-		if seg.err != nil {
-			t.Fatal(seg.err)
-		}
-		got = append(got, seg.data...)
+	got, err := collectSegments(c.readSegments(context.Background(), segs, 0))
+	if err != nil {
+		t.Fatal(err)
 	}
 	if !bytes.Equal(got, shared) {
 		t.Fatal("fallback read returned the wrong bytes")
 	}
+}
+
+// collectSegments returns the bytes readSegments delivers, or the error that
+// ended them, giving every buffer back as a writer does.
+func collectSegments(segments <-chan segmentData) ([]byte, error) {
+	var (
+		got []byte
+		err error
+	)
+	for seg := range segments {
+		if seg.err != nil && err == nil {
+			err = seg.err
+		}
+		got = append(got, seg.data...)
+		seg.release()
+	}
+	return got, err
 }
 
 // TestAssembleLayerFromChunksReadsReusedChunksInFewReads is the WDY-3213 case:
@@ -608,4 +623,186 @@ func TestWriteAssembledLayerReportsUnverifiedWhenTheBlobAlreadyExists(t *testing
 	if verified {
 		t.Fatal("verified = true for a blob this call never read")
 	}
+}
+
+// useFreshAssemblyBuffers swaps in an empty process-wide buffer pool for the
+// test, so its counters start from zero. No assembly may be running.
+func useFreshAssemblyBuffers(t *testing.T) *bufferPool {
+	t.Helper()
+	p := newBufferPool(assemblyBufferCount, maxSegmentBytes)
+	old := assemblyBuffers
+	assemblyBuffers = p
+	t.Cleanup(func() { assemblyBuffers = old })
+	return p
+}
+
+// requireAllBuffersReturned fails unless every buffer taken from p is back.
+func requireAllBuffersReturned(t *testing.T, p *bufferPool) {
+	t.Helper()
+	if n := p.outstanding.Load(); n != 0 {
+		t.Fatalf("%d segment buffers not returned to the pool", n)
+	}
+	if n := p.allocated.Load(); n > assemblyBufferCount {
+		t.Fatalf("allocated %d segment buffers, want at most %d", n, assemblyBufferCount)
+	}
+}
+
+// waitFor polls cond until it holds, failing the test after 10 s.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); !cond(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
+// stageInterleavedLayer returns a layer alternating an indexed blob's chunks
+// with freshly staged ones, so every chunk is a segment of its own: a layer
+// many segments long without megabytes of fixture. It returns the layer and
+// its chunk hashes, one per planned segment.
+func stageInterleavedLayer(t *testing.T, c *Client, cs content.Store, seed int64) ([]byte, [][32]byte) {
+	t.Helper()
+	prev := randomBytes(seed, 512_000)
+	_, prevRefs := commitIndexedBlob(t, c, cs, prev)
+	var (
+		layer  []byte
+		hashes [][32]byte
+	)
+	for i, r := range prevRefs {
+		layer = append(layer, prev[r.Offset:r.Offset+r.Len]...)
+		fresh := randomBytes(seed*1000+int64(i), 5_000)
+		h := sha256.Sum256(fresh)
+		if err := c.StageChunk(context.Background(), h, fresh); err != nil {
+			t.Fatal(err)
+		}
+		layer = append(layer, fresh...)
+		hashes = append(hashes, r.Hash, h)
+	}
+	if len(hashes) < 2*assemblyBufferCount {
+		t.Fatalf("fixture plans %d segments, want at least %d", len(hashes), 2*assemblyBufferCount)
+	}
+	return layer, hashes
+}
+
+// writeHookStore hands out writers whose every Write is onWrite, given the
+// real writer.
+type writeHookStore struct {
+	content.Store
+	onWrite func(w content.Writer, p []byte) (int, error)
+}
+
+func (s *writeHookStore) Writer(ctx context.Context, opts ...content.WriterOpt) (content.Writer, error) {
+	w, err := s.Store.Writer(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &writeHookWriter{Writer: w, s: s}, nil
+}
+
+type writeHookWriter struct {
+	content.Writer
+	s *writeHookStore
+}
+
+func (w *writeHookWriter) Write(p []byte) (int, error) { return w.s.onWrite(w.Writer, p) }
+
+// TestConcurrentAssembliesShareTheBufferPool: Compose prepares up to four
+// services at once, and every assembly draws its segment buffers from one
+// pool. Four assemblies of distinct layers, many segments each, with their
+// writers held until the readers have drained the pool, all complete, and no
+// more than assemblyBufferCount buffers ever exist.
+func TestConcurrentAssembliesShareTheBufferPool(t *testing.T) {
+	pool := useFreshAssemblyBuffers(t)
+	backend, err := local.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := make(chan struct{})
+	c := newStoreClient(t, &writeHookStore{Store: backend, onWrite: func(w content.Writer, p []byte) (int, error) {
+		<-gate
+		return w.Write(p)
+	}})
+	type fixture struct {
+		layer  []byte
+		hashes [][32]byte
+	}
+	var layers []fixture
+	for i := range 4 {
+		layer, hashes := stageInterleavedLayer(t, c, backend, int64(60+i))
+		layers = append(layers, fixture{layer, hashes})
+	}
+
+	errs := make(chan error, len(layers))
+	for _, l := range layers {
+		go func() {
+			errs <- c.AssembleLayerFromChunks(context.Background(), digest.FromBytes(l.layer).String(), l.hashes)
+		}()
+	}
+	waitFor(t, "the readers to drain the pool", func() bool { return pool.outstanding.Load() == assemblyBufferCount })
+	close(gate)
+	for range layers {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for i, l := range layers {
+		if got := readBlob(t, backend, digest.FromBytes(l.layer)); !bytes.Equal(got, l.layer) {
+			t.Fatalf("layer %d: the committed blob is not the layer", i)
+		}
+	}
+	if n := pool.peak.Load(); n != assemblyBufferCount {
+		t.Fatalf("at most %d segment buffers out at once, want the pool's %d", n, assemblyBufferCount)
+	}
+	requireAllBuffersReturned(t, pool)
+}
+
+// TestACancelledAssemblyReturnsItsBuffers: a deploy cancelled mid-layer, with
+// the reader's pipeline full, gives every buffer back.
+func TestACancelledAssemblyReturnsItsBuffers(t *testing.T) {
+	pool := useFreshAssemblyBuffers(t)
+	backend, err := local.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := newStoreClient(t, &writeHookStore{Store: backend, onWrite: func(content.Writer, []byte) (int, error) {
+		waitFor(t, "the reader to fill its pipeline", func() bool { return pool.outstanding.Load() == assemblyBufferCount })
+		cancel()
+		return 0, errors.New("failed to send write: transport is closing")
+	}})
+	layer, hashes := stageInterleavedLayer(t, c, backend, 70)
+	diffID := digest.FromBytes(layer)
+
+	if err := c.AssembleLayerFromChunks(ctx, diffID.String(), hashes); err == nil {
+		t.Fatal("a cancelled assembly reported success")
+	}
+	if _, err := backend.Info(context.Background(), diffID); err == nil {
+		t.Fatal("a cancelled assembly committed its layer")
+	}
+	requireAllBuffersReturned(t, pool)
+}
+
+// TestAFailedAssemblyReturnsItsBuffers: a corrupt staged chunk mid-layer
+// fails the assembly and gives every buffer back.
+func TestAFailedAssemblyReturnsItsBuffers(t *testing.T) {
+	pool := useFreshAssemblyBuffers(t)
+	c, backend := newLocalStoreClient(t)
+	layer, hashes := stageInterleavedLayer(t, c, backend, 80)
+	corrupt := hashes[len(hashes)/2|1] // odd positions are staged chunks
+	if err := os.WriteFile(c.staging.path(corrupt), randomBytes(81, 5_000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	diffID := digest.FromBytes(layer)
+
+	err := c.AssembleLayerFromChunks(context.Background(), diffID.String(), hashes)
+	if err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+		t.Fatalf("error = %v, want a hash mismatch", err)
+	}
+	if _, err := backend.Info(context.Background(), diffID); err == nil {
+		t.Fatal("a layer with a corrupt chunk was committed")
+	}
+	requireAllBuffersReturned(t, pool)
 }
