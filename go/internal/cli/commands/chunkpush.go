@@ -482,7 +482,14 @@ func pushLayersByChunksWithPrepareModeAndCache(ctx context.Context, cs agentpb.W
 	if uploadErr != nil {
 		cancelPrepare()
 		if prepareDone != nil {
-			if prepareErr := <-prepareDone; strictPrepare && prepareErr != nil {
+			// A strict-prepare rejection is normally more specific than the
+			// upload error and takes priority. But when the upload stalled,
+			// cancelPrepare() above is exactly what makes prepare return
+			// (the agent's PrepareImage blocks on its own layer-chunk waits,
+			// so it is still running when the watchdog fires); the agent then
+			// reports its own cancellation as a bare Canceled status, which
+			// must not stand in for — and hide — the real ErrStalled cause.
+			if prepareErr := <-prepareDone; strictPrepare && prepareErr != nil && !errors.Is(uploadErr, chunkupload.ErrStalled) {
 				return nil, prepareErr
 			}
 		}

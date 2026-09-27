@@ -939,6 +939,49 @@ func TestChunkPushWatchdogStopsAWedgedUncompressedUpload(t *testing.T) {
 	}
 }
 
+// TestPushLayersByChunksWithStrictPrepareOutputRecordsAStall is C1's
+// real-path regression. It runs the watchdog through the actual strict-prepare
+// caller (Compose), with a prepare func shaped exactly like the real agent's
+// PrepareImage: it blocks on its context and, once cancelPrepare() cancels it
+// (fired when the watchdog cancels the upload), returns a bare Canceled
+// status — never ErrStalled itself. Before the C1 fix, that Canceled prepare
+// error overrode uploadErr, so pushLayersByChunksWithPrepareModeAndCache
+// returned Canceled instead of ErrStalled and noteComposeChunkStall never
+// matched, silently dropping the stall.
+func TestPushLayersByChunksWithStrictPrepareOutputRecordsAStall(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = ""; chunkStallTestDir = "" })
+
+	layerTar := variedChunkTestData(200 * 64 << 10)
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}
+	agent := &probeAgent{dev: &probeDevice{staged: map[[32]byte]int{}}, stallAfter: 40}
+	conn, _ := startProbeAgent(t, agent)
+	cfg := chunkUploadConfig{stallTimeout: 300 * time.Millisecond, stallKey: "0123abcd@0.19.3"}
+
+	prepare := func(prepareCtx context.Context, _ []*agentpb.RunContainerLayerHeader) error {
+		<-prepareCtx.Done()
+		return status.Error(codes.Canceled, "context canceled")
+	}
+
+	_, err := pushLayersByChunksWithStrictPrepareOutput(context.Background(), conn.ContainerService, layers, prepare, nil, cfg)
+	if !errors.Is(err, chunkupload.ErrStalled) {
+		t.Fatalf("error = %v, want ErrStalled (the strict-prepare Canceled error masked the stall)", err)
+	}
+
+	// The chain works end to end: Compose's noteComposeChunkStall recognizes
+	// this exact error and remembers the device.
+	var log strings.Builder
+	noteComposeChunkStall(&log, err, cfg)
+	if !chunkUploadStalledRecently(cfg.stallKey, time.Now()) {
+		t.Fatal("the stall was not remembered")
+	}
+}
+
 // TestComposeChunkStallIsRemembered: compose has no reconnect-and-retry loop;
 // a stall falls through to its registry fallback, and the device is
 // remembered so the next deploy uses gzip.
