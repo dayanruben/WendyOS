@@ -118,11 +118,25 @@ type assemblyChunk struct {
 // layer becomes a few dozen large reads instead of two containerd RPCs per
 // 64 KiB chunk (WDY-3213). It also returns each chunk's range in the blob being
 // assembled, for the index, and that blob's size.
+//
+// Every planned chunk is 1 to maxStagedChunkBytes long, which bounds each
+// segment's size and keeps the sums below from wrapping. A length outside
+// that range means a corrupt staged file or index entry; see plausibleChunkLen.
 func (c *Client) planAssembly(hashes [][32]byte) ([]assemblySegment, []chunk.Ref, int64, error) {
 	stagedLen := make([]int64, len(hashes))
 	var unstaged [][32]byte
 	for i, h := range hashes {
-		if n, ok := c.staging.statLen(h); ok {
+		n, ok := c.staging.statLen(h)
+		if ok && !plausibleChunkLen(uint64(n)) {
+			// No chunk can be this: StageChunk bounds its size, and a layer
+			// has no empty chunks. The staging area writes without fsync, so
+			// a power cut can leave a chunk's file empty. MissingChunks would
+			// report it present and staging.write would never replace it, so
+			// remove it: the CLI then sends the chunk again.
+			c.staging.remove(h)
+			ok = false
+		}
+		if ok {
 			stagedLen[i] = n
 		} else {
 			stagedLen[i] = -1
@@ -154,6 +168,13 @@ func (c *Client) planAssembly(hashes [][32]byte) ([]assemblySegment, []chunk.Ref
 			}
 			loc := locs[next]
 			next++
+			if !plausibleChunkLen(loc.Len) {
+				// A corrupt entry. MissingChunks checks only that a range
+				// fits its blob, so it would keep reporting the chunk
+				// present; forget the blob, so the CLI sends it again.
+				c.dropIndexedBlob(loc.Blob)
+				return nil, nil, 0, fmt.Errorf("chunk %d (%x) unavailable", i, h)
+			}
 			n, blob, off = loc.Len, loc.Blob, loc.Offset
 		}
 		last := len(segs) - 1
@@ -168,6 +189,20 @@ func (c *Client) planAssembly(hashes [][32]byte) ([]assemblySegment, []chunk.Ref
 		total += int64(n)
 	}
 	return segs, refs, total, nil
+}
+
+// plausibleChunkLen reports whether n can be a chunk's length: neither empty
+// nor larger than StageChunk accepts.
+func plausibleChunkLen(n uint64) bool {
+	return n > 0 && n <= maxStagedChunkBytes
+}
+
+// dropIndexedBlob forgets every index entry for blob, so the next
+// MissingChunks reports its chunks missing and the CLI sends them again.
+func (c *Client) dropIndexedBlob(blob string) {
+	if err := c.chunkIndex.Drop(blob); err != nil {
+		c.logger.Warn("Dropping stale chunk-index entries failed", zap.String("blob", blob), zap.Error(err))
+	}
 }
 
 // segmentData is one segment's verified bytes, or the error that ended reading.
@@ -202,6 +237,20 @@ func (c *Client) readSegments(ctx context.Context, segs []assemblySegment, skip 
 	out := make(chan segmentData, assemblyReadAhead)
 	go func() {
 		defer close(out)
+		var held []byte // acquired and not yet delivered
+		defer func() {
+			if held != nil {
+				assemblyBuffers.release(held)
+			}
+			// No gRPC handler's recovery covers this goroutine, so a panic
+			// here would take the agent down. Fail the assembly instead.
+			if p := recover(); p != nil {
+				select {
+				case out <- segmentData{err: fmt.Errorf("reading layer segments: panic: %v", p)}:
+				case <-ctx.Done():
+				}
+			}
+		}()
 		r := segmentReader{c: c, ctx: ctx, readers: map[string]content.ReaderAt{}}
 		defer r.close()
 		if blobs != nil {
@@ -221,9 +270,11 @@ func (c *Client) readSegments(ctx context.Context, segs []assemblySegment, skip 
 			if err != nil {
 				return // ctx ended
 			}
+			held = buf
 			data := buf[:seg.size]
 			if err := r.read(seg, data); err != nil {
-				assemblyBuffers.release(buf)
+				assemblyBuffers.release(buf) // before waiting to report the error
+				held = nil
 				select {
 				case out <- segmentData{err: err}:
 				case <-ctx.Done():
@@ -235,8 +286,8 @@ func (c *Client) readSegments(ctx context.Context, segs []assemblySegment, skip 
 			}
 			select {
 			case out <- segmentData{data: data, buf: buf}:
+				held = nil
 			case <-ctx.Done():
-				assemblyBuffers.release(buf)
 				return
 			}
 		}
@@ -260,35 +311,41 @@ func (r *segmentReader) close() {
 
 // read fills data, seg.size bytes long, with seg's bytes, and fails unless
 // every chunk in it matches its hash.
+//
+// A chunk that fails its hash fails the assembly, and would fail every later
+// one the same way: staging.write never replaces a staged file, and an index
+// entry stays until its blob goes. So the failing copy goes too, and the next
+// MissingChunks reports the chunk missing, so the CLI sends it again.
 func (r *segmentReader) read(seg assemblySegment, data []byte) error {
 	if seg.blob != "" {
 		if err := r.readBlob(seg.blob, seg.offset, data); err != nil {
 			return err
 		}
-	} else {
-		var off uint64
-		for _, ch := range seg.chunks {
-			if err := r.readStaged(ch, data[off:off+ch.len]); err != nil {
-				return err
-			}
-			off += ch.len
-		}
+		return r.checkIndexed(seg.blob, seg.chunks, data)
 	}
 	var off uint64
 	for _, ch := range seg.chunks {
-		if sha256.Sum256(data[off:off+ch.len]) != ch.hash {
-			return fmt.Errorf("chunk %x hash mismatch", ch.hash)
+		if err := r.readStaged(ch, data[off:off+ch.len]); err != nil {
+			return err
 		}
 		off += ch.len
 	}
 	return nil
 }
 
-// readStaged fills dst with a staged chunk. When another layer's assembly has
-// consumed the file since planning, the chunk is read from the blob that
-// assembly indexed it into — the fallback the per-chunk reader always had.
+// readStaged fills dst with a staged chunk and checks its hash, removing a
+// staged file that fails it. When another layer's assembly has consumed the
+// file since planning, the chunk is read from the blob that assembly indexed
+// it into — the fallback the per-chunk reader always had.
 func (r *segmentReader) readStaged(ch assemblyChunk, dst []byte) error {
 	err := r.c.staging.readInto(ch.hash, dst)
+	if err == nil {
+		if sha256.Sum256(dst) != ch.hash {
+			r.c.staging.remove(ch.hash)
+			return fmt.Errorf("staged chunk %x hash mismatch", ch.hash)
+		}
+		return nil
+	}
 	if !os.IsNotExist(err) {
 		return err
 	}
@@ -296,7 +353,24 @@ func (r *segmentReader) readStaged(ch assemblyChunk, dst []byte) error {
 	if !ok || loc.Len != ch.len {
 		return fmt.Errorf("chunk %x unavailable", ch.hash)
 	}
-	return r.readBlob(loc.Blob, loc.Offset, dst)
+	if err := r.readBlob(loc.Blob, loc.Offset, dst); err != nil {
+		return err
+	}
+	return r.checkIndexed(loc.Blob, []assemblyChunk{ch}, dst)
+}
+
+// checkIndexed fails unless data, read from blob, holds chunks in order,
+// dropping the blob's index entries when a range fails its hash.
+func (r *segmentReader) checkIndexed(blob string, chunks []assemblyChunk, data []byte) error {
+	var off uint64
+	for _, ch := range chunks {
+		if sha256.Sum256(data[off:off+ch.len]) != ch.hash {
+			r.c.dropIndexedBlob(blob)
+			return fmt.Errorf("indexed chunk %x hash mismatch in %s", ch.hash, blob)
+		}
+		off += ch.len
+	}
+	return nil
 }
 
 // readBlob fills dst from blob at off.
@@ -312,9 +386,7 @@ func (r *segmentReader) readBlob(blob string, off uint64, dst []byte) error {
 			if errdefs.IsNotFound(err) {
 				// The index outlived the blob. Forget it, so the next
 				// QueryChunks asks the CLI for these chunks again.
-				if derr := r.c.chunkIndex.Drop(blob); derr != nil {
-					r.c.logger.Warn("Dropping stale chunk-index entries failed", zap.String("blob", blob), zap.Error(derr))
-				}
+				r.c.dropIndexedBlob(blob)
 			}
 			return fmt.Errorf("opening indexed blob %s: %w", blob, err)
 		}
@@ -492,7 +564,8 @@ func (c *Client) checkResumedPrefix(ctx context.Context, dgst digest.Digest, seg
 }
 
 // verifyPrefix checks the chunks of segs that start in the first prefix bytes
-// of the blob dgst against their hashes; see checkResumedPrefix.
+// of the blob dgst against their hashes; see checkResumedPrefix. planAssembly
+// bounds every chunk to maxStagedChunkBytes, so a chunk always fits a piece.
 func (c *Client) verifyPrefix(ctx context.Context, dgst digest.Digest, segs []assemblySegment, prefix int64) error {
 	ra, err := c.client.ContentStore().ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
 	if err != nil {

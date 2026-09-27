@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -624,6 +625,163 @@ func TestAssembleLayerFromChunksRejectsACorruptStagedChunk(t *testing.T) {
 	if _, err := cs.Info(context.Background(), diffID); err == nil {
 		t.Fatal("a layer with a corrupt chunk was committed")
 	}
+	// staging.write never replaces a file, so a corrupt one left in place
+	// would fail every later assembly while MissingChunks reported it present.
+	if c.staging.has(h) {
+		t.Fatal("the corrupt staged chunk is still staged")
+	}
+}
+
+// TestAssemblyDropsAnIndexedBlobWhoseRangeFailsItsHash: an index entry whose
+// range does not hold its chunk fails every read of it. The assembly fails,
+// and the blob's entries go, so the next MissingChunks asks for the chunks
+// again.
+func TestAssemblyDropsAnIndexedBlobWhoseRangeFailsItsHash(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// staged plans the chunk while it is staged and removes the file
+		// before the read, so the reader falls back to the index.
+		staged bool
+	}{
+		{"planned from the index", false},
+		{"staged file consumed, read from the index", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, cs := newCountingStoreClient(t)
+			data := randomBytes(95, 10_000)
+			h := sha256.Sum256(data)
+			other := randomBytes(96, 30_000)
+			blob, _ := commitIndexedBlob(t, c, cs, other)
+			var segs []assemblySegment
+			if tc.staged {
+				if err := c.StageChunk(context.Background(), h, data); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				if segs, _, _, err = c.planAssembly([][32]byte{h}); err != nil {
+					t.Fatal(err)
+				}
+				c.staging.remove(h)
+			}
+			// A wrong entry: the chunk's hash, at a range of a blob holding other bytes.
+			if err := c.chunkIndex.AddLayer(blob.String(), []chunk.Ref{{Hash: h, Offset: 100, Len: uint64(len(data))}}); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.staged {
+				var err error
+				if segs, _, _, err = c.planAssembly([][32]byte{h}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			_, err := collectSegments(c.readSegments(context.Background(), segs, 0, nil))
+			if err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+				t.Fatalf("error = %v, want a hash mismatch", err)
+			}
+			if blobs, err := c.chunkIndex.Blobs(); err != nil || len(blobs) != 0 {
+				t.Fatalf("indexed blobs = %v (%v), want the failing blob's entries dropped", blobs, err)
+			}
+		})
+	}
+}
+
+// TestPlanAssemblyRejectsImplausibleIndexedLengths: no chunk is empty or
+// larger than StageChunk accepts. A corrupt index length could wrap the
+// coalesced segment size and panic the reader goroutine, which no gRPC
+// handler's recovery covers, taking the agent down. The chunk is unavailable
+// instead, and the blob's entries go, so the next MissingChunks, which
+// checks only that a range fits its blob, asks for the chunks again.
+func TestPlanAssemblyRejectsImplausibleIndexedLengths(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		refs []chunk.Ref
+	}{
+		{"empty", []chunk.Ref{{Hash: [32]byte{1}, Len: 0}}},
+		{"larger than a staged chunk may be", []chunk.Ref{{Hash: [32]byte{1}, Len: maxStagedChunkBytes + 1}}},
+		{"wrapping the segment size", []chunk.Ref{
+			{Hash: [32]byte{1}, Offset: 0, Len: 10},
+			{Hash: [32]byte{2}, Offset: 10, Len: math.MaxUint64 - 5},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newCountingStoreClient(t)
+			if err := c.chunkIndex.AddLayer(digest.FromString("corrupt").String(), tc.refs); err != nil {
+				t.Fatal(err)
+			}
+			var hashes [][32]byte
+			for _, r := range tc.refs {
+				hashes = append(hashes, r.Hash)
+			}
+			if _, _, _, err := c.planAssembly(hashes); err == nil || !strings.Contains(err.Error(), "unavailable") {
+				t.Fatalf("error = %v, want an unavailable chunk", err)
+			}
+			if blobs, err := c.chunkIndex.Blobs(); err != nil || len(blobs) != 0 {
+				t.Fatalf("indexed blobs = %v (%v), want the corrupt blob's entries dropped", blobs, err)
+			}
+		})
+	}
+}
+
+// TestPlanAssemblyRemovesAStagedFileNoChunkCouldBe: the staging area writes
+// without fsync, so a power cut can leave a chunk's file empty. MissingChunks
+// would report it present and staging.write would never replace it; the
+// planner removes it, so the CLI sends the chunk again.
+func TestPlanAssemblyRemovesAStagedFileNoChunkCouldBe(t *testing.T) {
+	c, _ := newCountingStoreClient(t)
+	h := sha256.Sum256([]byte("a chunk whose file was cut short"))
+	if err := os.MkdirAll(c.staging.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.staging.path(h), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := c.planAssembly([][32]byte{h}); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("error = %v, want an unavailable chunk", err)
+	}
+	if c.staging.has(h) {
+		t.Fatal("the empty staged file is still there")
+	}
+}
+
+// panickingStore's readers panic on every read.
+type panickingStore struct{ content.Store }
+
+func (s panickingStore) ReaderAt(ctx context.Context, desc ocispec.Descriptor) (content.ReaderAt, error) {
+	ra, err := s.Store.ReaderAt(ctx, desc)
+	if err != nil {
+		return nil, err
+	}
+	return panickingReaderAt{ra}, nil
+}
+
+type panickingReaderAt struct{ content.ReaderAt }
+
+func (panickingReaderAt) ReadAt([]byte, int64) (int, error) { panic("corrupt read") }
+
+// TestReadSegmentsTurnsAPanicIntoAnError: a panic on the reader goroutine
+// fails the assembly and gives its buffer back, instead of killing the agent.
+func TestReadSegmentsTurnsAPanicIntoAnError(t *testing.T) {
+	pool := useFreshAssemblyBuffers(t)
+	backend, err := local.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newStoreClient(t, panickingStore{backend})
+	_, refs := commitIndexedBlob(t, c, backend, randomBytes(97, 200_000))
+	var hashes [][32]byte
+	for _, r := range refs {
+		hashes = append(hashes, r.Hash)
+	}
+	segs, _, _, err := c.planAssembly(hashes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = collectSegments(c.readSegments(context.Background(), segs, 0, nil))
+	if err == nil || !strings.Contains(err.Error(), "panic") {
+		t.Fatalf("error = %v, want the recovered panic", err)
+	}
+	requireAllBuffersReturned(t, pool)
 }
 
 // TestWriteAssembledLayerReportsUnverifiedWhenTheBlobAlreadyExists covers rule
