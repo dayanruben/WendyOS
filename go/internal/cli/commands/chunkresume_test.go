@@ -358,6 +358,7 @@ func TestPushLayersResumingTunnelDropsResumesWithSeveralStreamsOpen(t *testing.T
 	defer restoreOut()
 	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "16")
 	t.Setenv("WENDY_CHUNK_UPLOAD_STREAMS", "")
+	t.Cleanup(func() { manifestCacheTestDir = "" })
 
 	for iter := 0; iter < 5; iter++ {
 		manifestCacheTestDir = t.TempDir()
@@ -412,5 +413,4 @@ func TestPushLayersResumingTunnelDropsResumesWithSeveralStreamsOpen(t *testing.T
 			t.Fatalf("iter %d: the resume re-sent %d chunk(s) the device already had", iter, dups)
 		}
 	}
-	manifestCacheTestDir = ""
 }

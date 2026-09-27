@@ -91,7 +91,7 @@ func startGRPCProbeServer(t *testing.T, ps *grpcProbeServer) (agentpb.WendyConta
 // chunkresume.go), which chunkupload cannot import: cli/commands depends on
 // chunkupload, not the other way around. Kept in sync by hand; the two are
 // exercised together end to end by
-// TestProbeTunnelDropWithSeveralStreamsResumes in cli/commands.
+// TestPushLayersResumingTunnelDropsResumesWithSeveralStreamsOpen in cli/commands.
 func cliRetryable(err error) bool {
 	if err == nil {
 		return false
