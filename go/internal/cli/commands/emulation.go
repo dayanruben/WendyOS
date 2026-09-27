@@ -47,13 +47,22 @@ func platformBuildArch(platform string) string {
 }
 
 // emulatedBuildNotice returns the notice for a local build of platform on a
-// hostArch machine, or "" when the build runs natively or either
+// hostOS/hostArch machine, or "" when the build runs natively or either
 // architecture is unknown. buildHostSupported says whether this project could
 // use --build-host instead: remote builds take single-service projects only.
-func emulatedBuildNotice(hostArch, platform string, buildHostSupported bool) string {
+//
+// hostOS matters for exactly one pair: an arm64 host building a 32-bit arm
+// (AArch32) target. Everywhere except Apple silicon, the kernel runs AArch32
+// binaries natively through compat mode, so there is no QEMU and no benefit
+// to --build-host; Apple silicon has no AArch32 support at all, so that
+// build really does run under QEMU there.
+func emulatedBuildNotice(hostOS, hostArch, platform string, buildHostSupported bool) string {
 	host := normalizeBuildArch(hostArch)
 	target := platformBuildArch(platform)
 	if host == "" || target == "" || host == target {
+		return ""
+	}
+	if host == "arm64" && target == "arm" && hostOS != "darwin" {
 		return ""
 	}
 	msg := fmt.Sprintf("Building %s on this %s machine: RUN steps run under QEMU emulation, often several times slower than native.", platform, host)
@@ -71,11 +80,11 @@ var emulatedBuildNoticeOnce sync.Once
 // a local image build of platform. Call it only once the build will really
 // run here: after the no-build fast paths, and never for --build-host.
 func noteEmulatedBuild(platform string, buildHostSupported bool) {
-	noteEmulatedBuildWith(&emulatedBuildNoticeOnce, hostBuildArch(), platform, buildHostSupported, func(msg string) { cliNotice("%s", msg) })
+	noteEmulatedBuildWith(&emulatedBuildNoticeOnce, runtime.GOOS, hostBuildArch(), platform, buildHostSupported, func(msg string) { cliNotice("%s", msg) })
 }
 
-func noteEmulatedBuildWith(once *sync.Once, hostArch, platform string, buildHostSupported bool, print func(string)) {
-	msg := emulatedBuildNotice(hostArch, platform, buildHostSupported)
+func noteEmulatedBuildWith(once *sync.Once, hostOS, hostArch, platform string, buildHostSupported bool, print func(string)) {
+	msg := emulatedBuildNotice(hostOS, hostArch, platform, buildHostSupported)
 	if msg == "" {
 		return // a native build does not use up the once
 	}

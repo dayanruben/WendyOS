@@ -26,23 +26,26 @@ func TestNativeHostArch(t *testing.T) {
 func TestEmulatedBuildNotice(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
+		hostOS   string
 		host     string
 		platform string
 		want     []string // substrings; nil means no notice
 	}{
-		{"x86 host, arm64 device", "amd64", "linux/arm64", []string{"linux/arm64", "amd64 machine", "QEMU", "--build-host=DEVICE", "native arm64 WendyOS device"}},
-		{"x86_64 spelling", "x86_64", "linux/arm64", []string{"QEMU"}},
-		{"Apple silicon, x86 device", "arm64", "linux/amd64", []string{"linux/amd64", "arm64 machine", "native amd64 WendyOS device"}},
-		{"arm64 host, 32-bit arm device", "arm64", "linux/arm/v7", []string{"linux/arm/v7"}},
-		{"native arm64", "arm64", "linux/arm64", nil},
-		{"native arm64 with variant", "arm64", "linux/arm64/v8", nil},
-		{"native aarch64 spelling", "arm64", "linux/aarch64", nil},
-		{"native amd64, x86_64 spelling", "amd64", "linux/x86_64", nil},
-		{"no architecture in the platform", "amd64", "linux", nil},
-		{"unknown host", "", "linux/arm64", nil},
+		{"x86 host, arm64 device", "linux", "amd64", "linux/arm64", []string{"linux/arm64", "amd64 machine", "QEMU", "--build-host=DEVICE", "native arm64 WendyOS device"}},
+		{"x86_64 spelling", "linux", "x86_64", "linux/arm64", []string{"QEMU"}},
+		{"Apple silicon, x86 device", "darwin", "arm64", "linux/amd64", []string{"linux/amd64", "arm64 machine", "native amd64 WendyOS device"}},
+		{"arm64 Linux host, 32-bit arm device: compat mode runs it natively, no QEMU", "linux", "arm64", "linux/arm/v7", nil},
+		{"arm64 Windows host, 32-bit arm device: not Apple silicon, no QEMU", "windows", "arm64", "linux/arm/v7", nil},
+		{"Apple silicon, 32-bit arm device: no AArch32 support, really QEMU", "darwin", "arm64", "linux/arm/v7", []string{"linux/arm/v7"}},
+		{"native arm64", "linux", "arm64", "linux/arm64", nil},
+		{"native arm64 with variant", "linux", "arm64", "linux/arm64/v8", nil},
+		{"native aarch64 spelling", "linux", "arm64", "linux/aarch64", nil},
+		{"native amd64, x86_64 spelling", "linux", "amd64", "linux/x86_64", nil},
+		{"no architecture in the platform", "linux", "amd64", "linux", nil},
+		{"unknown host", "linux", "", "linux/arm64", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := emulatedBuildNotice(tc.host, tc.platform, true)
+			got := emulatedBuildNotice(tc.hostOS, tc.host, tc.platform, true)
 			if tc.want == nil {
 				if got != "" {
 					t.Fatalf("unexpected notice %q", got)
@@ -59,7 +62,7 @@ func TestEmulatedBuildNotice(t *testing.T) {
 
 	// Multi-service and Compose projects cannot use --build-host yet, so the
 	// notice must not tell them to.
-	got := emulatedBuildNotice("amd64", "linux/arm64", false)
+	got := emulatedBuildNotice("linux", "amd64", "linux/arm64", false)
 	if strings.Contains(got, "--build-host=DEVICE") || !strings.Contains(got, "single-service projects only") {
 		t.Fatalf("group notice %q", got)
 	}
@@ -73,12 +76,12 @@ func TestNoteEmulatedBuildPrintsOnce(t *testing.T) {
 	var printed []string
 	print := func(msg string) { printed = append(printed, msg) }
 
-	noteEmulatedBuildWith(&once, "amd64", "linux/amd64", true, print)
+	noteEmulatedBuildWith(&once, "linux", "amd64", "linux/amd64", true, print)
 	if len(printed) != 0 {
 		t.Fatalf("a native build printed %q", printed)
 	}
 	for range 3 {
-		noteEmulatedBuildWith(&once, "amd64", "linux/arm64", true, print)
+		noteEmulatedBuildWith(&once, "linux", "amd64", "linux/arm64", true, print)
 	}
 	if len(printed) != 1 {
 		t.Fatalf("printed %d notices, want 1: %q", len(printed), printed)
