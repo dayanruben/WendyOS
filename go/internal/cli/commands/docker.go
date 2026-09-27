@@ -2241,7 +2241,7 @@ func noteComposeChunkStall(logOutput io.Writer, chunkErr error, cfg chunkUploadC
 		return
 	}
 	_ = rememberChunkUploadStall(cfg.stallKey, time.Now())
-	fmt.Fprintf(logOutput, "[chunks] no upload progress for %s; this device uses gzip for the next 30 days\n", cfg.stallTimeout)
+	fmt.Fprintf(logOutput, "[chunks] no upload progress for %s; this device uses gzip for the next %d days\n", cfg.stallTimeout, chunkStallMemoryDays)
 }
 
 // buildAndPrepareComposeImageForAgent is the default Compose image path. It

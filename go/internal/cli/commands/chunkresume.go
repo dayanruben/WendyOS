@@ -111,6 +111,14 @@ func pushLayersResumingTunnelDrops(ctx context.Context, conn *grpcclient.AgentCo
 			return cur, headers, nil
 		}
 		stalled := errors.Is(err, chunkupload.ErrStalled)
+		if stalled {
+			// Best effort: a memory we cannot write only means the next
+			// deploy tries uncompressed again. Remembered unconditionally
+			// here — including on the final attempt, whose exhausted-return
+			// below would otherwise skip it (M7): a stall the CLI is about to
+			// give up on is exactly the one most worth not repeating.
+			_ = rememberChunkUploadStall(cfg.stallKey, time.Now())
+		}
 		if attempt == chunkPushResumeAttempts || !(stalled || (cur.Reconnect != nil && retryableTunnelError(err))) {
 			return cur, nil, err
 		}
@@ -120,10 +128,7 @@ func pushLayersResumingTunnelDrops(ctx context.Context, conn *grpcclient.AgentCo
 			rerr error
 		)
 		if stalled {
-			// Best effort: a memory we cannot write only means the next
-			// deploy tries uncompressed again.
-			_ = rememberChunkUploadStall(cfg.stallKey, time.Now())
-			cliNotice("No chunk upload progress for %s; reconnecting and resending with gzip — chunks already staged on the device are skipped, and this device stays on gzip for 30 days (attempt %d/%d)...", cfg.stallTimeout, attempt+1, chunkPushResumeAttempts)
+			cliNotice("No chunk upload progress for %s; reconnecting and resending with gzip — chunks already staged on the device are skipped, and this device stays on gzip for %d days (delete <user cache dir>/wendy/chunk-upload-stalls.json or set WENDY_CHUNK_COMPRESSION=none to reset) (attempt %d/%d)...", cfg.stallTimeout, chunkStallMemoryDays, attempt+1, chunkPushResumeAttempts)
 			cfg = gzipChunkUploadConfig
 			next, rerr = reconnectAgentAfterRestart(ctx, cur)
 		} else {
@@ -131,6 +136,12 @@ func pushLayersResumingTunnelDrops(ctx context.Context, conn *grpcclient.AgentCo
 			next, rerr = cur.Reconnect(ctx)
 		}
 		if rerr != nil {
+			if stalled {
+				// The reconnect failure must not swallow the stall that
+				// triggered it (M3): callers (and errors.Is(err,
+				// chunkupload.ErrStalled) checks) still need to see it.
+				return cur, nil, fmt.Errorf("chunk upload stalled (%w), and reconnecting failed: %v", chunkupload.ErrStalled, rerr)
+			}
 			return cur, nil, fmt.Errorf("reconnecting to resume the chunk push: %w", rerr)
 		}
 		if cur != conn {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/chunkupload"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -247,6 +248,94 @@ func TestPushLayersResumingTunnelDropsGivesUpAfterAttempts(t *testing.T) {
 	}
 	if cClosed {
 		t.Error("the final conn is the caller's to close, not pushLayersResumingTunnelDrops's")
+	}
+}
+
+// TestPushLayersResumingTunnelDropsWrapsAFailedReconnectAfterAStall is M3: the
+// reconnect that follows a stall can itself fail (the agent is slow to come
+// back, or unreachable). The returned error must still say the upload
+// stalled — errors.Is(err, chunkupload.ErrStalled) — rather than surfacing
+// only the reconnect failure and hiding what actually triggered it.
+func TestPushLayersResumingTunnelDropsWrapsAFailedReconnectAfterAStall(t *testing.T) {
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "16")
+	manifestCacheTestDir = t.TempDir()
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = ""; chunkStallTestDir = "" })
+
+	layerTar := variedChunkTestData(200 * 64 << 10)
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}
+	agent := &probeAgent{dev: &probeDevice{staged: map[[32]byte]int{}}, stallAfter: 5}
+	conn, _ := startProbeAgent(t, agent)
+	// No Reconnect closure: reconnectAgentAfterRestart falls to the LAN
+	// redial path (waitForAgentRestart), which re-dials this bogus address,
+	// never finds an agent, and fails once ctx expires.
+	conn.Addr = "127.0.0.1:1"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	cfg := chunkUploadConfig{stallTimeout: 30 * time.Millisecond, stallKey: "0123abcd@0.19.3"}
+
+	_, _, err := pushLayersResumingTunnelDrops(ctx, conn, layers, nil, cfg)
+	if !errors.Is(err, chunkupload.ErrStalled) {
+		t.Fatalf("error = %v, want it to still satisfy errors.Is(err, chunkupload.ErrStalled)\n%s", err, out.String())
+	}
+	if !chunkUploadStalledRecently(cfg.stallKey, time.Now()) {
+		t.Fatal("the stall was not remembered even though the reconnect failed")
+	}
+}
+
+// TestPushLayersResumingTunnelDropsRemembersAStallOnTheFinalAttempt is M7:
+// attempts 1 and 2 fail the capability probe outright (a tunnel drop, so the
+// loop reconnects without ever touching cfg), and attempt 3 — the loop's
+// last, chunkPushResumeAttempts — stalls. The attempt-exhausted return must
+// still remember the stall; before the M7 fix it returned straight past the
+// block that does, and the device's next deploy would try uncompressed again
+// instead of skipping straight to gzip.
+func TestPushLayersResumingTunnelDropsRemembersAStallOnTheFinalAttempt(t *testing.T) {
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "16")
+	manifestCacheTestDir = t.TempDir()
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = ""; chunkStallTestDir = "" })
+
+	layerTar := variedChunkTestData(200 * 64 << 10)
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}
+
+	connA := &grpcclient.AgentConnection{ContainerService: &unavailableContainerClient{}}
+	connB := &grpcclient.AgentConnection{ContainerService: &unavailableContainerClient{}}
+	agentC := &probeAgent{dev: &probeDevice{staged: map[[32]byte]int{}}, stallAfter: 5}
+	connC, _ := startProbeAgent(t, agentC)
+	connA.Reconnect = func(context.Context) (*grpcclient.AgentConnection, error) { return connB, nil }
+	connB.Reconnect = func(context.Context) (*grpcclient.AgentConnection, error) { return connC, nil }
+
+	cfg := chunkUploadConfig{stallTimeout: 200 * time.Millisecond, stallKey: "0123abcd@0.19.3"}
+	if chunkPushResumeAttempts != 3 {
+		t.Fatalf("this test assumes chunkPushResumeAttempts == 3 (connA -> connB -> connC), got %d", chunkPushResumeAttempts)
+	}
+
+	_, _, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil, cfg)
+	if !errors.Is(err, chunkupload.ErrStalled) {
+		t.Fatalf("error = %v, want ErrStalled\n%s", err, out.String())
+	}
+	if !chunkUploadStalledRecently(cfg.stallKey, time.Now()) {
+		t.Fatal("the stall on the final (attempt-exhausted) attempt was not remembered")
 	}
 }
 

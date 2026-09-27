@@ -22,13 +22,22 @@ const (
 
 	// chunkStallTimeout is how long uncompressed WriteChunks streams may sit
 	// open with no progress before the push reconnects and retries with gzip.
-	// It exceeds the 17–27 s NVMe write stalls seen on an Orin Nano (WDY-3210),
-	// and a false positive only costs a switch to gzip.
+	// It exceeds the 17–27 s NVMe write stalls seen on an Orin Nano (WDY-3210).
+	// A false positive costs more than that one retry: rememberChunkUploadStall
+	// keeps the device on gzip for chunkStallMemory (30 days), so pick this
+	// generously rather than risk flagging a merely slow — not wedged — link.
 	chunkStallTimeout = 30 * time.Second
 
 	// chunkStallMemory is how long a device that stalled uncompressed stays
 	// on gzip.
 	chunkStallMemory = 30 * 24 * time.Hour
+
+	// chunkStallMemoryDays is chunkStallMemory expressed the way the fallback
+	// notices word it. A const (rather than computing it at print time) keeps
+	// the two notices (chunkresume.go and noteComposeChunkStall) and this
+	// value from drifting apart the way a hard-coded "30 days" in each string
+	// could.
+	chunkStallMemoryDays = int(chunkStallMemory / (24 * time.Hour))
 
 	// firstUncompressedChunkOSVersion is the first WendyOS that auto sends
 	// uncompressed chunks to. #1765's link stall was reproduced on 0.18.2.
