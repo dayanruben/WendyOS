@@ -208,6 +208,7 @@ func newDeprecatedDeviceVersionCmd() *cobra.Command {
 func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 	var checkUpdates bool
 	var prerelease bool
+	var readOnly bool
 
 	cmd := &cobra.Command{
 		Use:    use,
@@ -223,7 +224,15 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				}
 			}
 
-			target, err := resolveTarget(ctx, IncludeBluetooth())
+			var target *SelectedDevice
+			var err error
+			if readOnly {
+				var conn *grpcclient.AgentConnection
+				conn, err = connectToAgent(ctx, ReadOnlyMonitoring())
+				target = &SelectedDevice{Agent: conn}
+			} else {
+				target, err = resolveTarget(ctx, IncludeBluetooth())
+			}
 			if err != nil {
 				return err
 			}
@@ -530,6 +539,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 	cmd.Flags().BoolVar(&checkUpdates, "check-updates", false, "Check for available agent updates on GitHub")
 	cmd.Flags().BoolVar(&prerelease, "prerelease", false, "Include prerelease (nightly) builds when checking for updates")
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Observe an existing agent without starting VMs or managing updates")
 
 	return cmd
 }
@@ -1340,6 +1350,7 @@ func formatKernelLogRecord(rec *agentpb.KernelLogRecord) string {
 
 func newDeviceLogsCmd() *cobra.Command {
 	var appName string
+	var readOnly bool
 	var serviceName string
 	var minSeverity int32
 	var level string
@@ -1369,7 +1380,7 @@ func newDeviceLogsCmd() *cobra.Command {
 				appName = args[0]
 			}
 
-			conn, err := connectToAgent(ctx)
+			conn, err := connectToAgent(ctx, monitoringOptions(readOnly)...)
 			if err != nil {
 				if errors.Is(ctx.Err(), context.Canceled) {
 					return nil
@@ -1506,6 +1517,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
 	cmd.Flags().Int32Var(&tail, "tail", 0, "Request the last N stored log batches matching the filters (default 0); continue live unless --no-follow")
 	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Return after available log history instead of following live output")
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Observe an existing device without starting VMs or managing updates")
 
 	return cmd
 }
