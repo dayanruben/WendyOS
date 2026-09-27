@@ -14,6 +14,9 @@ import (
 func TestChooseChunkUploadConfig(t *testing.T) {
 	never := func(string) bool { return false }
 	lan := func(osVersion string) chunkUploadTarget {
+		return chunkUploadTarget{osVersion: osVersion, deviceKey: "0123abcd", directLink: true}
+	}
+	routable := func(osVersion string) chunkUploadTarget {
 		return chunkUploadTarget{osVersion: osVersion, deviceKey: "0123abcd"}
 	}
 	uncompressed := func(key string) chunkUploadConfig {
@@ -33,11 +36,14 @@ func TestChooseChunkUploadConfig(t *testing.T) {
 		{"auto: non-WendyOS distro version", "", lan("24.04"), never, uncompressed("0123abcd@24.04")},
 		{"auto: WendyOS 0.18.2 (#1765)", "", lan("0.18.2"), never, gzipChunkUploadConfig},
 		{"auto: unknown OS version", "", lan(""), never, gzipChunkUploadConfig},
-		{"auto: cloud tunnel", "", chunkUploadTarget{tunnel: true, osVersion: "0.19.3", deviceKey: "0123abcd"}, never, gzipChunkUploadConfig},
+		{"auto: cloud tunnel", "", chunkUploadTarget{tunnel: true, osVersion: "0.19.3", deviceKey: "0123abcd", directLink: true}, never, gzipChunkUploadConfig},
 		{"auto: stalled before", "", lan("0.19.3"), func(k string) bool { return k == "0123abcd@0.19.3" }, gzipChunkUploadConfig},
-		{"auto: no device key records nothing", "", chunkUploadTarget{osVersion: "0.19.3"}, never, uncompressed("")},
+		{"auto: no device key records nothing", "", chunkUploadTarget{osVersion: "0.19.3", directLink: true}, never, uncompressed("")},
+		{"auto: routable LAN address keeps gzip", "", routable("0.19.3"), never, gzipChunkUploadConfig},
+		{"auto: routable Wi-Fi address keeps gzip even with no stall history", "", routable("0.19.3"), never, gzipChunkUploadConfig},
 		{"gzip forced on a direct link", "gzip", lan("0.19.3"), never, gzipChunkUploadConfig},
-		{"none forced over a tunnel", "none", chunkUploadTarget{tunnel: true, osVersion: "0.18.2", deviceKey: "k"}, never, uncompressed("k@0.18.2")},
+		{"none forced over a tunnel", "none", chunkUploadTarget{tunnel: true, osVersion: "0.18.2", deviceKey: "k", directLink: true}, never, uncompressed("k@0.18.2")},
+		{"none forced on a routable LAN address", "none", routable("0.19.3"), never, uncompressed("0123abcd@0.19.3")},
 		{"case and space are ignored", " GZIP ", lan("0.19.3"), never, gzipChunkUploadConfig},
 		{"an unknown mode means auto", "zstd", lan("0.18.2"), never, gzipChunkUploadConfig},
 	} {

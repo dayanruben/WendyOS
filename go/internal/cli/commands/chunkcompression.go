@@ -60,6 +60,13 @@ type chunkUploadTarget struct {
 	tunnel    bool   // a cloud tunnel: bandwidth-bound, so gzip pays for itself
 	osVersion string // the agent's os_version, "" when unknown
 	deviceKey string // deviceFingerprintKey, "" when unknown
+	// directLink is true only when the device is reached at a link-local
+	// address (USB-C NCM, or a direct cable with no DHCP server). Uncompressed
+	// was measured about 15% faster than gzip there (WDY-3211, Orin Nano over
+	// USB-C at 347 MB/s). A routable LAN or Wi-Fi hop has no matching
+	// measurement — a compressible layer could go 2-3x slower uncompressed —
+	// so auto keeps gzip there until the hardware matrix covers it.
+	directLink bool
 }
 
 // stallKey identifies the device and its OS for the stall memory, so an OS
@@ -72,11 +79,16 @@ func (t chunkUploadTarget) stallKey() string {
 }
 
 // chooseChunkUploadConfig applies WENDY_CHUNK_COMPRESSION. gzip and none force
-// that choice; anything else is auto, which picks gzip over a cloud tunnel,
-// for WendyOS before 0.19.0 or an unknown version, and for a device that
-// stalled uncompressed within chunkStallMemory, and no compression otherwise.
-// On a direct USB-C link to an Orin Nano, device-side gunzip (78 MB/s per
-// core) was the upload's bottleneck (WDY-3211).
+// that choice; anything else is auto, which sends uncompressed only to a
+// device reached at a link-local address (t.directLink — USB-C NCM, or a
+// direct cable with no DHCP) running WendyOS 0.19.0 or later with no recent
+// stall, and picks gzip for everything else: a cloud tunnel, a routable LAN
+// or Wi-Fi hop the hardware matrix hasn't measured, WendyOS before 0.19.0 or
+// an unknown version, and a device that stalled uncompressed within
+// chunkStallMemory. On a direct USB-C link to an Orin Nano, device-side
+// gunzip (78 MB/s per core) was the upload's bottleneck (WDY-3211); the same
+// tradeoff has not been measured off that link, so auto stays conservative
+// there (WDY-3211 final-review fix wave, I1).
 func chooseChunkUploadConfig(mode string, t chunkUploadTarget, stalledRecently func(key string) bool) chunkUploadConfig {
 	uncompressed := chunkUploadConfig{stallTimeout: chunkStallTimeout, stallKey: t.stallKey()}
 	switch strings.ToLower(strings.TrimSpace(mode)) {
@@ -85,7 +97,7 @@ func chooseChunkUploadConfig(mode string, t chunkUploadTarget, stalledRecently f
 	case "none":
 		return uncompressed
 	}
-	if t.tunnel || osNeedsGzipChunks(t.osVersion) || stalledRecently(t.stallKey()) {
+	if t.tunnel || !t.directLink || osNeedsGzipChunks(t.osVersion) || stalledRecently(t.stallKey()) {
 		return gzipChunkUploadConfig
 	}
 	return uncompressed
@@ -105,15 +117,43 @@ func osNeedsGzipChunks(osVersion string) bool {
 	return version.CompareVersions(v, firstUncompressedChunkOSVersion) < 0
 }
 
+// chunkCompressionModeFromEnv reads WENDY_CHUNK_COMPRESSION for
+// chunkUploadConfigFor.
+func chunkCompressionModeFromEnv() string {
+	return os.Getenv(chunkCompressionEnv)
+}
+
 // chunkUploadConfigFor resolves the config for a push over conn. A failed
 // version probe leaves the OS version unknown, which picks gzip.
+//
+// directLink comes from isLinkLocalIP(resolveRegistryIP(conn.Host)) — the
+// same pair docker.go's Apple Container registry path already uses to tell a
+// direct device hop from a routed one. conn.Addr is not a cheaper substitute:
+// it is set (grpcclient/client.go) to the exact dial string the caller
+// passed in, i.e. conn.Host plus a port, never a separately resolved IP, so
+// there is no second, already-resolved address to prefer over Host.
+// resolveRegistryIP itself costs no network round trip for the common direct
+// case: a USB-C NCM or bare-cable device's Host is already a link-local IP
+// literal, which netip.ParseAddr matches before any DNS lookup is attempted;
+// only a hostname target pays for the lookup resolveRegistryIP already makes
+// on that path today.
+//
+// Session-broker connections (conn.IsSessionProxy) need no special case:
+// ConnectSessionProxy sets Host to the broker's Spec.Host — the verified
+// device's own host, not the broker's loopback socket — so the same rule
+// applies unchanged. If that were ever loopback instead, isLinkLocalIP would
+// correctly report false (loopback is not link-local), falling back to gzip
+// exactly as the ruling requires for an unidentifiable device.
 func chunkUploadConfigFor(ctx context.Context, conn *grpcclient.AgentConnection) chunkUploadConfig {
-	t := chunkUploadTarget{tunnel: conn.Reconnect != nil}
+	t := chunkUploadTarget{
+		tunnel:     conn.Reconnect != nil,
+		directLink: isLinkLocalIP(resolveRegistryIP(conn.Host)),
+	}
 	if v, err := agentVersionForRun(ctx, conn); err == nil {
 		t.osVersion, t.deviceKey = v.GetOsVersion(), deviceFingerprintKey(v)
 	}
 	now := time.Now()
-	return chooseChunkUploadConfig(os.Getenv(chunkCompressionEnv), t, func(key string) bool {
+	return chooseChunkUploadConfig(chunkCompressionModeFromEnv(), t, func(key string) bool {
 		return chunkUploadStalledRecently(key, now)
 	})
 }
