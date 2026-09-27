@@ -271,8 +271,10 @@ func TestComputeBuildInputHash_EnvChangesHash(t *testing.T) {
 
 func TestBuildInputHashSalt(t *testing.T) {
 	// The fingerprint is salted so a change to the hash inputs can invalidate
-	// every recorded fingerprint by changing the salt. Assert the salt is the
-	// current bare string and carries no lingering version suffix.
+	// every recorded fingerprint by changing the salt. v3 (WDY-3216) marks the
+	// switch to per-file digests with permission bits. Earlier salts (v1, v2,
+	// then the bare string) must never come back: a fingerprint recorded under
+	// one of them could match again.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -285,11 +287,13 @@ func TestBuildInputHashSalt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"wendy-deploy-fingerprint\n"`) {
-		t.Fatalf("deploy fingerprint salt must be %q; hash was %s", "wendy-deploy-fingerprint", h)
+	if !strings.Contains(string(data), `"wendy-deploy-fingerprint-v3\n"`) {
+		t.Fatalf("deploy fingerprint salt must be %q; hash was %s", "wendy-deploy-fingerprint-v3", h)
 	}
-	if strings.Contains(string(data), `"wendy-deploy-fingerprint-v`) {
-		t.Fatal("a versioned deploy fingerprint salt string still lingers in deployfastpath.go")
+	for _, retired := range []string{`"wendy-deploy-fingerprint\n"`, `"wendy-deploy-fingerprint-v1\n"`, `"wendy-deploy-fingerprint-v2\n"`} {
+		if strings.Contains(string(data), retired) {
+			t.Fatalf("retired salt %s is back in deployfastpath.go", retired)
+		}
 	}
 }
 

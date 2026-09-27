@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -211,14 +212,21 @@ func saveDeployFingerprint(appID, deviceKey string, fp deployFingerprint) {
 // .dockerignore'd paths (a superset of what COPY/ADD can pull in), and any
 // .dockerignore pattern we cannot confidently parse is simply not applied (so a
 // file is hashed rather than skipped). This can only cause an unnecessary
-// rebuild, never a missed change.
+// rebuild, never a missed change. The context digest cache (contextdigest.go)
+// keeps that rule: it serves a digest only for a file whose identity has not
+// changed since it was read.
+//
+// Callers that can only use the hash with digest-pinned bases go through
+// pinnedBuildInputHash, which skips the context for an unpinned Dockerfile.
 func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs map[string]string, deployEnv []string) (string, error) {
 	h := sha256.New()
 	// Salt for the deploy fingerprint. Changing this string invalidates every
 	// recorded fingerprint, forcing one honest rebuild per app — do that
 	// whenever the hash inputs below change (as they did when the effective
-	// Stagefile backend was added).
-	io.WriteString(h, "wendy-deploy-fingerprint\n")
+	// Stagefile backend was added, and again when context files became
+	// per-file digests with their permission bits, WDY-3216). Never reuse an
+	// earlier salt: v1, v2 and the bare string are taken.
+	io.WriteString(h, "wendy-deploy-fingerprint-v3\n")
 	io.WriteString(h, "platform="+platform+"\n")
 	io.WriteString(h, "backend="+backend+"\n")
 
@@ -258,7 +266,11 @@ func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs 
 	// (the Stagefile flow derives a deny-all allowlist there), so the walk must
 	// follow the same file or it hashes paths the build can never see.
 	ignore := loadDockerIgnoreForBuild(cwd, dfPath)
-	var files []string
+	type contextFile struct {
+		rel  string
+		info fs.FileInfo
+	}
+	var files []contextFile
 	err = filepath.WalkDir(cwd, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -283,25 +295,31 @@ func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs 
 		if ignore.matches(rel) {
 			return nil
 		}
-		files = append(files, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		files = append(files, contextFile{rel: rel, info: info})
 		return nil
 	})
 	if err != nil {
 		return "", fmt.Errorf("walking build context for fingerprint: %w", err)
 	}
-	sort.Strings(files)
-	for _, rel := range files {
-		f, err := os.Open(filepath.Join(cwd, filepath.FromSlash(rel)))
+	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
+
+	// Each file contributes its quoted path, permission bits (COPY keeps
+	// them) and content digest. A settled file's digest comes from the
+	// context digest cache while its identity is unchanged, so a warm run
+	// stats the context instead of reading it.
+	digests := openContextDigestCache(cwd, dfPath, contextDigestClock())
+	for _, f := range files {
+		digest, err := digests.fileDigest(filepath.Join(cwd, filepath.FromSlash(f.rel)), f.rel, f.info)
 		if err != nil {
 			return "", err
 		}
-		io.WriteString(h, "file "+rel+"\n")
-		if _, err := io.Copy(h, f); err != nil {
-			f.Close()
-			return "", err
-		}
-		f.Close()
+		fmt.Fprintf(h, "file %q %04o %s\n", f.rel, f.info.Mode().Perm(), digest)
 	}
+	digests.save()
 
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
