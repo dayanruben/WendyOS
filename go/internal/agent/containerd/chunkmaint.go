@@ -28,8 +28,18 @@ const (
 	// enough for the user's next attempt to resume from them (WDY-3217).
 	stagingRetention = 6 * time.Hour
 	// cachePruneStagingIdleAfter is the quiet period an explicit cache prune
-	// requires before it removes every staged chunk, whatever its age: a
-	// deploy touches the store at least once per chunk it sends.
+	// requires before it removes every staged chunk, whatever its age. A
+	// deploy in progress is guarded by PrepareImage's in-flight marker
+	// (chunkActivity.begin), held from its start until its last layer is
+	// assembled however long the upload pauses. This window guards the chunks
+	// that flow before PrepareImage starts: every chunk RPC touches the store.
+	//
+	// Deploys that never call PrepareImage (CLIs older than 2026-08-12, or the
+	// current CLI after a non-security PrepareImage error falls back to
+	// assembling in RunContainer) have only the per-chunk touch: a gap of over
+	// a minute with no chunk RPC lets a concurrent prune remove their staged
+	// chunks, RunContainer then fails on a missing chunk, and a rerun
+	// re-uploads it.
 	cachePruneStagingIdleAfter = time.Minute
 	// retiredStagingSuffix marks a staging directory from an earlier agent run.
 	retiredStagingSuffix = ".retired-"

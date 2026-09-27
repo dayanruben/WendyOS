@@ -23,6 +23,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // stageAged stages data and backdates its file by age.
@@ -412,6 +413,41 @@ func TestPruneChunkStoreLeavesStagingOfAnActiveDeploy(t *testing.T) {
 	c.pruneChunkStore(context.Background(), time.Now().Add(cachePruneStagingIdleAfter+time.Second), false, &result)
 	if result.StagingInUse || result.StagedChunks != 1 || c.staging.has(h) {
 		t.Fatalf("staging a quiet store holds was not pruned: %+v", result)
+	}
+}
+
+// TestPruneChunkStoreLeavesStagingWhilePrepareImageWaits: a slow upload can
+// go well over a minute between chunk RPCs, so what keeps a prune off the
+// chunks a deploy already staged is PrepareImage's in-flight marker, held from
+// its start until its last layer is assembled, not the per-chunk touch.
+func TestPruneChunkStoreLeavesStagingWhilePrepareImageWaits(t *testing.T) {
+	c, _ := newChunkStorePruneClient(t)
+	h := stageAged(t, c.staging, []byte("chunk QueryChunks reported present"), time.Hour)
+	uploading := sha256.Sum256([]byte("chunk the CLI is still uploading"))
+	layer := digest.FromString("layer waiting for its chunks").String()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.PrepareImage(ctx, "app:latest", []*agentpb.RunContainerLayerHeader{{
+			DiffId: layer, Digest: layer, ChunkHashes: [][]byte{uploading[:]},
+		}}, nil)
+	}()
+	for deadline := time.Now().Add(5 * time.Second); c.chunkActivity.inFlight.Load() == 0 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+
+	// An hour on, the last chunk RPC is long past: only the in-flight marker
+	// can hold the prune off.
+	var result services.CachePruneResult
+	c.pruneChunkStore(context.Background(), time.Now().Add(time.Hour), false, &result)
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("PrepareImage = %v, want it cancelled while waiting for its chunk", err)
+	}
+	if !result.StagingInUse || !c.staging.has(h) {
+		t.Fatalf("a prune took staging while PrepareImage was waiting for chunks: %+v, staged chunk present %v", result, c.staging.has(h))
 	}
 }
 
