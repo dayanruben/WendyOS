@@ -142,10 +142,40 @@ func TestStagingRetireStartsEmptyAndPurgeDeletesLeftovers(t *testing.T) {
 	}
 }
 
-// recordingLeases is a leases.Manager that records synchronous deletes.
+// recordingLeases is a leases.Manager that counts the leases created and the
+// synchronous deletes. On each synchronous delete it runs collect, if set, as
+// containerd runs its garbage collector before such a delete returns.
 type recordingLeases struct {
 	leases.Manager
-	created, syncDeletes int // used by the cache-prune integration, PR 3b
+	created, syncDeletes int
+	collect              func()
+}
+
+func (l *recordingLeases) Create(_ context.Context, opts ...leases.Opt) (leases.Lease, error) {
+	var lease leases.Lease
+	for _, opt := range opts {
+		if err := opt(&lease); err != nil {
+			return leases.Lease{}, err
+		}
+	}
+	l.created++
+	return lease, nil
+}
+
+func (l *recordingLeases) Delete(ctx context.Context, _ leases.Lease, opts ...leases.DeleteOpt) error {
+	var do leases.DeleteOptions
+	for _, opt := range opts {
+		if err := opt(ctx, &do); err != nil {
+			return err
+		}
+	}
+	if do.Synchronous {
+		l.syncDeletes++
+		if l.collect != nil {
+			l.collect()
+		}
+	}
+	return nil
 }
 
 // newMaintenanceClient builds a Client over a fake content store (holding
