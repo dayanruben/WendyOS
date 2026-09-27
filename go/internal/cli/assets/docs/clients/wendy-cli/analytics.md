@@ -4,6 +4,8 @@ We track analytics for our CLI's usage through a dedicated self-hosted telemetry
 
 When analytics are enabled, each tracked event is serialised to JSON and sent via an HTTP POST request. Delivery is best-effort: a network failure, timeout, or non-2xx response never changes the command's result.
 
+MCP tool calls emit `command_executed` events as each call finishes, using a command name such as `wendy mcp device_info` and `command_root` of `mcp`. The duration and success flag describe the individual call, including tool results that report an error. Calls to app-provided tools use the fixed name `wendy mcp container_tool` so app and tool names stay private. Tool arguments and result content are never sent. The same analytics opt-out and CI settings apply to MCP calls.
+
 ## Endpoint
 
 Events are posted to:
@@ -19,7 +21,7 @@ Every event is an anonymous JSON object. The fields sent are:
 | Field | Type | Description |
 |-------|------|-------------|
 | `anonymous_id` | string | Stable random UUID stored in `~/.wendy/` — never tied to a real identity |
-| `event` | string | Event name, e.g. `"command_run"` |
+| `event` | string | Event name, e.g. `"command_executed"` |
 | `command_name` | string | Canonical command path, e.g. `"wendy device wifi connect"` |
 | `command_root` | string | Top-level command token |
 | `duration_ms` | integer | Command duration in milliseconds |
