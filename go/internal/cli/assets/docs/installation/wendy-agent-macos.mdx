@@ -1,9 +1,7 @@
 ---
-title: Mac Mini
+title: Mac (beta)
 description: Deploy and debug native macOS apps on Apple Silicon Mac targets with the Wendy CLI.
 ---
-
-import { ArrowRight } from 'lucide-react';
 
 <Callout type="warn">
   Headless Mac is beta software. Apple Silicon only — Intel Macs are not supported.
@@ -16,8 +14,8 @@ Headless Mac turns any Apple Silicon Mac into a Wendy target: install Wendy Agen
 ## Requirements
 
 - An Apple Silicon Mac target running macOS 15 or later
-- Wendy CLI on a Mac development machine ([Developer Machine Setup](/docs/installation/developer-machine-setup)) — it builds the app locally before syncing to the target
-- A native macOS SwiftPM app project to deploy
+- Wendy CLI on a Mac development machine ([install it](/docs/#1-install-the-wendy-cli)) — it builds the app locally before syncing to the target
+- A Swift toolchain on the development Mac
 
 If one Mac is both development machine and target, install both the CLI and Wendy Agent on it.
 
@@ -87,25 +85,29 @@ The response should report `"os": "darwin"` and `"cpuArchitecture": "arm64"`.
 
 Headless Mac advertises over Bonjour/mDNS as `_wendyos._udp`. Use `wendy discover` to find it on the local network.
 
-## Deploying Apps
+## Deploy your first Mac app
 
-From a native macOS SwiftPM project configured for a Darwin target:
+Create a native Swift app and run it on the Mac target:
 
 ```bash
+wendy init hello-mac --target darwin --language swift --no-extra-entitlements --assistant skip --git-init no
+cd hello-mac
 wendy run --device {hostname}:50051
 ```
 
 <CliShot flow="run" step="deploy" alt="The wendy run command building a native macOS app and deploying it to a Mac target" />
+
+The CLI builds the app on the Mac development machine, syncs the build output
+to Wendy Agent for Mac, and starts it as a native macOS process. These apps
+currently run natively on macOS, not inside a Linux-style container. Expect
+`Hello from hello-mac!` in the attached logs. Edit the Swift source, then use
+`wendy run --watch` to deploy changes as you save.
 
 If you set the Mac as your default device, omit `--device`:
 
 ```bash
 wendy run
 ```
-
-The CLI builds the app on the Mac development machine, syncs the build output
-to Wendy Agent for Mac, and starts it as a native macOS process. These apps
-currently run natively on macOS, not inside a Linux-style container.
 
 ### Homebrew dependencies with Brewfile
 

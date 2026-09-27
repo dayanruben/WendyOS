@@ -1,7 +1,9 @@
 ---
-title: WendyOS in a Virtual Machine
+title: Simulator
 description: Run WendyOS on your own computer, without a Jetson or Raspberry Pi
 ---
+
+New to Wendy? The [quickstart](/docs/) deploys your first app to the simulator. This page covers the simulator in depth.
 
 ## What this is for
 
@@ -20,10 +22,6 @@ The VM exposes no physical camera, microphone, speaker, Bluetooth adapter, GPU, 
 devices. Unitree profiles publish simulated sensors over ROS 2. Physical peripheral access under **Hardware Access**
 needs a real device. The VM is for the software half of your project.
 </Callout>
-
-## Simulate a Unitree robot
-
-The `go2` and `g1` profiles add a virtual robot with MuJoCo, ROS 2, and a browser sandbox. Follow [Unitree simulator setup](/docs/installation/unitree-simulators), then [deploy a ROS 2 app from simulation to hardware](/docs/integrations/sim-to-real). Their virtual sensors do not provide access to physical peripherals.
 
 ## What you'll need
 
@@ -86,6 +84,10 @@ wendy --device sim device info
 
 `sim` starts the simulator if it is not already running. Everything below is the
 manual equivalent, useful when you want several VMs or need to debug one.
+
+## Simulate a Unitree robot
+
+The `go2` and `g1` profiles add a virtual robot with MuJoCo, ROS 2, and a browser sandbox. Follow [Unitree simulator setup](/docs/installation/unitree-simulators), then [deploy a ROS 2 app from simulation to hardware](/docs/integrations/sim-to-real). Their virtual sensors do not provide access to physical peripherals.
 
 ## Create and start a VM
 
