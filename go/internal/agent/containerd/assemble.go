@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/errdefs"
@@ -33,17 +35,23 @@ const (
 	// assemblyReadAhead waiting, one being read and one being written, so a
 	// lone assembly keeps its whole pipeline.
 	assemblyBufferCount = assemblyReadAhead + 2
+	// assemblyBuffersIdle is how long the pool keeps its buffers once none
+	// is in use: long enough to span the layers of a deploy and the deploys
+	// of a working session, short enough that an idle agent does not hold
+	// 48 MiB it last used hours ago.
+	assemblyBuffersIdle = 30 * time.Second
 )
 
 // assemblyBuffers is the segment buffer pool every assembly shares. Compose
 // prepares up to four services at once, and a build delivery prepares images
 // too; with buffers of their own, four assemblies took the agent's heap from
 // 14 to 121 MiB, on devices with 1 GB of RAM. Shared, the agent holds at most
-// assemblyBufferCount × maxSegmentBytes (48 MiB) of them at any concurrency.
-var assemblyBuffers = newBufferPool(assemblyBufferCount, maxSegmentBytes)
+// assemblyBufferCount × maxSegmentBytes (48 MiB) of them at any concurrency,
+// and none once they have sat unused for assemblyBuffersIdle.
+var assemblyBuffers = newBufferPool(assemblyBufferCount, maxSegmentBytes, assemblyBuffersIdle)
 
 // bufferPool recycles at most n buffers of one size, each allocated on first
-// use.
+// use, and frees them all once none has been in use for its idle time.
 //
 // It cannot deadlock. Only readers take buffers: readSegments' goroutine, and
 // verifyPrefix, which holds no other buffer while it waits. Writers never do.
@@ -57,17 +65,22 @@ var assemblyBuffers = newBufferPool(assemblyBufferCount, maxSegmentBytes)
 // for another's per-ref ingest lock: its reader starts only once OpenWriter
 // has returned.
 type bufferPool struct {
-	// slots holds the buffers not in use; nil stands for one not yet made.
+	// slots holds the buffers not in use; nil stands for one not made yet,
+	// or freed after the pool sat idle.
 	slots chan []byte
 	size  int
+	idle  time.Duration
 
-	// allocated counts buffers made, outstanding those out of the pool, and
-	// peak the most ever out at once, for tests.
-	allocated, outstanding, peak atomic.Int64
+	mu   sync.Mutex
+	trim *time.Timer // frees the buffers once the pool has sat idle
+
+	// live counts buffers that exist, outstanding those out of the pool,
+	// and peak the most ever out at once, for tests.
+	live, outstanding, peak atomic.Int64
 }
 
-func newBufferPool(n, size int) *bufferPool {
-	p := &bufferPool{slots: make(chan []byte, n), size: size}
+func newBufferPool(n, size int, idle time.Duration) *bufferPool {
+	p := &bufferPool{slots: make(chan []byte, n), size: size, idle: idle}
 	for range n {
 		p.slots <- nil
 	}
@@ -85,7 +98,7 @@ func (p *bufferPool) acquire(ctx context.Context) ([]byte, error) {
 	}
 	if b == nil {
 		b = make([]byte, p.size)
-		p.allocated.Add(1)
+		p.live.Add(1)
 	}
 	out := p.outstanding.Add(1)
 	for {
@@ -98,10 +111,43 @@ func (p *bufferPool) acquire(ctx context.Context) ([]byte, error) {
 }
 
 // release returns a buffer acquire handed out. It never blocks: the pool has
-// a slot for every buffer it made.
+// a slot for every buffer it made. The last buffer back starts the idle
+// countdown.
 func (p *bufferPool) release(b []byte) {
-	p.outstanding.Add(-1)
+	// Count it back before another goroutine can take it, so the counters
+	// never show more out than exist.
+	idle := p.outstanding.Add(-1) == 0
 	p.slots <- b[:cap(b)]
+	if !idle {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.trim == nil {
+		p.trim = time.AfterFunc(p.idle, p.freeIdle)
+	} else {
+		p.trim.Reset(p.idle)
+	}
+}
+
+// freeIdle frees every buffer in the pool, unless one is out again: that use
+// restarts the countdown when it ends. A buffer acquired while this runs
+// comes from a slot not yet visited, or is made anew.
+func (p *bufferPool) freeIdle() {
+	for range cap(p.slots) {
+		if p.outstanding.Load() != 0 {
+			return
+		}
+		select {
+		case b := <-p.slots:
+			if b != nil {
+				p.live.Add(-1)
+			}
+			p.slots <- nil
+		default:
+			return
+		}
+	}
 }
 
 // assemblySegment is a run of a layer's chunks read into one buffer and written

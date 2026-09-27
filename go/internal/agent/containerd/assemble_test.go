@@ -903,7 +903,7 @@ func TestWriteAssembledLayerReportsUnverifiedWhenTheBlobAlreadyExists(t *testing
 // test, so its counters start from zero. No assembly may be running.
 func useFreshAssemblyBuffers(t *testing.T) *bufferPool {
 	t.Helper()
-	p := newBufferPool(assemblyBufferCount, maxSegmentBytes)
+	p := newBufferPool(assemblyBufferCount, maxSegmentBytes, assemblyBuffersIdle)
 	old := assemblyBuffers
 	assemblyBuffers = p
 	t.Cleanup(func() { assemblyBuffers = old })
@@ -916,8 +916,41 @@ func requireAllBuffersReturned(t *testing.T, p *bufferPool) {
 	if n := p.outstanding.Load(); n != 0 {
 		t.Fatalf("%d segment buffers not returned to the pool", n)
 	}
-	if n := p.allocated.Load(); n > assemblyBufferCount {
-		t.Fatalf("allocated %d segment buffers, want at most %d", n, assemblyBufferCount)
+	if n := p.live.Load(); n > assemblyBufferCount {
+		t.Fatalf("%d segment buffers exist, want at most %d", n, assemblyBufferCount)
+	}
+}
+
+// TestAnIdleBufferPoolFreesItsBuffers: the agent runs for months between
+// deploys, so the pool does not keep 48 MiB alive once assemblies stop. It
+// frees its buffers after sitting idle, and allocates them again on demand.
+func TestAnIdleBufferPoolFreesItsBuffers(t *testing.T) {
+	p := newBufferPool(assemblyBufferCount, 1<<10, 20*time.Millisecond)
+	var bufs [][]byte
+	for range 3 {
+		b, err := p.acquire(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		bufs = append(bufs, b)
+	}
+	p.release(bufs[0])
+	time.Sleep(50 * time.Millisecond) // longer than idle, but buffers are still out
+	if n := p.live.Load(); n != 3 {
+		t.Fatalf("%d buffers live while two are out, want all 3 kept", n)
+	}
+	for _, b := range bufs[1:] {
+		p.release(b)
+	}
+	waitFor(t, "the idle pool to free its buffers", func() bool { return p.live.Load() == 0 })
+
+	b, err := p.acquire(context.Background())
+	if err != nil || len(b) != 1<<10 {
+		t.Fatalf("acquire after a trim = %d bytes, %v", len(b), err)
+	}
+	p.release(b)
+	if n := p.live.Load(); n != 1 {
+		t.Fatalf("%d buffers live after one acquire, want 1", n)
 	}
 }
 
