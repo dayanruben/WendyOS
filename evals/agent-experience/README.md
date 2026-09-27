@@ -176,6 +176,15 @@ another paid attempt. This is a soft experiment budget: Codex only reports usage
 at turn completion, so an in-flight attempt can exceed its reserve. Use provider
 spend limits for a hard billing cap. Wall-time limits terminate the process group
 and retain partial logs.
+`max_agent_seconds` can cap the task-specific timeout; the plan and each result
+record the effective limit. The example caps attempts at 900 seconds.
+`syntax_error_limit`, default 3, stops an attempt when that many distinct completed
+tools return the same CLI command/flag syntax error. This includes errors hidden
+by a shell pipeline that exits zero. The guard reads returned tool output only;
+it does not send hints or count model prose as a failure. Connection failures and
+normal VM boot waits do not trigger this rule. The result is `no_progress`, with
+incomplete usage retained as unknown. This changes the stopping policy for future
+trials; earlier results and their original limits remain unchanged.
 
 ## Keep comparisons fair
 
@@ -270,3 +279,9 @@ are candidates for additional tasks with their own fixtures and verifiers.
 
 The [robot simulator pilot](robot-pilot-2026-09-27.md) records four unassisted passes,
 one interrupted Claude attempt, and the remaining unrun case.
+
+The [CLI syntax regression check](cli-syntax-regression-2026-09-27.json) reproduces
+the misleading ROS2 error without contacting a device. The corrected CLI reports
+the bundled device argument and a valid invocation. The retry guard was also
+replayed against the saved Claude transcript. These are regression checks, not
+evidence that a model now recovers unassisted.

@@ -19,6 +19,8 @@ import tempfile
 import time
 import uuid
 
+from retry_guard import RetryGuard
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_tokens",
@@ -41,30 +43,36 @@ def expand(value, variables):
     return value
 
 
-def run_process(argv, cwd, prefix, timeout, env=None, state_guard=None):
+def run_process(argv, cwd, prefix, timeout, env=None, state_guard=None, progress_guard=None):
     """Keep raw logs, bound wall time, and stop the process group on exit."""
     start = time.monotonic()
-    result = {"argv": argv, "exit_code": None, "timed_out": False, "interrupted": False}
+    result = {"argv": argv, "exit_code": None, "timed_out": False, "interrupted": False,
+              "timeout_seconds": timeout}
     process = None
     with prefix.with_suffix(".stdout").open("wb") as out, prefix.with_suffix(".stderr").open("wb") as err:
         try:
             process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                        stdout=out, stderr=err, start_new_session=True)
             try:
-                if state_guard is None:
+                if state_guard is None and progress_guard is None:
                     result["exit_code"] = process.wait(timeout=timeout)
                 else:
                     while True:
-                        if not state_guard():
+                        if state_guard is not None and not state_guard():
                             result["host_state_changed"] = True
+                            break
+                        if progress_guard is not None and (reason := progress_guard()):
+                            result["no_progress"] = reason
                             break
                         remaining = timeout - (time.monotonic() - start)
                         if remaining <= 0:
                             raise subprocess.TimeoutExpired(argv, timeout)
                         try:
                             result["exit_code"] = process.wait(timeout=min(.2, remaining))
-                            if not state_guard():
+                            if state_guard is not None and not state_guard():
                                 result["host_state_changed"] = True
+                            if progress_guard is not None and (reason := progress_guard()):
+                                result["no_progress"] = reason
                             break
                         except subprocess.TimeoutExpired:
                             continue
@@ -405,6 +413,15 @@ def coverage_results(coverage, rows, agents, repetitions):
     return result
 
 
+def agent_timeout(config, task):
+    values = [task.get("timeout_seconds", 900)]
+    if config.get("max_agent_seconds") is not None:
+        values.append(config["max_agent_seconds"])
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in values):
+        raise ValueError("agent time limits must be finite positive numbers")
+    return min(values)
+
+
 def trial(config, agent_name, target_name, task, output, wendy):
     agent, target = config["agents"][agent_name], config["targets"][target_name]
     ident = uuid.uuid4().hex[:12]
@@ -422,7 +439,7 @@ def trial(config, agent_name, target_name, task, output, wendy):
                  "vm_name": f"wendy-eval-{ident}", "port": config.get("port", 18765),
                  "model": agent["model"]}
     private_vm = needs_fixture_vm(task, target, state_dir)
-    if private_vm:
+    if private_vm or (target["kind"] == "simulator" and task.get("owns_vm")):
         variables["device"] = "vm:" + variables["vm_name"]
     variables.update({"evidence_dir": directory, "agent_events": directory / "agent.stdout",
                       "target_config": directory / "target.json"})
@@ -439,6 +456,7 @@ def trial(config, agent_name, target_name, task, output, wendy):
            "target_config": target, "model_requested": agent["model"], "workspace": str(workspace),
            "device_state_isolated": state_dir is not None,
            "device_selector": variables["device"],
+           "agent_timeout_seconds": agent_timeout(config, task),
            "human_messages_after_start": 0, "human_approvals": 0, "success": False,
            "status": "setup_error", "task_seconds": 0, "metrics": {}, "stages": {}}
     dump(directory / "task.json", resolved)
@@ -449,6 +467,7 @@ def trial(config, agent_name, target_name, task, output, wendy):
         env["WENDY_SECRET_STORE"] = "file"
     env["PATH"] = str(Path(wendy).parent) + os.pathsep + env.get("PATH", "")
     guard = host_pin_guard()
+    retry_guard = RetryGuard(directory / "agent.stdout", config.get("syntax_error_limit", 3))
     try:
         if private_vm:
             row["stages"], ready = fixture_vm(config, variables, workspace, directory, env)
@@ -458,11 +477,13 @@ def trial(config, agent_name, target_name, task, output, wendy):
         for phase in ("prepare", "agent", "verify"):
             if phase == "agent":
                 argv = expand(agent["command"], variables)
-                timeout = task.get("timeout_seconds", 900)
+                timeout = row["agent_timeout_seconds"]
             else:
                 argv = resolved[phase]
                 timeout = task.get("setup_timeout_seconds", 900) if phase == "prepare" else task.get("verify_timeout_seconds", 90)
-            result = run_process(argv, workspace, directory / phase, timeout, env, guard if phase == "agent" else None)
+            result = run_process(argv, workspace, directory / phase, timeout, env,
+                                 guard if phase == "agent" else None,
+                                 retry_guard if phase == "agent" else None)
             row["stages"][phase] = result
             if phase == "prepare" and result["exit_code"] != 0:
                 return row
@@ -470,10 +491,11 @@ def trial(config, agent_name, target_name, task, output, wendy):
                 events, invalid = read_events(directory / "agent.stdout")
                 row["metrics"] = metrics(agent["adapter"], events)
                 row["metrics"]["invalid_json_lines"] = invalid
-                row["metrics"]["usage_complete"] &= not result["timed_out"] and not result["interrupted"] and not result.get("host_state_changed") and invalid == 0
+                row["metrics"]["usage_complete"] &= not result["timed_out"] and not result["interrupted"] and not result.get("host_state_changed") and not result.get("no_progress") and invalid == 0
                 row["metrics"]["estimated_cost_usd"] = estimate_cost(row["metrics"], agent.get("prices_per_million"))
                 row["task_seconds"] = result["seconds"]
-                row["status"] = ("host_state_changed" if result.get("host_state_changed") else "interrupted"
+                row["status"] = ("host_state_changed" if result.get("host_state_changed") else "no_progress"
+                                 if result.get("no_progress") else "interrupted"
                                  if result["interrupted"] else "timeout" if result["timed_out"] else "failed")
             if phase == "verify":
                 row["task_seconds"] += result["seconds"]
@@ -481,6 +503,7 @@ def trial(config, agent_name, target_name, task, output, wendy):
                 row["success"] = (row["outcome_verified"] and row["stages"]["agent"]["exit_code"] == 0
                                   and row["metrics"]["agent_completed"] and not row["metrics"]["agent_errors"]
                                   and row["metrics"]["invalid_json_lines"] == 0
+                                  and not row["stages"]["agent"].get("no_progress")
                                   and not row["stages"]["agent"].get("host_state_changed"))
                 if row["success"]:
                     row["status"] = "passed"
@@ -597,6 +620,8 @@ def main():
             parser.error("unknown selection: " + str(selected))
     if args.calibrate:
         return calibrate(config, [t for t in tasks if t["id"] in selected_tasks], targets, args)
+    # Validate guard settings before creating workspaces or copying credentials.
+    RetryGuard(args.output / "validation-only", config.get("syntax_error_limit", 3))
     coverage = plan_coverage(tasks, config["targets"], selected_tasks, targets)
     print(json.dumps({"coverage": coverage}, indent=2))
     plan = [(agent, target, task_for_target(task, config["targets"][target])[0])
@@ -607,7 +632,9 @@ def main():
     random.Random(args.seed).shuffle(plan)
     if args.limit:
         plan = plan[:args.limit]
-    print(json.dumps([{"agent": a, "target": t, "task": s["id"]} for a, t, s in plan], indent=2))
+    print(json.dumps([{"agent": a, "target": t, "task": s["id"],
+                       "agent_timeout_seconds": agent_timeout(config, s),
+                       "syntax_error_limit": config.get("syntax_error_limit", 3)} for a, t, s in plan], indent=2))
     if not args.execute:
         print(f"Plan only: {len(plan)} trials. Add --execute to run.")
         return 0
@@ -670,7 +697,8 @@ def main():
         if spend + config.get("trial_reserve_usd", 15) > config.get("budget_usd", 100):
             print("Stopping at the configured budget reserve.")
             break
-        print(f"[{i}/{len(plan)}] {agent} / {target} / {task['id']}", flush=True)
+        print(f"[{i}/{len(plan)}] {agent} / {target} / {task['id']} "
+              f"(agent limit {agent_timeout(config, task):g}s)", flush=True)
         row = trial(config, agent, target, task, output, wendy)
         rows.append(row)
         with (output / "results.jsonl").open("a") as f:
