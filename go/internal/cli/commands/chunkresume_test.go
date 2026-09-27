@@ -138,7 +138,7 @@ func TestPushLayersResumingTunnelDropsReconnectsAndRetries(t *testing.T) {
 		return nil, nil
 	}
 
-	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil)
+	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil, gzipChunkUploadConfig)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestPushLayersResumingTunnelDropsDoesNotRetryUnimplemented(t *testing.T) {
 		return nil, nil
 	}
 
-	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), conn, nil, nil)
+	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), conn, nil, nil, gzipChunkUploadConfig)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -229,7 +229,7 @@ func TestPushLayersResumingTunnelDropsGivesUpAfterAttempts(t *testing.T) {
 		return nil, nil
 	}
 
-	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, nil, nil)
+	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, nil, nil, gzipChunkUploadConfig)
 	if err == nil {
 		t.Fatal("expected an error after exhausting all attempts")
 	}
@@ -418,7 +418,7 @@ func TestPushLayersResumingTunnelDropsResumesWithSeveralStreamsOpen(t *testing.T
 			MediaType: "application/vnd.oci.image.layer.v1.tar",
 			Blob:      layerTar,
 		}}
-		got, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil)
+		got, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil, gzipChunkUploadConfig)
 		if err != nil {
 			t.Fatalf("iter %d: push failed: %v\n%s", iter, err, out.String())
 		}
@@ -451,5 +451,76 @@ func TestPushLayersResumingTunnelDropsResumesWithSeveralStreamsOpen(t *testing.T
 		if dups != 0 {
 			t.Fatalf("iter %d: the resume re-sent %d chunk(s) the device already had", iter, dups)
 		}
+	}
+}
+
+// TestPushLayersResumingTunnelDropsFallsBackToGzipAfterAStall is Review Focus
+// #1: an uncompressed push wedges with several streams open. The watchdog
+// fires, the device's stall is remembered, and the retry reconnects and sends
+// only what the device is still missing, with gzip.
+func TestPushLayersResumingTunnelDropsFallsBackToGzipAfterAStall(t *testing.T) {
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "16")
+	manifestCacheTestDir = t.TempDir()
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = ""; chunkStallTestDir = "" })
+
+	layerTar := variedChunkTestData(300 * 64 << 10)
+	dev := &probeDevice{staged: map[[32]byte]int{}}
+	agentA := &probeAgent{dev: dev, stallAfter: 100}
+	connA, _ := startProbeAgent(t, agentA)
+	agentB := &probeAgent{dev: dev}
+	connB, _ := startProbeAgent(t, agentB)
+	reconnects := 0
+	connA.Reconnect = func(context.Context) (*grpcclient.AgentConnection, error) {
+		reconnects++
+		return connB, nil
+	}
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}
+	cfg := chunkUploadConfig{stallTimeout: 300 * time.Millisecond, stallKey: "0123abcd@0.19.3"}
+
+	got, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil, cfg)
+	if err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out.String())
+	}
+	if got != connB || reconnects != 1 || len(headers) != 1 {
+		t.Fatalf("conn=%v reconnects=%d headers=%d", got == connB, reconnects, len(headers))
+	}
+	for _, enc := range agentA.encodings() {
+		if enc != "" {
+			t.Fatalf("the first attempt opened a %q stream, want uncompressed", enc)
+		}
+	}
+	encs := agentB.encodings()
+	if len(encs) == 0 {
+		t.Fatal("the retry opened no streams")
+	}
+	for _, enc := range encs {
+		if enc != "gzip" {
+			t.Fatalf("the retry opened a %q stream, want gzip", enc)
+		}
+	}
+	if !chunkUploadStalledRecently("0123abcd@0.19.3", time.Now()) {
+		t.Fatal("the stall was not remembered")
+	}
+	// cliNotice writes the fallback notice to os.Stderr, not to out; Task 6's
+	// hardware run checks it by eye.
+	dev.mu.Lock()
+	defer dev.mu.Unlock()
+	for h, n := range dev.staged {
+		if n > 1 {
+			t.Fatalf("chunk %x was sent %d times; the retry must skip staged chunks", h[:4], n)
+		}
+	}
+	if agentB.received.Load() >= int64(len(dev.staged)) {
+		t.Fatal("the retry re-sent everything")
 	}
 }
