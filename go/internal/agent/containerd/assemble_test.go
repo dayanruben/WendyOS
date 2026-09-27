@@ -147,3 +147,33 @@ func TestPlanAssemblyReportsUnavailableChunk(t *testing.T) {
 		t.Fatalf("error = %v, want an unavailable chunk", err)
 	}
 }
+
+// TestAssemblyReadsAStagedChunkFromTheIndexOnceAnotherAssemblyConsumedIt
+// covers two layers sharing a staged chunk: the first assembly indexes the
+// chunk into its blob and removes the staged file while the second is planned.
+func TestAssemblyReadsAStagedChunkFromTheIndexOnceAnotherAssemblyConsumedIt(t *testing.T) {
+	c, cs := newCountingStoreClient(t)
+	shared := randomBytes(6, 10_000) // below chunk.MinSize: indexing it yields this one chunk
+	h := sha256.Sum256(shared)
+	if err := c.StageChunk(context.Background(), h, shared); err != nil {
+		t.Fatal(err)
+	}
+	segs, _, _, err := c.planAssembly([][32]byte{h})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	commitIndexedBlob(t, c, cs, shared) // the other assembly's blob holds the chunk…
+	c.staging.remove(h)                 // …and it released the staged file
+
+	var got []byte
+	for seg := range c.readSegments(context.Background(), segs, 0) {
+		if seg.err != nil {
+			t.Fatal(seg.err)
+		}
+		got = append(got, seg.data...)
+	}
+	if !bytes.Equal(got, shared) {
+		t.Fatal("fallback read returned the wrong bytes")
+	}
+}

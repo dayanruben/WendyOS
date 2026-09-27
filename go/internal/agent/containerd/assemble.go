@@ -1,7 +1,17 @@
 package containerd
 
 import (
+	"context"
+	"crypto/sha256"
 	"fmt"
+	"io"
+	"os"
+
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/errdefs"
+	digest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 )
@@ -88,4 +98,145 @@ func (c *Client) planAssembly(hashes [][32]byte) ([]assemblySegment, []chunk.Ref
 		total += int64(n)
 	}
 	return segs, refs, total, nil
+}
+
+// segmentData is one segment's verified bytes, or the error that ended reading.
+type segmentData struct {
+	data []byte
+	err  error
+}
+
+// readSegments reads segs in order on its own goroutine, verifies every chunk's
+// SHA-256, and delivers each segment's bytes while staying up to
+// assemblyReadAhead segments ahead of the consumer. The first skip bytes of the
+// layer are not delivered: a resumed ingest already holds them. The channel
+// closes after the last segment, after an error, or when ctx ends.
+func (c *Client) readSegments(ctx context.Context, segs []assemblySegment, skip int64) <-chan segmentData {
+	out := make(chan segmentData, assemblyReadAhead)
+	go func() {
+		defer close(out)
+		r := segmentReader{c: c, ctx: ctx, readers: map[string]content.ReaderAt{}}
+		defer r.close()
+		var pos int64
+		for _, seg := range segs {
+			start := pos
+			pos += int64(seg.size)
+			if pos <= skip {
+				continue
+			}
+			data, err := r.read(seg)
+			if err == nil && skip > start {
+				data = data[skip-start:]
+			}
+			select {
+			case out <- segmentData{data: data, err: err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return out
+}
+
+// segmentReader reads segments, holding one ReaderAt per source blob for the
+// whole assembly instead of opening one per chunk.
+type segmentReader struct {
+	c       *Client
+	ctx     context.Context
+	readers map[string]content.ReaderAt
+}
+
+func (r *segmentReader) close() {
+	for _, ra := range r.readers {
+		ra.Close()
+	}
+}
+
+// read returns seg's bytes once every chunk in it matches its hash.
+func (r *segmentReader) read(seg assemblySegment) ([]byte, error) {
+	data := make([]byte, seg.size)
+	if seg.blob != "" {
+		if err := r.readBlob(seg.blob, seg.offset, data); err != nil {
+			return nil, err
+		}
+	} else {
+		var off uint64
+		for _, ch := range seg.chunks {
+			if err := r.readStaged(ch, data[off:off+ch.len]); err != nil {
+				return nil, err
+			}
+			off += ch.len
+		}
+	}
+	var off uint64
+	for _, ch := range seg.chunks {
+		if sha256.Sum256(data[off:off+ch.len]) != ch.hash {
+			return nil, fmt.Errorf("chunk %x hash mismatch", ch.hash)
+		}
+		off += ch.len
+	}
+	return data, nil
+}
+
+// readStaged fills dst with a staged chunk. When another layer's assembly has
+// consumed the file since planning, the chunk is read from the blob that
+// assembly indexed it into — the fallback the per-chunk reader always had.
+func (r *segmentReader) readStaged(ch assemblyChunk, dst []byte) error {
+	err := r.c.staging.readInto(ch.hash, dst)
+	if !os.IsNotExist(err) {
+		return err
+	}
+	loc, ok := r.c.chunkIndex.Has(ch.hash)
+	if !ok || loc.Len != ch.len {
+		return fmt.Errorf("chunk %x unavailable", ch.hash)
+	}
+	return r.readBlob(loc.Blob, loc.Offset, dst)
+}
+
+// readBlob fills dst from blob at off.
+func (r *segmentReader) readBlob(blob string, off uint64, dst []byte) error {
+	ra, ok := r.readers[blob]
+	if !ok {
+		dgst, err := digest.Parse(blob)
+		if err != nil {
+			return err
+		}
+		ra, err = r.c.client.ContentStore().ReaderAt(r.ctx, ocispec.Descriptor{Digest: dgst})
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				// The index outlived the blob. Forget it, so the next
+				// QueryChunks asks the CLI for these chunks again.
+				if derr := r.c.chunkIndex.Drop(blob); derr != nil {
+					r.c.logger.Warn("Dropping stale chunk-index entries failed", zap.String("blob", blob), zap.Error(derr))
+				}
+			}
+			return fmt.Errorf("opening indexed blob %s: %w", blob, err)
+		}
+		r.readers[blob] = ra
+	}
+	n, err := ra.ReadAt(dst, int64(off))
+	if n == len(dst) {
+		return nil // a full read may still report io.EOF at the blob's end
+	}
+	if err == nil {
+		err = io.ErrUnexpectedEOF
+	}
+	return fmt.Errorf("reading %d bytes at %d of %s: %w", len(dst), off, blob, err)
+}
+
+// readInto fills dst with the staged chunk h. A chunk that is not staged
+// returns an error for which os.IsNotExist is true.
+func (s *staging) readInto(h [32]byte, dst []byte) error {
+	f, err := os.Open(s.path(h))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := io.ReadFull(f, dst); err != nil {
+		return fmt.Errorf("reading staged chunk %x: %w", h, err)
+	}
+	return nil
 }
