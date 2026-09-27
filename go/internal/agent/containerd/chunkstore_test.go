@@ -227,6 +227,32 @@ func TestMissingChunksKeepsIndexEntryBackedByContentBlob(t *testing.T) {
 	}
 }
 
+// TestMissingChunksTreatsIndexLookupErrorAsNotIndexed proves the chunk index
+// is purely a cache: a Lookup failure (here, a closed index) must not fail the
+// call. Every candidate is reported missing, as if the index held none of it,
+// so the CLI simply re-sends the chunk instead of the deploy erroring out.
+func TestMissingChunksTreatsIndexLookupErrorAsNotIndexed(t *testing.T) {
+	dir := t.TempDir()
+	index := newTestChunkIndex(t)
+	if err := index.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := &chunkAvailabilityContentStore{blobs: map[digest.Digest]content.Info{}}
+	c := newChunkAvailabilityClient(t, cs, index, filepath.Join(dir, "staging"))
+	c.logger = zap.NewNop()
+	data := []byte("chunk whose index lookup errors because the index is closed")
+	hash := sha256.Sum256(data)
+
+	missing, err := c.MissingChunks(context.Background(), [][32]byte{hash})
+	if err != nil {
+		t.Fatalf("MissingChunks must not fail when the chunk index lookup errors: %v", err)
+	}
+	if len(missing) != 1 || missing[0] != hash {
+		t.Fatalf("missing = %x, want the one candidate reported missing", missing)
+	}
+}
+
 // newLocalStoreClient builds a Client over containerd's on-disk content store,
 // so assembly runs the real WriteBlob/Commit path without a daemon.
 func newLocalStoreClient(t *testing.T) (*Client, content.Store) {

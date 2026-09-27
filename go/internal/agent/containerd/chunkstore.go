@@ -195,9 +195,13 @@ func (c *Client) MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]by
 			candidates = append(candidates, h)
 		}
 	}
+	// The index is a cache: a failure reading it must never fail a deploy.
+	// Treat a lookup error as if the index held none of the candidates, so
+	// every candidate not already staged is simply reported missing (and
+	// re-sent) rather than aborting the whole call.
 	locs, found, err := c.chunkIndex.Lookup(candidates)
 	if err != nil {
-		return nil, fmt.Errorf("reading chunk index: %w", err)
+		c.logger.Warn("Chunk index lookup failed; treating candidates as not indexed", zap.Error(err))
 	}
 
 	var cs content.Store
