@@ -450,6 +450,22 @@ func TestChunkUploadTuningReadsBenchmarkKnobs(t *testing.T) {
 	if s, b := chunkUploadTuning(); s != chunkupload.DefaultStreams || b != chunkupload.DefaultBatchChunks {
 		t.Fatalf("invalid knobs must keep defaults, got %d/%d", s, b)
 	}
+	// The streams range is clamped to upload.go's process-wide cap (8): 1 and
+	// 8 are the boundary values that must still be honored, and 9 is one past
+	// the cap and must fall back to the default rather than silently behave
+	// as 8 while a benchmark believes it measured 9.
+	t.Setenv("WENDY_CHUNK_UPLOAD_STREAMS", "1")
+	if s, _ := chunkUploadTuning(); s != 1 {
+		t.Fatalf("streams = %d, want the minimum 1 to be honored", s)
+	}
+	t.Setenv("WENDY_CHUNK_UPLOAD_STREAMS", "8")
+	if s, _ := chunkUploadTuning(); s != 8 {
+		t.Fatalf("streams = %d, want the cap 8 to be honored", s)
+	}
+	t.Setenv("WENDY_CHUNK_UPLOAD_STREAMS", "9")
+	if s, _ := chunkUploadTuning(); s != chunkupload.DefaultStreams {
+		t.Fatalf("streams = %d, want one past the cap to fall back to the default %d", s, chunkupload.DefaultStreams)
+	}
 }
 
 func TestResolvedChunkLayerUploadSendsDuplicateHashOnce(t *testing.T) {

@@ -448,6 +448,9 @@ func pushLayersByChunksWithPrepareModeAndCache(ctx context.Context, cs agentpb.W
 		}()
 	}
 
+	if len(toPush) > 0 {
+		logChunkUploadTuning()
+	}
 	uploadGroup, uploadGroupCtx := errgroup.WithContext(uploadCtx)
 	uploadGroup.SetLimit(limit)
 	for _, idx := range toPush {
@@ -720,12 +723,25 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 }
 
 // chunkUploadTuning returns the stream and batch sizes for chunk uploads.
-// WENDY_CHUNK_UPLOAD_STREAMS and WENDY_CHUNK_UPLOAD_BATCH are undocumented
-// benchmarking knobs, like WENDY_TIMING, for measuring the transport on new
-// hosts, links and devices; unset or out-of-range values keep the defaults.
+// WENDY_CHUNK_UPLOAD_STREAMS and WENDY_CHUNK_UPLOAD_BATCH are developer
+// knobs, documented in DEVELOPMENT.md next to WENDY_TIMING, for measuring the
+// transport on new hosts, links and devices; unset or out-of-range values
+// keep the defaults. The streams range is clamped to what upload.go's
+// process-wide cap (chunkupload.maxConcurrentStreams, currently 8) can
+// actually honor — a higher value would silently behave as 8 anyway, and a
+// benchmark that doesn't know that would report a setting it never measured.
 func chunkUploadTuning() (streams, batch int) {
-	return envIntInRange("WENDY_CHUNK_UPLOAD_STREAMS", chunkupload.DefaultStreams, 1, 16),
+	return envIntInRange("WENDY_CHUNK_UPLOAD_STREAMS", chunkupload.DefaultStreams, 1, 8),
 		envIntInRange("WENDY_CHUNK_UPLOAD_BATCH", chunkupload.DefaultBatchChunks, 1, 4096)
+}
+
+// logChunkUploadTuning prints the effective streams/batch settings once per
+// push, through the same [timing] line phaseTimer prints elsewhere in this
+// package, so a developer running WENDY_TIMING=1 can see what a benchmark run
+// actually measured instead of assuming the defaults or an out-of-range knob.
+func logChunkUploadTuning() {
+	streams, batch := chunkUploadTuning()
+	phaseTimer()(fmt.Sprintf("chunk upload tuning: %d streams x %d chunks/batch", streams, batch))
 }
 
 // envIntInRange parses the integer environment variable key, returning

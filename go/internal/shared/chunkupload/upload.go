@@ -33,9 +33,14 @@ const (
 	DefaultStreams = 4
 
 	// maxConcurrentStreams bounds WriteChunks streams across every layer this
-	// process uploads at once (the CLI pushes up to four layers concurrently),
-	// so a multi-layer cold deploy does not open sixteen streams against a
-	// four-core device.
+	// process uploads at once. The budget is per PROCESS, not per target: in
+	// the CLI, one process pushes to one device, so this also bounds streams
+	// against that device's cores (the CLI pushes up to four layers
+	// concurrently, so a multi-layer cold deploy does not open sixteen
+	// streams against a four-core device). In the agent's build host, one
+	// process can deliver to several devices at once, and those deliveries
+	// share this same budget rather than each getting their own. A
+	// per-connection budget is deferred to PR 2.
 	maxConcurrentStreams = 8
 )
 
