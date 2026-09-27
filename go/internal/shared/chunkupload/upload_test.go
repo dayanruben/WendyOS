@@ -240,20 +240,71 @@ func TestUploadReportsTerminalStatusAfterSendEOF(t *testing.T) {
 	}
 }
 
+// oneStreamFailClient fails only the Nth WriteChunks stream it opens (1-based,
+// in the order streams are opened); every other stream keeps succeeding
+// indefinitely. fakeClient's failAfter/failErr can't test sibling
+// cancellation: they fail every stream once the cumulative send count crosses
+// a threshold, so a test built on it can't tell "the other streams stopped
+// promptly" apart from "every stream eventually fails on its own" — which is
+// exactly the difference between errgroup.WithContext and a plain
+// errgroup.Group.
+type oneStreamFailClient struct {
+	agentpb.WendyContainerServiceClient
+	failStream int
+	failErr    error
+
+	mu     sync.Mutex
+	opened int
+	sends  int
+}
+
+func (c *oneStreamFailClient) WriteChunks(ctx context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.opened++
+	return &oneStreamFailStream{c: c, ctx: ctx, fail: c.opened == c.failStream}, nil
+}
+
+type oneStreamFailStream struct {
+	grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]
+	c    *oneStreamFailClient
+	ctx  context.Context
+	fail bool
+	n    int
+}
+
+func (s *oneStreamFailStream) Send(*agentpb.WriteChunksRequest) error {
+	select {
+	case <-time.After(100 * time.Microsecond):
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+	s.n++
+	if s.fail && s.n == 5 {
+		return s.c.failErr
+	}
+	s.c.mu.Lock()
+	s.c.sends++
+	s.c.mu.Unlock()
+	return nil
+}
+
+func (s *oneStreamFailStream) CloseAndRecv() (*agentpb.WriteChunksResponse, error) {
+	return &agentpb.WriteChunksResponse{}, nil
+}
+
 func TestUploadStopsOtherStreamsOnFirstError(t *testing.T) {
 	src, refs := layerFixture(t, 2000, 300)
-	f := newFakeClient()
-	f.sendDelay = 100 * time.Microsecond
-	injected := errors.New("link broke")
-	f.failAfter = 100
-	f.failErr = injected
-	err := Upload(context.Background(), f, src, refs, Options{BatchChunks: 32, Streams: 4})
+	injected := errors.New("device refused this batch")
+	c := &oneStreamFailClient{failStream: 2, failErr: injected}
+	err := Upload(context.Background(), c, src, refs, Options{BatchChunks: 32, Streams: 4})
 	if !errors.Is(err, injected) {
 		t.Fatalf("error = %v, want the injected failure", err)
 	}
-	if f.sends >= len(refs) {
-		t.Fatalf("sent all %d chunks despite an early failure", f.sends)
+	if c.sends > len(refs)/4 {
+		t.Fatalf("siblings kept uploading after the failure: %d of %d chunks sent", c.sends, len(refs))
 	}
+	t.Logf("sent %d of %d chunks before stopping; %d streams opened", c.sends, len(refs), c.opened)
 }
 
 func TestUploadPassesCompressor(t *testing.T) {
@@ -268,5 +319,32 @@ func TestUploadPassesCompressor(t *testing.T) {
 				t.Fatalf("stream compressor = %q, want %q", got, compressor)
 			}
 		}
+	}
+}
+
+// eofAtEndReaderAt is an io.ReaderAt that, for a read reaching the end of
+// data, returns io.EOF alongside the full read (n == len(p)) rather than
+// waiting for a separate zero-byte read to report it — a shape the
+// io.ReaderAt contract explicitly permits and that Upload must still accept.
+type eofAtEndReaderAt struct{ data []byte }
+
+func (r *eofAtEndReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	n := copy(p, r.data[off:])
+	if off+int64(n) >= int64(len(r.data)) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func TestUploadAcceptsReadAtEOFOnLastChunk(t *testing.T) {
+	data := bytes.Repeat([]byte{0x5a}, 300)
+	hash := sha256.Sum256(data)
+	refs := []chunk.Ref{{Hash: hash, Offset: 0, Len: uint64(len(data))}}
+	f := newFakeClient()
+	if err := Upload(context.Background(), f, &eofAtEndReaderAt{data: data}, refs, Options{}); err != nil {
+		t.Fatalf("Upload with a ReadAt that reports io.EOF alongside the final full read: %v", err)
+	}
+	if !bytes.Equal(f.received[hash], data) {
+		t.Fatal("received chunk bytes differ from the source")
 	}
 }

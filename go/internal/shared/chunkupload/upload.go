@@ -149,7 +149,10 @@ func sendBatch(ctx context.Context, cs agentpb.WendyContainerServiceClient, src 
 		// A fresh buffer per message: gRPC may still hold the previous one
 		// after Send returns (stats handlers read messages lazily).
 		buf := make([]byte, ref.Len)
-		if _, err := src.ReadAt(buf, int64(ref.Offset)); err != nil {
+		// io.ReaderAt's contract permits n == len(buf) together with io.EOF
+		// for a read that reaches the end of the input (e.g. the last chunk
+		// of a layer); only a short read is an actual failure.
+		if n, err := src.ReadAt(buf, int64(ref.Offset)); err != nil && !(n == len(buf) && errors.Is(err, io.EOF)) {
 			return fmt.Errorf("reading chunk %d/%d for layer %s: %w", i+1, len(plan), opts.Layer, err)
 		}
 		hash := ref.Hash
