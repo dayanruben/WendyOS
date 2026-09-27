@@ -13,6 +13,7 @@ import (
 	"github.com/containerd/containerd/v2/core/leases"
 	digest "github.com/opencontainers/go-digest"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 )
@@ -164,6 +165,32 @@ func TestReconcileChunkIndexDropsBlobsContainerdNoLongerHolds(t *testing.T) {
 	}
 	if _, ok := c.chunkIndex.Has([32]byte{1}); !ok {
 		t.Fatal("entry of a present blob was dropped")
+	}
+}
+
+// panickingContentStore stands in for any bug a maintenance pass could hit.
+type panickingContentStore struct{ content.Store }
+
+func (panickingContentStore) Info(context.Context, digest.Digest) (content.Info, error) {
+	panic("content store bug")
+}
+
+// TestChunkStoreMaintenanceSurvivesAPanickingPass: nothing above the
+// maintenance goroutine recovers a panic, so one escaping it would kill the
+// agent.
+func TestChunkStoreMaintenanceSurvivesAPanickingPass(t *testing.T) {
+	c := newChunkAvailabilityClient(t, panickingContentStore{}, newTestChunkIndex(t), filepath.Join(t.TempDir(), "staging"))
+	core, logs := observer.New(zap.ErrorLevel)
+	c.logger = zap.New(core)
+	if err := c.chunkIndex.AddLayer(digest.FromString("layer").String(), []chunk.Ref{{Hash: [32]byte{1}, Len: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // return right after the startup pass
+	c.runChunkStoreMaintenance(ctx, time.Hour)
+	if n := logs.FilterMessage("Chunk store maintenance panicked").Len(); n != 1 {
+		t.Fatalf("logged %d maintenance panics, want 1", n)
 	}
 }
 

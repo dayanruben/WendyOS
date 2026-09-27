@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	digest "github.com/opencontainers/go-digest"
@@ -41,6 +44,11 @@ var (
 	bucketBlobChunks = []byte("blob-chunks")
 	// bucketBlobs is the set of indexed blob digests, for reconciliation.
 	bucketBlobs = []byte("blobs")
+
+	// errChunkIndexCorrupt marks a failure caused by the index file's
+	// contents: bbolt panicked on a corrupt page, or reading a page the file
+	// no longer holds faulted.
+	errChunkIndexCorrupt = errors.New("chunk index corrupt")
 )
 
 type chunkLoc struct {
@@ -59,44 +67,66 @@ type chunkLoc struct {
 // (WDY-3212).
 //
 // The zero ChunkIndex is a disabled index: it holds nothing and records
-// nothing, so every chunk is reported missing and re-sent.
+// nothing, so every chunk is reported missing and re-sent. An index whose file
+// turns out to be corrupt while the agent runs behaves the same from then on.
 type ChunkIndex struct {
-	db *bolt.DB
+	db     *bolt.DB
+	path   string
+	logger *zap.Logger
+	// broken is set once a transaction hit a corrupt page; see recoverCorrupt.
+	broken atomic.Bool
 }
 
 // OpenChunkIndex opens the index at path, creating it if needed. A legacy JSON
-// index at legacyPath (empty to skip) is imported once and then removed. A file
-// bbolt cannot open is moved aside and replaced by an empty index.
+// index at legacyPath (empty to skip) is imported once and then removed. A
+// corrupt file is moved aside and replaced by an empty index. Any other
+// failure is returned and the file left alone, so the caller runs this start
+// with the disabled index and a later start can still use the file.
 func OpenChunkIndex(path, legacyPath string, logger *zap.Logger) (*ChunkIndex, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
 	db, err := openChunkIndexDB(path)
 	if err != nil {
-		if errors.Is(err, berrors.ErrTimeout) {
-			// Another process holds the lock; moving the file aside would
-			// pull it out from under that process.
+		if !isCorruptChunkIndex(err) {
+			// A lock another process holds, a full or read-only disk, an
+			// I/O or memory error: none of them says the file is bad, and
+			// moving it aside would discard a good index (or pull it out
+			// from under the process holding the lock).
 			return nil, fmt.Errorf("opening chunk index %s: %w", path, err)
 		}
-		aside := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
-		logger.Warn("Chunk index unreadable; starting an empty one",
-			zap.String("path", path), zap.String("moved_to", aside), zap.Error(err))
-		if rerr := os.Rename(path, aside); rerr != nil {
-			return nil, fmt.Errorf("opening chunk index %s: %w (moving it aside: %v)", path, err, rerr)
+		aside, merr := moveChunkIndexAside(path)
+		if merr != nil {
+			return nil, fmt.Errorf("opening chunk index %s: %w (moving it aside: %v)", path, err, merr)
 		}
+		logger.Warn("Chunk index corrupt; starting an empty one",
+			zap.String("path", path), zap.String("moved_to", aside), zap.Error(err))
 		if db, err = openChunkIndexDB(path); err != nil {
 			return nil, fmt.Errorf("creating chunk index %s: %w", path, err)
 		}
 	}
-	ix := &ChunkIndex{db: db}
+	ix := &ChunkIndex{db: db, path: path, logger: logger}
 	if legacyPath != "" {
 		ix.importLegacyJSON(legacyPath, logger)
 	}
 	return ix, nil
 }
 
-func openChunkIndexDB(path string) (*bolt.DB, error) {
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
+// openChunkIndexDB opens the store at path and creates its buckets. bbolt
+// panics, rather than returning an error, on many kinds of page corruption,
+// and reading a page the file no longer holds faults. Both come back as
+// errChunkIndexCorrupt instead of killing the agent, which would otherwise
+// crash-loop on every start. A handle whose open panicked is leaked rather
+// than closed, since bbolt may have died holding its locks; it pins only the
+// old inode, so the replacement file does not conflict with it.
+func openChunkIndexDB(path string) (db *bolt.DB, err error) {
+	defer func(panicOnFault bool) {
+		debug.SetPanicOnFault(panicOnFault)
+		if p := recover(); p != nil {
+			db, err = nil, fmt.Errorf("%w: %v", errChunkIndexCorrupt, p)
+		}
+	}(debug.SetPanicOnFault(true))
+	db, err = bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
 		return nil, err
 	}
@@ -114,12 +144,96 @@ func openChunkIndexDB(path string) (*bolt.DB, error) {
 	return db, nil
 }
 
+// isCorruptChunkIndex reports whether opening the index failed because of the
+// file's contents, the only failure that moving the file aside can fix.
+func isCorruptChunkIndex(err error) bool {
+	return errors.Is(err, errChunkIndexCorrupt) ||
+		errors.Is(err, berrors.ErrInvalid) ||
+		errors.Is(err, berrors.ErrChecksum) ||
+		errors.Is(err, berrors.ErrVersionMismatch) ||
+		// A file cut short before its second meta page holds no entries: a
+		// full disk or a power cut interrupted its creation. bbolt reports
+		// it with an untyped error.
+		strings.HasPrefix(err.Error(), "file size too small")
+}
+
+// moveChunkIndexAside renames a corrupt index file out of the way, keeping it
+// for diagnosis, and deletes any older one, so a disk that keeps corrupting
+// the index does not fill up with copies of it.
+func moveChunkIndexAside(path string) (string, error) {
+	aside := fmt.Sprintf("%s.corrupt-%d", path, time.Now().UnixNano())
+	if err := os.Rename(path, aside); err != nil {
+		return "", err
+	}
+	dir, prefix := filepath.Dir(path), filepath.Base(path)+".corrupt-"
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if name := e.Name(); strings.HasPrefix(name, prefix) && name != filepath.Base(aside) {
+				_ = os.Remove(filepath.Join(dir, name))
+			}
+		}
+	}
+	return aside, nil
+}
+
 // Close releases the index file.
 func (ix *ChunkIndex) Close() error {
 	if ix.db == nil {
 		return nil
 	}
 	return ix.db.Close()
+}
+
+// disabled reports whether the index holds and records nothing: the zero
+// index, or one whose file proved corrupt.
+func (ix *ChunkIndex) disabled() bool {
+	return ix.db == nil || ix.broken.Load()
+}
+
+// view and update run fn in a read or write transaction, and do nothing on a
+// disabled index. Every access to the file goes through one of them, so a
+// corrupt page anywhere disables the index instead of panicking out of it.
+func (ix *ChunkIndex) view(fn func(*bolt.Tx) error) (err error) {
+	if ix.disabled() {
+		return nil
+	}
+	defer ix.recoverCorrupt(debug.SetPanicOnFault(true), &err)
+	return ix.db.View(fn)
+}
+
+func (ix *ChunkIndex) update(fn func(*bolt.Tx) error) (err error) {
+	if ix.disabled() {
+		return nil
+	}
+	defer ix.recoverCorrupt(debug.SetPanicOnFault(true), &err)
+	return ix.db.Update(fn)
+}
+
+// recoverCorrupt, deferred with the goroutine's previous SetPanicOnFault
+// setting, turns a panic out of a transaction, or a fault on a page the file
+// no longer holds, into an error. bbolt rolls the transaction back first. The
+// first such failure disables the index for the rest of this run and moves its
+// file aside, so the next start opens an empty one. A panic left to escape
+// would fail every chunk deploy from then on, and kill the agent when the
+// maintenance goroutine hit it.
+func (ix *ChunkIndex) recoverCorrupt(panicOnFault bool, err *error) {
+	debug.SetPanicOnFault(panicOnFault)
+	p := recover()
+	if p == nil {
+		return
+	}
+	*err = fmt.Errorf("%w: %v", errChunkIndexCorrupt, p)
+	if ix.broken.Swap(true) {
+		return // an earlier failure already disabled the index and moved its file
+	}
+	aside, merr := moveChunkIndexAside(ix.path)
+	logger := ix.logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	logger.Error("Chunk index corrupt; disabled until the agent restarts",
+		zap.String("path", ix.path), zap.String("moved_to", aside), zap.NamedError("move_error", merr),
+		zap.Any("panic", p), zap.Stack("stack"))
 }
 
 // Has reports where a chunk's bytes live.
@@ -132,14 +246,12 @@ func (ix *ChunkIndex) Has(h [32]byte) (chunkLoc, bool) {
 }
 
 // Lookup resolves many hashes in one read transaction. found[i] reports whether
-// hashes[i] is indexed, and locs[i] is its location when it is.
+// hashes[i] is indexed, and locs[i] is its location when it is. A lookup that
+// fails reports nothing found.
 func (ix *ChunkIndex) Lookup(hashes [][32]byte) (locs []chunkLoc, found []bool, err error) {
 	locs = make([]chunkLoc, len(hashes))
 	found = make([]bool, len(hashes))
-	if ix.db == nil {
-		return locs, found, nil
-	}
-	err = ix.db.View(func(tx *bolt.Tx) error {
+	err = ix.view(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketChunks)
 		for i, h := range hashes {
 			if v := b.Get(h[:]); len(v) == chunkLocSize {
@@ -148,6 +260,12 @@ func (ix *ChunkIndex) Lookup(hashes [][32]byte) (locs []chunkLoc, found []bool, 
 		}
 		return nil
 	})
+	if err != nil {
+		// A transaction that panicked part way may have filled some slots
+		// from a file now known to be corrupt.
+		clear(locs)
+		clear(found)
+	}
 	return locs, found, err
 }
 
@@ -155,7 +273,7 @@ func (ix *ChunkIndex) Lookup(hashes [][32]byte) (locs []chunkLoc, found []bool, 
 // another blob is re-pointed here: the newest blob is the one most likely to
 // outlive a prune.
 func (ix *ChunkIndex) AddLayer(blobDigest string, refs []chunk.Ref) error {
-	if ix.db == nil {
+	if ix.disabled() {
 		return nil
 	}
 	blob, err := blobKey(blobDigest)
@@ -164,7 +282,7 @@ func (ix *ChunkIndex) AddLayer(blobDigest string, refs []chunk.Ref) error {
 	}
 	for start := 0; ; start += chunkIndexTxEntries {
 		end := min(start+chunkIndexTxEntries, len(refs))
-		if err := ix.db.Update(func(tx *bolt.Tx) error {
+		if err := ix.update(func(tx *bolt.Tx) error {
 			if err := tx.Bucket(bucketBlobs).Put(blob[:], nil); err != nil {
 				return err
 			}
@@ -190,14 +308,14 @@ func (ix *ChunkIndex) AddLayer(blobDigest string, refs []chunk.Ref) error {
 // Drop removes every entry recorded for blobDigest. A hash a later blob
 // re-indexed keeps pointing at that later blob.
 func (ix *ChunkIndex) Drop(blobDigest string) error {
-	if ix.db == nil {
+	if ix.disabled() {
 		return nil
 	}
 	blob, err := blobKey(blobDigest)
 	if err != nil {
 		return nil // a digest AddLayer rejects was never indexed
 	}
-	return ix.db.Update(func(tx *bolt.Tx) error {
+	return ix.update(func(tx *bolt.Tx) error {
 		chunks, pairs := tx.Bucket(bucketChunks), tx.Bucket(bucketBlobChunks)
 		var keys [][]byte
 		c := pairs.Cursor()
@@ -221,30 +339,28 @@ func (ix *ChunkIndex) Drop(blobDigest string) error {
 
 // Blobs lists every indexed blob digest.
 func (ix *ChunkIndex) Blobs() ([]string, error) {
-	if ix.db == nil {
-		return nil, nil
-	}
 	var out []string
-	err := ix.db.View(func(tx *bolt.Tx) error {
+	if err := ix.view(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketBlobs).ForEach(func(k, _ []byte) error {
 			out = append(out, "sha256:"+hex.EncodeToString(k))
 			return nil
 		})
-	})
-	return out, err
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Len is the number of indexed chunk hashes.
 func (ix *ChunkIndex) Len() (int, error) {
-	if ix.db == nil {
-		return 0, nil
-	}
 	var n int
-	err := ix.db.View(func(tx *bolt.Tx) error {
+	if err := ix.view(func(tx *bolt.Tx) error {
 		n = tx.Bucket(bucketChunks).Stats().KeyN
 		return nil
-	})
-	return n, err
+	}); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // importLegacyJSON moves the entries of a pre-WDY-3212 JSON index into the

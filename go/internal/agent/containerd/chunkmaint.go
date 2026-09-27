@@ -154,15 +154,17 @@ func (c *Client) StartChunkStoreMaintenance(ctx context.Context) {
 }
 
 func (c *Client) runChunkStoreMaintenance(ctx context.Context, interval time.Duration) {
-	files, bytes, err := c.staging.purgeRetired()
-	if err != nil {
-		c.logger.Warn("Deleting leftover chunk staging failed", zap.Error(err))
-	}
-	dropped, err := c.reconcileChunkIndex(ctx)
-	if err != nil {
-		c.logger.Warn("Reconciling chunk index failed", zap.Error(err))
-	}
-	c.logChunkStoreMaintenance(files, bytes, dropped)
+	c.runMaintenancePass(func() {
+		files, bytes, err := c.staging.purgeRetired()
+		if err != nil {
+			c.logger.Warn("Deleting leftover chunk staging failed", zap.Error(err))
+		}
+		dropped, err := c.reconcileChunkIndex(ctx)
+		if err != nil {
+			c.logger.Warn("Reconciling chunk index failed", zap.Error(err))
+		}
+		c.logChunkStoreMaintenance(files, bytes, dropped)
+	})
 
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -171,21 +173,30 @@ func (c *Client) runChunkStoreMaintenance(ctx context.Context, interval time.Dur
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
-			c.maintainIdleChunkStore(ctx, now)
+			c.runMaintenancePass(func() { c.maintainIdleChunkStore(ctx, now) })
 		}
 	}
+}
+
+// runMaintenancePass runs one maintenance pass and logs a panic instead of
+// letting it kill the agent. The chunk store is a cache, and the next pass
+// tries again.
+func (c *Client) runMaintenancePass(pass func()) {
+	defer func() {
+		if p := recover(); p != nil {
+			c.logger.Error("Chunk store maintenance panicked", zap.Any("panic", p), zap.Stack("stack"))
+		}
+	}()
+	pass()
 }
 
 // maintainIdleChunkStore sweeps staged chunks older than stagingRetention and
 // reconciles the index, unless a deploy has used the store recently.
 func (c *Client) maintainIdleChunkStore(ctx context.Context, now time.Time) {
-	c.chunkSweepMu.Lock()
-	if !c.chunkActivity.idleFor(chunkStoreIdleAfter, now) {
-		c.chunkSweepMu.Unlock()
+	files, bytes, idle, err := c.sweepIdleStaging(now)
+	if !idle {
 		return
 	}
-	files, bytes, err := c.staging.sweep(now.Add(-stagingRetention))
-	c.chunkSweepMu.Unlock()
 	if err != nil {
 		c.logger.Warn("Sweeping chunk staging failed", zap.Error(err))
 	}
@@ -194,6 +205,21 @@ func (c *Client) maintainIdleChunkStore(ctx context.Context, now time.Time) {
 		c.logger.Warn("Reconciling chunk index failed", zap.Error(err))
 	}
 	c.logChunkStoreMaintenance(files, bytes, dropped)
+}
+
+// sweepIdleStaging sweeps staged chunks older than stagingRetention unless the
+// store was used within chunkStoreIdleAfter. It takes chunkSweepMu before it
+// checks idleness, so an in-flight query or stage finishes, and touches the
+// store, first. The deferred unlock keeps a panicking sweep from leaving every
+// later chunk RPC blocked on the lock.
+func (c *Client) sweepIdleStaging(now time.Time) (files int, bytes int64, idle bool, err error) {
+	c.chunkSweepMu.Lock()
+	defer c.chunkSweepMu.Unlock()
+	if !c.chunkActivity.idleFor(chunkStoreIdleAfter, now) {
+		return 0, 0, false, nil
+	}
+	files, bytes, err = c.staging.sweep(now.Add(-stagingRetention))
+	return files, bytes, true, err
 }
 
 func (c *Client) logChunkStoreMaintenance(files int, bytes int64, droppedBlobs int) {
