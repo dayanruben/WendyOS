@@ -821,10 +821,50 @@ func TestPromptAddOneCredentialScanCancelled(t *testing.T) {
 	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
 		return wifiScanSelection{}, ErrUserCancelled
 	}
+	confirmManualWifiEntry = func() (bool, error) {
+		t.Fatal("cancelling the scan must not continue to manual entry")
+		return false, nil
+	}
+	promptWifiSSID = func() (string, error) {
+		t.Fatal("cancelling the scan must not prompt for an SSID")
+		return "", nil
+	}
 
 	_, _, err := promptAddOneCredential(0)
 	if !errors.Is(err, ErrUserCancelled) {
 		t.Fatalf("expected ErrUserCancelled, got %v", err)
+	}
+}
+
+func TestPromptAddOneCredentialPromptCancellation(t *testing.T) {
+	for _, stage := range []string{"manual confirmation", "SSID", "keychain", "password"} {
+		t.Run(stage, func(t *testing.T) {
+			if stage == "keychain" && !supportsKeychainLookup {
+				t.Skip("keychain lookup unavailable")
+			}
+			stubWifiPrompts(t)
+			selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+				return wifiScanSelection{}, nil
+			}
+			confirmManualWifiEntry = func() (bool, error) { return true, nil }
+			promptWifiSSID = func() (string, error) { return "Home", nil }
+			confirmKeychainLookup = func(string) (bool, error) { return false, nil }
+			promptWifiPassword = func(string) (string, error) { return "secret", nil }
+			switch stage {
+			case "manual confirmation":
+				confirmManualWifiEntry = func() (bool, error) { return false, tui.ErrCancelled }
+			case "SSID":
+				promptWifiSSID = func() (string, error) { return "", tui.ErrCancelled }
+			case "keychain":
+				confirmKeychainLookup = func(string) (bool, error) { return false, tui.ErrCancelled }
+			case "password":
+				promptWifiPassword = func(string) (string, error) { return "", tui.ErrCancelled }
+			}
+			_, added, err := promptAddOneCredential(0)
+			if added || !errors.Is(err, ErrUserCancelled) {
+				t.Fatalf("cancelling %s must exit cleanly: added=%v err=%v", stage, added, err)
+			}
+		})
 	}
 }
 
