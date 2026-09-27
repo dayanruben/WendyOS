@@ -891,6 +891,12 @@ func (p *MicroWendyProvider) pushWifiConf(device models.ExternalDevice, wifi *li
 	return nil
 }
 
+// ConnectSensorLink opens the provider's normal authenticated connection for
+// SensorLink commands. The caller must close the client.
+func (p *MicroWendyProvider) ConnectSensorLink(device models.ExternalDevice) (*liteclient.WendyLiteClient, error) {
+	return p.connectClient(device)
+}
+
 // connectClient opens a WendyLiteClient connection to the device over serial,
 // LAN or BLE (with mTLS when the device advertises it). The caller must Close
 // the client.
