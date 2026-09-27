@@ -8,7 +8,9 @@ import "time"
 // file replaced by a rename, even when the tool that wrote it preserved size
 // and mtime. ctime catches an in-place rewrite whose mtime was reset (cp -p,
 // rsync -t, touch -d): the kernel sets ctime on every change, and user space
-// cannot set it back.
+// cannot set it back. That holds only where stat is authoritative and ctime
+// is real, so the cache first checks the context's file system against an
+// allowlist (fscache_darwin.go, fscache_linux.go).
 //
 // It exists only on darwin and linux (fileidentity_darwin.go,
 // fileidentity_linux.go). Elsewhere, including Windows, whose os.FileInfo

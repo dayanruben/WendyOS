@@ -87,6 +87,38 @@ func TestComputeBuildInputHashUsesTheDigestCache(t *testing.T) {
 	}
 }
 
+// TestComputeBuildInputHashSkipsTheCacheOffLocalFS: where stat is not
+// authoritative (NFS, SMB and sshfs serve it from an attribute cache; FAT and
+// exFAT have no real ctime), every context file is read, as before the cache
+// existed. A cached digest never reaches the hash and no cache is written.
+// The file system is checked once per hash.
+func TestComputeBuildInputHashSkipsTheCacheOffLocalFS(t *testing.T) {
+	requireFileIdentity(t)
+	useContextDigestCacheDir(t)
+	settleContextDigestClock(t)
+	dir := pinnedProject(t)
+	cold := hashOrFatal(t, dir, nil)
+	setCachedDigest(t, hashCacheFile(t, dir), "model.bin", sha256HexOf("stale"))
+
+	checks := 0
+	useContextDigestRoot(t, func(string) (uint64, bool) {
+		checks++
+		return 0, false
+	})
+	if got := hashOrFatal(t, dir, nil); got != cold {
+		t.Fatal("the hash used a cached digest on a file system the cache cannot trust")
+	}
+	if checks != 1 {
+		t.Fatalf("checked the file system %d times in one hash, want 1", checks)
+	}
+
+	fresh := pinnedProject(t)
+	hashOrFatal(t, fresh, nil)
+	if fileExists(hashCacheFile(t, fresh)) {
+		t.Fatal("a digest cache was written for a file system the cache cannot trust")
+	}
+}
+
 // TestComputeBuildInputHashSeesSameSizeEdits is the correctness bar for the
 // cache: edits that keep a file's size and mtime still change the hash, with
 // a racy (just-written) file and with a settled, cached one.

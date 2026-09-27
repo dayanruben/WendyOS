@@ -39,6 +39,41 @@ func digestOf(t *testing.T, cwd, rel string, now time.Time) (string, int) {
 	return d, c.reads
 }
 
+// useContextDigestRoot stands in for the check of the context root's file
+// system (contextDigestRootDevice) until the test ends.
+func useContextDigestRoot(t *testing.T, f func(root string) (uint64, bool)) {
+	t.Helper()
+	orig := contextDigestRootDevice
+	contextDigestRootDevice = f
+	t.Cleanup(func() { contextDigestRootDevice = orig })
+}
+
+// setCachedDigest rewrites rel's digest in the cache file p, so a test can
+// tell a digest served from the cache from one read from the file.
+func setCachedDigest(t *testing.T, p, rel, digest string) {
+	t.Helper()
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f contextDigestFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		t.Fatal(err)
+	}
+	e, ok := f.Entries[rel]
+	if !ok {
+		t.Fatalf("%s is not cached: %v", rel, f.Entries)
+	}
+	e.Digest = digest
+	f.Entries[rel] = e
+	if data, err = json.Marshal(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func sha256HexOf(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
@@ -129,6 +164,39 @@ func TestContextDigestCacheRereadsAChangedFile(t *testing.T) {
 	}
 	if d, reads := digestOf(t, cwd, "app.py", settledNow()); reads != 1 || d != sha256HexOf("print('v3')\n") {
 		t.Fatalf("replaced file: digest %s, reads %d", d, reads)
+	}
+}
+
+// TestContextDigestCacheSkipsFilesOnAnotherDevice: a file whose device is not
+// the context root's lives on another mount (NFS, a FAT stick, sshfs), whose
+// stat the cache cannot trust even when the root's file system is on the
+// allowlist. It is never served from the cache, and never stored in it.
+func TestContextDigestCacheSkipsFilesOnAnotherDevice(t *testing.T) {
+	requireFileIdentity(t)
+	useContextDigestCacheDir(t)
+	cwd := t.TempDir()
+	writeFile(t, cwd, "mnt/model.bin", "weights v1\n")
+	want := sha256HexOf("weights v1\n")
+	if _, reads := digestOf(t, cwd, "mnt/model.bin", settledNow()); reads != 1 {
+		t.Fatalf("cold reads = %d", reads)
+	}
+	// A cached entry whose identity still matches, but whose digest a lookup
+	// would now put in the hash.
+	p, _ := contextDigestCachePath(cwd, filepath.Join(cwd, "Dockerfile"))
+	setCachedDigest(t, p, "mnt/model.bin", sha256HexOf("stale"))
+
+	sameFS := contextDigestRootDevice
+	useContextDigestRoot(t, func(root string) (uint64, bool) {
+		dev, ok := sameFS(root)
+		return dev + 1, ok // the root is on another device than the file
+	})
+	for run := range 2 {
+		if d, reads := digestOf(t, cwd, "mnt/model.bin", settledNow()); reads != 1 || d != want {
+			t.Fatalf("run %d: digest %s (want %s), reads %d (want 1)", run, d, want, reads)
+		}
+	}
+	if c := openContextDigestCache(cwd, filepath.Join(cwd, "Dockerfile"), settledNow()); len(c.prev) != 0 {
+		t.Fatalf("a file on another device was cached: %v", c.prev)
 	}
 }
 

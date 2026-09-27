@@ -20,6 +20,15 @@ import (
 // fileIdentity.settled). A wrong or missing cache can therefore only cost a
 // re-read, never a skipped rebuild.
 //
+// Trust: identity only proves a file unchanged where stat is authoritative.
+// The cache is used only when the context root is on a local file system
+// whose kernel maintains ctime (the per-OS allowlist, fscache_*.go), and only
+// for files on the root's device, since any other device is another mount.
+// On NFS, SMB or sshfs, stat comes from an attribute cache that can hide
+// another host's edit for up to a minute; on FAT and exFAT, ctime is mtime,
+// so touch -r restores a rewritten file's whole identity. There every file is
+// read, as before the cache existed.
+//
 // Layout: one JSON file per (context directory, Dockerfile) pair under
 // <user cache dir>/wendy/context-digests/, holding only the files that pair
 // hashed on its latest run. Different Dockerfiles in one directory can use
@@ -52,6 +61,21 @@ var contextDigestCacheTestDir string
 // files count as settled.
 var contextDigestClock = time.Now
 
+// contextDigestRootDevice returns the device of the context root when the
+// cache can trust stat on the root's file system (digestCacheFSEligible), and
+// false otherwise. Tests replace it to stand in for another file system.
+var contextDigestRootDevice = func(root string) (uint64, bool) {
+	if !digestCacheFSEligible(root) {
+		return 0, false
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return 0, false
+	}
+	id, ok := fileIdentityOf(info)
+	return id.Dev, ok
+}
+
 type contextDigestEntry struct {
 	ID     fileIdentity `json:"id"`
 	Digest string       `json:"sha256"` // lowercase hex
@@ -65,7 +89,8 @@ type contextDigestFile struct {
 // contextDigestCache is one run's view of one cache file. It is not safe for
 // concurrent use; each computeBuildInputHash call opens its own.
 type contextDigestCache struct {
-	path    string // "" when there is no cache directory: nothing is persisted
+	path    string // "" when the cache is off: nothing is served or persisted
+	dev     uint64 // the context root's device; files on any other are not cached
 	now     time.Time
 	prev    map[string]contextDigestEntry // loaded, by forward-slash relative path
 	next    map[string]contextDigestEntry // this run's files, saved by save
@@ -105,6 +130,8 @@ func contextDigestCachePath(cwd, dockerfilePath string) (string, bool) {
 
 // openContextDigestCache loads the cache for (cwd, dockerfilePath). now is
 // when hashing starts; files that have not settled by then are not cached.
+// The cache is off when there is no cache directory, or when cwd's file
+// system is not one whose stat it can trust (see contextDigestRootDevice).
 func openContextDigestCache(cwd, dockerfilePath string, now time.Time) *contextDigestCache {
 	c := &contextDigestCache{
 		now:  now,
@@ -115,7 +142,11 @@ func openContextDigestCache(cwd, dockerfilePath string, now time.Time) *contextD
 	if !ok {
 		return c
 	}
-	c.path = p
+	dev, ok := contextDigestRootDevice(cwd)
+	if !ok {
+		return c
+	}
+	c.path, c.dev = p, dev
 	if info, err := os.Stat(p); err != nil || info.Size() > contextDigestMaxFileBytes {
 		return c
 	}
@@ -135,7 +166,7 @@ func openContextDigestCache(cwd, dockerfilePath string, now time.Time) *contextD
 // walk-time lstat is info. It reuses the cached digest when the file's
 // identity is unchanged and otherwise reads the file.
 func (c *contextDigestCache) fileDigest(abs, rel string, info fs.FileInfo) (string, error) {
-	if id, ok := fileIdentityOf(info); ok {
+	if id, ok := fileIdentityOf(info); ok && c.trusts(id) {
 		if e, hit := c.prev[rel]; hit && e.ID == id && validSHA256Hex(e.Digest) {
 			c.next[rel] = e
 			return e.Digest, nil
@@ -166,7 +197,7 @@ func (c *contextDigestCache) fileDigest(abs, rel string, info fs.FileInfo) (stri
 	}
 	idBefore, ok1 := fileIdentityOf(before)
 	idAfter, ok2 := fileIdentityOf(after)
-	if ok1 && ok2 && idBefore == idAfter && idBefore.settled(c.now) {
+	if ok1 && ok2 && idBefore == idAfter && c.trusts(idBefore) && idBefore.settled(c.now) {
 		e := contextDigestEntry{ID: idBefore, Digest: digest}
 		if old, had := c.prev[rel]; !had || old != e {
 			c.changed = true
@@ -174,6 +205,14 @@ func (c *contextDigestCache) fileDigest(abs, rel string, info fs.FileInfo) (stri
 		c.next[rel] = e
 	}
 	return digest, nil
+}
+
+// trusts reports whether the cache may serve or store the digest of a file
+// with identity id: only while the cache is on, and only for a file on the
+// context root's device. A file on another device is on another mount (NFS,
+// a FAT stick, sshfs), whose stat need not be authoritative.
+func (c *contextDigestCache) trusts(id fileIdentity) bool {
+	return c.path != "" && id.Dev == c.dev
 }
 
 // save persists this run's entries. It is best effort: a failure only means
