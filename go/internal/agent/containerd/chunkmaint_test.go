@@ -3,6 +3,7 @@ package containerd
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -147,21 +148,31 @@ func newMaintenanceClient(t *testing.T, present ...digest.Digest) (*Client, *rec
 }
 
 func TestReconcileChunkIndexDropsBlobsContainerdNoLongerHolds(t *testing.T) {
-	kept, collected := digest.FromString("kept layer"), digest.FromString("collected layer")
+	kept := digest.FromString("kept layer")
 	c, _ := newMaintenanceClient(t, kept)
 	if err := c.chunkIndex.AddLayer(kept.String(), []chunk.Ref{{Hash: [32]byte{1}, Len: 1}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.chunkIndex.AddLayer(collected.String(), []chunk.Ref{{Hash: [32]byte{2}, Len: 1}}); err != nil {
-		t.Fatal(err)
+	const collected = 3
+	for i := range collected {
+		blob := digest.FromString(fmt.Sprint("collected layer ", i)).String()
+		if err := c.chunkIndex.AddLayer(blob, []chunk.Ref{{Hash: [32]byte{2, byte(i)}, Len: 1}}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
+	before := committedTxID(t, c.chunkIndex)
 	dropped, err := c.reconcileChunkIndex(context.Background())
-	if err != nil || dropped != 1 {
-		t.Fatalf("reconcile dropped %d, %v; want 1", dropped, err)
+	if err != nil || dropped != collected {
+		t.Fatalf("reconcile dropped %d, %v; want %d", dropped, err, collected)
 	}
-	if _, ok := c.chunkIndex.Has([32]byte{2}); ok {
-		t.Fatal("entry of a collected blob survived")
+	if n := committedTxID(t, c.chunkIndex) - before; n != 1 {
+		t.Fatalf("dropping %d collected blobs took %d transactions, want 1", collected, n)
+	}
+	for i := range collected {
+		if _, ok := c.chunkIndex.Has([32]byte{2, byte(i)}); ok {
+			t.Fatalf("entry of collected blob %d survived", i)
+		}
 	}
 	if _, ok := c.chunkIndex.Has([32]byte{1}); !ok {
 		t.Fatal("entry of a present blob was dropped")

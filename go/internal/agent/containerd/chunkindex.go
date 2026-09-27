@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -305,36 +306,86 @@ func (ix *ChunkIndex) AddLayer(blobDigest string, refs []chunk.Ref) error {
 	}
 }
 
-// Drop removes every entry recorded for blobDigest. A hash a later blob
-// re-indexed keeps pointing at that later blob.
+// Drop removes every entry recorded for blobDigest; see DropBlobs.
 func (ix *ChunkIndex) Drop(blobDigest string) error {
-	if ix.disabled() {
-		return nil
+	_, err := ix.DropBlobs([]string{blobDigest})
+	return err
+}
+
+// DropBlobs removes every entry recorded for the given blobs and returns how
+// many of the blobs it finished. A hash a later blob re-indexed keeps pointing
+// at that later blob. A transaction deletes at most chunkIndexTxEntries
+// entries, across blobs: one multi-GB layer never makes a huge transaction,
+// and hundreds of small stale blobs share a few instead of one each. A blob's
+// key goes last, in the transaction that deletes its final entries, so a drop
+// cut short leaves the blob listed and the next reconcile finishes it.
+func (ix *ChunkIndex) DropBlobs(blobDigests []string) (dropped int, err error) {
+	blobs := make([][32]byte, 0, len(blobDigests))
+	for _, d := range blobDigests {
+		if blob, err := blobKey(d); err == nil {
+			blobs = append(blobs, blob) // a digest AddLayer rejects was never indexed
+		}
 	}
-	blob, err := blobKey(blobDigest)
-	if err != nil {
-		return nil // a digest AddLayer rejects was never indexed
+	// Sorted, the blobs of one transaction read one run of the blob-chunks
+	// bucket.
+	slices.SortFunc(blobs, func(a, b [32]byte) int { return bytes.Compare(a[:], b[:]) })
+	blobs = slices.Compact(blobs)
+	for len(blobs) > 0 && !ix.disabled() {
+		var done int
+		if err := ix.update(func(tx *bolt.Tx) (err error) {
+			done, err = dropBlobsTx(tx, blobs, chunkIndexTxEntries)
+			return err
+		}); err != nil {
+			return dropped, err
+		}
+		dropped += done
+		blobs = blobs[done:]
 	}
-	return ix.update(func(tx *bolt.Tx) error {
-		chunks, pairs := tx.Bucket(bucketChunks), tx.Bucket(bucketBlobChunks)
+	return dropped, nil
+}
+
+// dropBlobsTx deletes up to budget of the blobs' entries, taking the blobs in
+// order, and the key of each blob left with none. It returns how many blobs it
+// finished; the next call resumes with the first unfinished one.
+func dropBlobsTx(tx *bolt.Tx, blobs [][32]byte, budget int) (done int, err error) {
+	chunks, pairs, listed := tx.Bucket(bucketChunks), tx.Bucket(bucketBlobChunks), tx.Bucket(bucketBlobs)
+	for _, blob := range blobs {
+		if budget == 0 {
+			break
+		}
+		// Collect one key past the budget, to learn whether the blob has
+		// entries left over for the next transaction. Deleting while a cursor
+		// walks the bucket is unsafe, hence the copies.
 		var keys [][]byte
 		c := pairs.Cursor()
-		for k, _ := c.Seek(blob[:]); k != nil && bytes.HasPrefix(k, blob[:]); k, _ = c.Next() {
+		for k, _ := c.Seek(blob[:]); k != nil && bytes.HasPrefix(k, blob[:]) && len(keys) <= budget; k, _ = c.Next() {
 			keys = append(keys, bytes.Clone(k))
+		}
+		more := len(keys) > budget
+		if more {
+			keys = keys[:budget]
 		}
 		for _, k := range keys {
 			hash := k[len(blob):]
 			if v := chunks.Get(hash); len(v) == chunkLocSize && bytes.Equal(v[:len(blob)], blob[:]) {
 				if err := chunks.Delete(hash); err != nil {
-					return err
+					return done, err
 				}
 			}
 			if err := pairs.Delete(k); err != nil {
-				return err
+				return done, err
 			}
 		}
-		return tx.Bucket(bucketBlobs).Delete(blob[:])
-	})
+		if more {
+			break // the blob stays listed until its last entry goes
+		}
+		if err := listed.Delete(blob[:]); err != nil {
+			return done, err
+		}
+		budget -= len(keys)
+		done++
+	}
+	return done, nil
 }
 
 // Blobs lists every indexed blob digest.
@@ -364,24 +415,26 @@ func (ix *ChunkIndex) Len() (int, error) {
 }
 
 // importLegacyJSON moves the entries of a pre-WDY-3212 JSON index into the
-// store and deletes the JSON. Unreadable content is dropped rather than
-// retried: the index is a cache.
+// store and deletes the JSON. Nothing is retried, since the index is a cache:
+// an unreadable file is discarded, and a failed import keeps what it wrote.
 func (ix *ChunkIndex) importLegacyJSON(path string, logger *zap.Logger) {
+	start := time.Now()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return
 	}
-	imported := 0
+	var entries map[string]chunkLoc
 	if err == nil && len(data) > 0 {
-		var entries map[string]chunkLoc
-		if err = json.Unmarshal(data, &entries); err == nil {
-			imported, err = ix.importEntries(entries)
-		}
+		err = json.Unmarshal(data, &entries)
 	}
 	if err != nil {
 		logger.Warn("Discarding unreadable legacy chunk index", zap.String("path", path), zap.Error(err))
+	} else if imported, blobs, err := ix.importEntries(entries); err != nil {
+		logger.Warn("Legacy chunk index import failed", zap.String("path", path),
+			zap.Int("entries_imported", imported), zap.Error(err))
 	} else {
-		logger.Info("Migrated legacy chunk index", zap.String("path", path), zap.Int("entries", imported))
+		logger.Info("Migrated legacy chunk index", zap.String("path", path),
+			zap.Int("entries", imported), zap.Int("blobs", blobs), zap.Duration("took", time.Since(start)))
 	}
 	for _, p := range []string{path, path + ".tmp"} {
 		if rerr := os.Remove(p); rerr != nil && !os.IsNotExist(rerr) {
@@ -390,28 +443,68 @@ func (ix *ChunkIndex) importLegacyJSON(path string, logger *zap.Logger) {
 	}
 }
 
-func (ix *ChunkIndex) importEntries(entries map[string]chunkLoc) (int, error) {
-	byBlob := make(map[string][]chunk.Ref)
+// importEntries writes the legacy entries as the records AddLayer writes, in
+// transactions of at most chunkIndexTxEntries entries across blobs, sorted by
+// chunk hash so each transaction fills one run of the chunks bucket. One
+// transaction per blob made the migration grow with the number of blobs:
+// 23.6 s for 2000, all before the agent serves an RPC. It returns how many
+// entries, and how many distinct blobs, the legacy index held that this one
+// can.
+func (ix *ChunkIndex) importEntries(entries map[string]chunkLoc) (imported, blobs int, err error) {
+	type entry struct {
+		hash, blob     [32]byte
+		offset, length uint64
+	}
+	type parsedBlob struct {
+		key   [32]byte
+		valid bool
+	}
+	parsed := make(map[string]parsedBlob)
+	flat := make([]entry, 0, len(entries))
 	for key, loc := range entries {
 		raw, err := hex.DecodeString(key)
 		if err != nil || len(raw) != 32 {
 			continue
 		}
-		var h [32]byte
-		copy(h[:], raw)
-		byBlob[loc.Blob] = append(byBlob[loc.Blob], chunk.Ref{Hash: h, Offset: loc.Offset, Len: loc.Len})
-	}
-	imported := 0
-	for blob, refs := range byBlob {
-		if _, err := blobKey(blob); err != nil {
+		b, seen := parsed[loc.Blob]
+		if !seen {
+			k, err := blobKey(loc.Blob)
+			b = parsedBlob{key: k, valid: err == nil}
+			parsed[loc.Blob] = b
+			if b.valid {
+				blobs++
+			}
+		}
+		if !b.valid {
 			continue // not a digest this index can hold; those chunks are re-sent when needed
 		}
-		if err := ix.AddLayer(blob, refs); err != nil {
-			return imported, err
-		}
-		imported += len(refs)
+		e := entry{blob: b.key, offset: loc.Offset, length: loc.Len}
+		copy(e.hash[:], raw)
+		flat = append(flat, e)
 	}
-	return imported, nil
+	slices.SortFunc(flat, func(a, b entry) int { return bytes.Compare(a.hash[:], b.hash[:]) })
+	for start := 0; start < len(flat); start += chunkIndexTxEntries {
+		batch := flat[start:min(start+chunkIndexTxEntries, len(flat))]
+		if err := ix.update(func(tx *bolt.Tx) error {
+			listed, chunks, pairs := tx.Bucket(bucketBlobs), tx.Bucket(bucketChunks), tx.Bucket(bucketBlobChunks)
+			for _, e := range batch {
+				if err := listed.Put(e.blob[:], nil); err != nil {
+					return err
+				}
+				if err := chunks.Put(e.hash[:], encodeChunkLoc(e.blob, e.offset, e.length)); err != nil {
+					return err
+				}
+				if err := pairs.Put(blobChunkKey(e.blob, e.hash), nil); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return imported, blobs, err
+		}
+		imported += len(batch)
+	}
+	return imported, blobs, nil
 }
 
 // blobKey is the raw 32-byte sha256 of a "sha256:<hex>" blob digest.

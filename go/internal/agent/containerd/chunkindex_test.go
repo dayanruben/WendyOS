@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	digest "github.com/opencontainers/go-digest"
 	bolt "go.etcd.io/bbolt"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 )
@@ -111,24 +114,144 @@ func TestChunkIndexDropRemovesOnlyThatBlobsEntries(t *testing.T) {
 	}
 }
 
-func TestChunkIndexAddLayerSpansTransactions(t *testing.T) {
+// committedTxID is the id of the index's last committed write transaction;
+// each one adds 1.
+func committedTxID(t *testing.T, ix *ChunkIndex) int {
+	t.Helper()
+	var id int
+	if err := ix.db.View(func(tx *bolt.Tx) error {
+		id = tx.ID()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// TestChunkIndexAddLayerAndDropSpanTransactions: indexing or dropping a layer
+// of more than chunkIndexTxEntries chunks, as a multi-GB one has, takes
+// several bounded transactions rather than one huge one.
+func TestChunkIndexAddLayerAndDropSpanTransactions(t *testing.T) {
 	ix := newTestChunkIndex(t)
 	blob := digest.FromString("big layer").String()
 	refs := make([]chunk.Ref, chunkIndexTxEntries+10)
 	for i := range refs {
 		refs[i] = chunk.Ref{Hash: [32]byte{byte(i), byte(i >> 8), byte(i >> 16), 0xaa}, Offset: uint64(i), Len: 1}
 	}
+	before := committedTxID(t, ix)
 	if err := ix.AddLayer(blob, refs); err != nil {
 		t.Fatal(err)
+	}
+	if n := committedTxID(t, ix) - before; n != 2 {
+		t.Fatalf("AddLayer took %d transactions, want 2", n)
 	}
 	if n, err := ix.Len(); err != nil || n != len(refs) {
 		t.Fatalf("Len = %d, %v; want %d", n, err, len(refs))
 	}
+
+	before = committedTxID(t, ix)
 	if err := ix.Drop(blob); err != nil {
 		t.Fatal(err)
 	}
+	if n := committedTxID(t, ix) - before; n != 2 {
+		t.Fatalf("Drop took %d transactions, want 2", n)
+	}
 	if n, err := ix.Len(); err != nil || n != 0 {
 		t.Fatalf("Len after Drop = %d, %v; want 0", n, err)
+	}
+	if blobs, err := ix.Blobs(); err != nil || len(blobs) != 0 {
+		t.Fatalf("Blobs after Drop = %v, %v; want none", blobs, err)
+	}
+}
+
+// TestChunkIndexDropBlobsSharesTransactionsAcrossBlobs: dropping many small
+// blobs, as the first reconcile after the legacy import does, costs one
+// transaction rather than one per blob, and still spares a hash that a newer
+// blob re-indexed.
+func TestChunkIndexDropBlobsSharesTransactionsAcrossBlobs(t *testing.T) {
+	ix := newTestChunkIndex(t)
+	shared := [32]byte{0xff}
+	var stale []string
+	for b := range 50 {
+		blob := digest.FromString(fmt.Sprint("stale layer ", b)).String()
+		stale = append(stale, blob)
+		refs := []chunk.Ref{{Hash: [32]byte{byte(b), 1}, Len: 1}, {Hash: [32]byte{byte(b), 2}, Offset: 1, Len: 1}}
+		if b == 0 {
+			refs = append(refs, chunk.Ref{Hash: shared, Offset: 2, Len: 1})
+		}
+		if err := ix.AddLayer(blob, refs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newer := digest.FromString("newer layer").String()
+	if err := ix.AddLayer(newer, []chunk.Ref{{Hash: shared, Offset: 9, Len: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	before := committedTxID(t, ix)
+	dropped, err := ix.DropBlobs(stale)
+	if err != nil || dropped != len(stale) {
+		t.Fatalf("DropBlobs = %d, %v; want %d", dropped, err, len(stale))
+	}
+	if n := committedTxID(t, ix) - before; n != 1 {
+		t.Fatalf("dropping %d blobs took %d transactions, want 1", len(stale), n)
+	}
+	if loc, ok := ix.Has(shared); !ok || loc.Blob != newer || loc.Offset != 9 {
+		t.Fatalf("shared chunk = %+v, %v; want it still in the newer blob", loc, ok)
+	}
+	if n, err := ix.Len(); err != nil || n != 1 {
+		t.Fatalf("Len = %d, %v; want only the newer blob's entry", n, err)
+	}
+	if blobs, err := ix.Blobs(); err != nil || len(blobs) != 1 || blobs[0] != newer {
+		t.Fatalf("Blobs = %v, %v; want [%s]", blobs, err, newer)
+	}
+}
+
+// TestChunkIndexDropListsABlobUntilItsLastEntryIsGone: a drop cut short
+// between transactions leaves the blob listed with its remaining entries, so
+// the next reconcile finds it and finishes.
+func TestChunkIndexDropListsABlobUntilItsLastEntryIsGone(t *testing.T) {
+	ix := newTestChunkIndex(t)
+	blob := digest.FromString("layer").String()
+	refs := make([]chunk.Ref, 10)
+	for i := range refs {
+		refs[i] = chunk.Ref{Hash: [32]byte{byte(i + 1)}, Offset: uint64(i), Len: 1}
+	}
+	if err := ix.AddLayer(blob, refs); err != nil {
+		t.Fatal(err)
+	}
+	key, err := blobKey(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropWithin := func(budget int) (done int) {
+		t.Helper()
+		if err := ix.update(func(tx *bolt.Tx) (err error) {
+			done, err = dropBlobsTx(tx, [][32]byte{key}, budget)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return done
+	}
+
+	if done := dropWithin(4); done != 0 {
+		t.Fatalf("finished %d blobs with 6 entries left, want 0", done)
+	}
+	if blobs, err := ix.Blobs(); err != nil || len(blobs) != 1 {
+		t.Fatalf("Blobs = %v, %v; a blob with entries left must stay listed", blobs, err)
+	}
+	if n, err := ix.Len(); err != nil || n != 6 {
+		t.Fatalf("Len = %d, %v; want the 6 entries not yet dropped", n, err)
+	}
+	if done := dropWithin(6); done != 1 {
+		t.Fatalf("finished %d blobs with a budget covering the rest, want 1", done)
+	}
+	if blobs, err := ix.Blobs(); err != nil || len(blobs) != 0 {
+		t.Fatalf("Blobs = %v, %v; want none", blobs, err)
+	}
+	if n, err := ix.Len(); err != nil || n != 0 {
+		t.Fatalf("Len = %d, %v; want 0", n, err)
 	}
 }
 
@@ -165,6 +288,224 @@ func TestOpenChunkIndexImportsAndRemovesLegacyJSON(t *testing.T) {
 	}
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
 		t.Fatalf("legacy JSON still present: %v", err)
+	}
+}
+
+// TestOpenChunkIndexImportsManyLegacyBlobsAsAddLayerWould replays a history of
+// layers that share chunks. The legacy agent kept only the last layer to index
+// each chunk. Importing its JSON must give the index that AddLayer gives for
+// the same layers in the same order: the same entries, the same blobs, and
+// drops that agree.
+func TestOpenChunkIndexImportsManyLegacyBlobsAsAddLayerWould(t *testing.T) {
+	// 45 layers of 400 unique chunks, each also holding 50 of 60 shared ones:
+	// 18060 entries, so the import spans two transactions.
+	const layers, unique, sharedPerLayer = 45, 400, 50
+	shared := make([][32]byte, 60)
+	for i := range shared {
+		shared[i] = sha256.Sum256(fmt.Appendf(nil, "shared chunk %d", i))
+	}
+	want := newTestChunkIndex(t)
+	want.db.NoSync = true // it only has to be right, not durable
+	legacy := map[string]chunkLoc{}
+	var blobs []string
+	for l := range layers {
+		blob := digest.FromString(fmt.Sprint("layer ", l)).String()
+		blobs = append(blobs, blob)
+		var refs []chunk.Ref
+		for i := range unique {
+			refs = append(refs, chunk.Ref{Hash: sha256.Sum256(fmt.Appendf(nil, "%d-%d", l, i))})
+		}
+		for j := range sharedPerLayer {
+			refs = append(refs, chunk.Ref{Hash: shared[(7*l+j)%len(shared)]})
+		}
+		var offset uint64
+		for i := range refs {
+			refs[i].Offset, refs[i].Len = offset, 100+uint64(i)
+			offset += refs[i].Len
+			legacy[hex.EncodeToString(refs[i].Hash[:])] = chunkLoc{Blob: blob, Offset: refs[i].Offset, Len: refs[i].Len}
+		}
+		if err := want.AddLayer(blob, refs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "chunk-index.json")
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	core, logs := observer.New(zap.InfoLevel)
+	got, err := OpenChunkIndex(filepath.Join(dir, "chunk-index.db"), legacyPath, zap.New(core))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+
+	hashes := make([][32]byte, 0, len(legacy))
+	for key := range legacy {
+		var h [32]byte
+		if _, err := hex.Decode(h[:], []byte(key)); err != nil {
+			t.Fatal(err)
+		}
+		hashes = append(hashes, h)
+	}
+	agree := func(when string) {
+		t.Helper()
+		gotLocs, gotFound, err := got.Lookup(hashes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantLocs, wantFound, err := want.Lookup(hashes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range hashes {
+			if gotFound[i] != wantFound[i] || gotLocs[i] != wantLocs[i] {
+				t.Fatalf("%s: chunk %x imported as %+v (%v), AddLayer gives %+v (%v)",
+					when, hashes[i], gotLocs[i], gotFound[i], wantLocs[i], wantFound[i])
+			}
+		}
+		gotBlobs, err := got.Blobs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantBlobs, err := want.Blobs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(gotBlobs, wantBlobs) {
+			t.Fatalf("%s: imported blobs %v, AddLayer gives %v", when, gotBlobs, wantBlobs)
+		}
+	}
+	agree("after import")
+	if n, err := got.Len(); err != nil || n != len(legacy) {
+		t.Fatalf("Len = %d, %v; want all %d legacy entries", n, err, len(legacy))
+	}
+
+	migrated := logs.FilterMessage("Migrated legacy chunk index").All()
+	if len(migrated) != 1 {
+		t.Fatalf("logged %d migrations, want 1", len(migrated))
+	}
+	fields := migrated[0].ContextMap()
+	if fields["entries"] != int64(len(legacy)) || fields["blobs"] != int64(layers) {
+		t.Fatalf("migration logged %v; want entries=%d blobs=%d", fields, len(legacy), layers)
+	}
+	if took, ok := fields["took"].(time.Duration); !ok || took <= 0 {
+		t.Fatalf("migration logged took=%v; want the import's duration", fields["took"])
+	}
+
+	// The newest layer owns every shared chunk it holds; a middle one owns
+	// only its unique chunks.
+	for _, blob := range []string{blobs[layers-1], blobs[layers/2]} {
+		if err := got.Drop(blob); err != nil {
+			t.Fatal(err)
+		}
+		if err := want.Drop(blob); err != nil {
+			t.Fatal(err)
+		}
+		agree("after dropping " + blob)
+	}
+}
+
+// TestImportLegacyJSONTellsAFailedImportFromAnUnreadableFile: a write failure
+// part way through the import is not an unreadable file, and the log says
+// which it was. Both still remove the JSON, since the index is a cache.
+func TestImportLegacyJSONTellsAFailedImportFromAnUnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chunk-index.db")
+	ix, err := OpenChunkIndex(path, "", zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Read-only, every write fails, as it would on a full disk.
+	db, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	readOnly := &ChunkIndex{db: db}
+	core, logs := observer.New(zap.InfoLevel)
+	legacy := filepath.Join(dir, "chunk-index.json")
+	h := [32]byte{4}
+	data, err := json.Marshal(map[string]chunkLoc{hex.EncodeToString(h[:]): {Blob: digest.FromString("layer").String(), Len: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name, content, logged string
+	}{
+		{"write failure", string(data), "Legacy chunk index import failed"},
+		{"unreadable file", "{not json", "Discarding unreadable legacy chunk index"},
+	} {
+		if err := os.WriteFile(legacy, []byte(tc.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		readOnly.importLegacyJSON(legacy, zap.New(core))
+		if entries := logs.TakeAll(); len(entries) != 1 || entries[0].Message != tc.logged {
+			t.Fatalf("%s: logged %v; want only %q", tc.name, entries, tc.logged)
+		}
+		if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+			t.Fatalf("%s: legacy JSON still present: %v", tc.name, err)
+		}
+	}
+}
+
+// legacyChunkIndexEntries builds a legacy JSON index of entries 64 KiB chunks
+// spread round-robin over blobs blobs.
+func legacyChunkIndexEntries(entries, blobs int) map[string]chunkLoc {
+	digests := make([]string, blobs)
+	for b := range digests {
+		digests[b] = digest.FromString(fmt.Sprint("blob ", b)).String()
+	}
+	m := make(map[string]chunkLoc, entries)
+	for i := range entries {
+		h := sha256.Sum256(fmt.Appendf(nil, "chunk %d", i))
+		m[hex.EncodeToString(h[:])] = chunkLoc{Blob: digests[i%blobs], Offset: uint64(i/blobs) << 16, Len: 1 << 16}
+	}
+	return m
+}
+
+// BenchmarkOpenChunkIndexImportingLegacyJSON times the first start after the
+// update from a JSON index of 145k entries, as on a long-lived device, spread
+// over few or many blobs. It all runs before the agent serves any RPC, and
+// `wendy device update` waits 20 s for the agent to come back.
+func BenchmarkOpenChunkIndexImportingLegacyJSON(b *testing.B) {
+	for _, blobs := range []int{20, 500, 2000} {
+		b.Run(fmt.Sprint("blobs=", blobs), func(b *testing.B) {
+			data, err := json.Marshal(legacyChunkIndexEntries(145_000, blobs))
+			if err != nil {
+				b.Fatal(err)
+			}
+			for range b.N {
+				b.StopTimer()
+				dir := b.TempDir()
+				legacy := filepath.Join(dir, "chunk-index.json")
+				if err := os.WriteFile(legacy, data, 0o644); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+				ix, err := OpenChunkIndex(filepath.Join(dir, "chunk-index.db"), legacy, zap.NewNop())
+				if err != nil {
+					b.Fatal(err)
+				}
+				b.StopTimer()
+				if n, err := ix.Len(); err != nil || n != 145_000 {
+					b.Fatalf("Len = %d, %v; want 145000", n, err)
+				}
+				if err := ix.Close(); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+			}
+		})
 	}
 }
 

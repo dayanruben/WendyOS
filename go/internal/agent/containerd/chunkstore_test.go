@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"io"
 	"math/rand"
 	"path/filepath"
@@ -201,6 +202,40 @@ func TestMissingChunksPrunesIndexEntriesWhoseBlobWasGarbageCollected(t *testing.
 	defer reopened.Close()
 	if _, ok := reopened.Has(hash); ok {
 		t.Fatal("pruned chunk entry remained in the persisted index")
+	}
+}
+
+// TestMissingChunksDropsEveryStaleBlobInOneTransaction: the first query after
+// the legacy import can find hundreds of stale blobs, under the sweep lock's
+// read side. They go in one batch, not a transaction each.
+func TestMissingChunksDropsEveryStaleBlobInOneTransaction(t *testing.T) {
+	index := newTestChunkIndex(t)
+	var hashes [][32]byte
+	for i := range 3 {
+		data := fmt.Appendf(nil, "chunk %d whose indexed layer was garbage collected", i)
+		hash := sha256.Sum256(data)
+		hashes = append(hashes, hash)
+		blob := digest.FromString(fmt.Sprint("stale layer ", i)).String()
+		if err := index.AddLayer(blob, []chunk.Ref{{Hash: hash, Len: uint64(len(data))}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cs := &chunkAvailabilityContentStore{blobs: map[digest.Digest]content.Info{}}
+	c := newChunkAvailabilityClient(t, cs, index, filepath.Join(t.TempDir(), "staging"))
+
+	before := committedTxID(t, index)
+	missing, err := c.MissingChunks(context.Background(), hashes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != len(hashes) {
+		t.Fatalf("missing = %x, want all %d chunks", missing, len(hashes))
+	}
+	if n := committedTxID(t, index) - before; n != 1 {
+		t.Fatalf("dropping %d stale blobs took %d transactions, want 1", len(hashes), n)
+	}
+	if blobs, err := index.Blobs(); err != nil || len(blobs) != 0 {
+		t.Fatalf("Blobs = %v, %v; want every stale blob dropped", blobs, err)
 	}
 }
 

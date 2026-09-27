@@ -2,6 +2,7 @@ package containerd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -233,7 +234,9 @@ func (c *Client) logChunkStoreMaintenance(files int, bytes int64, droppedBlobs i
 }
 
 // reconcileChunkIndex drops the entries of every indexed blob containerd no
-// longer holds and returns how many blobs it dropped.
+// longer holds and returns how many blobs it dropped. A blob containerd could
+// not answer for, as at startup before it serves, ends the pass: that blob and
+// the ones after it wait for the next pass.
 func (c *Client) reconcileChunkIndex(ctx context.Context) (int, error) {
 	blobs, err := c.chunkIndex.Blobs()
 	if err != nil {
@@ -241,7 +244,8 @@ func (c *Client) reconcileChunkIndex(ctx context.Context) (int, error) {
 	}
 	ctx = c.withNamespace(ctx)
 	cs := c.client.ContentStore()
-	dropped := 0
+	var stale []string
+	var checkErr error
 	for _, blob := range blobs {
 		if dgst, perr := digest.Parse(blob); perr == nil {
 			_, ierr := cs.Info(ctx, dgst)
@@ -249,13 +253,14 @@ func (c *Client) reconcileChunkIndex(ctx context.Context) (int, error) {
 				continue
 			}
 			if !errdefs.IsNotFound(ierr) {
-				return dropped, fmt.Errorf("checking indexed blob %s: %w", blob, ierr)
+				checkErr = fmt.Errorf("checking indexed blob %s: %w", blob, ierr)
+				break
 			}
 		}
-		if err := c.chunkIndex.Drop(blob); err != nil {
-			return dropped, err
-		}
-		dropped++
+		stale = append(stale, blob)
 	}
-	return dropped, nil
+	// In batches, not a transaction per blob: the first pass after the legacy
+	// import can find hundreds of stale blobs.
+	dropped, err := c.chunkIndex.DropBlobs(stale)
+	return dropped, errors.Join(checkErr, err)
 }

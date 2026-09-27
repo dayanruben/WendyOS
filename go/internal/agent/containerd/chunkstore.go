@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/containerd/containerd/v2/core/content"
@@ -251,10 +253,11 @@ func (c *Client) MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]by
 			invalidBlobs[loc.Blob] = struct{}{}
 		}
 	}
-	for blob := range invalidBlobs {
-		if err := c.chunkIndex.Drop(blob); err != nil {
-			return nil, fmt.Errorf("pruning chunk index: %w", err)
-		}
+	// In batches, not a transaction per blob: the first query after the legacy
+	// import can find hundreds of stale blobs, and this runs under the sweep
+	// lock's read side.
+	if _, err := c.chunkIndex.DropBlobs(slices.Collect(maps.Keys(invalidBlobs))); err != nil {
+		return nil, fmt.Errorf("pruning chunk index: %w", err)
 	}
 
 	var missing [][32]byte
