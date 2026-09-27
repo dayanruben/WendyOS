@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -935,5 +936,29 @@ func TestChunkPushWatchdogStopsAWedgedUncompressedUpload(t *testing.T) {
 		if enc != "gzip" {
 			t.Fatalf("gzip push opened a %q stream", enc)
 		}
+	}
+}
+
+// TestComposeChunkStallIsRemembered: compose has no reconnect-and-retry loop;
+// a stall falls through to its registry fallback, and the device is
+// remembered so the next deploy uses gzip.
+func TestComposeChunkStallIsRemembered(t *testing.T) {
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { chunkStallTestDir = "" })
+	cfg := chunkUploadConfig{stallTimeout: chunkStallTimeout, stallKey: "0123abcd@0.19.3"}
+
+	var log strings.Builder
+	noteComposeChunkStall(&log, fmt.Errorf("pushing: %w", chunkupload.ErrStalled), cfg)
+	if !chunkUploadStalledRecently("0123abcd@0.19.3", time.Now()) {
+		t.Fatal("a compose stall was not remembered")
+	}
+	if !strings.Contains(log.String(), "gzip") {
+		t.Fatalf("no notice: %q", log.String())
+	}
+
+	log.Reset()
+	noteComposeChunkStall(&log, errors.New("some other failure"), cfg)
+	if log.Len() != 0 {
+		t.Fatalf("a non-stall failure printed %q", log.String())
 	}
 }
