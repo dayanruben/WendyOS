@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"math/rand"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -175,5 +176,137 @@ func TestAssemblyReadsAStagedChunkFromTheIndexOnceAnotherAssemblyConsumedIt(t *t
 	}
 	if !bytes.Equal(got, shared) {
 		t.Fatal("fallback read returned the wrong bytes")
+	}
+}
+
+// TestAssembleLayerFromChunksReadsReusedChunksInFewReads is the WDY-3213 case:
+// a rebuilt layer that is mostly an earlier layer's chunks plus a few new ones.
+func TestAssembleLayerFromChunksReadsReusedChunksInFewReads(t *testing.T) {
+	c, cs := newCountingStoreClient(t)
+	previous := randomBytes(1, 2<<20)
+	_, prevRefs := commitIndexedBlob(t, c, cs, previous)
+	if len(prevRefs) < 8 {
+		t.Fatalf("fixture has %d chunks, want several", len(prevRefs))
+	}
+
+	// New layer: the first half of the old chunks, one new chunk, the rest.
+	half := len(prevRefs) / 2
+	fresh := randomBytes(2, 40_000)
+	var layer []byte
+	var hashes [][32]byte
+	for _, r := range prevRefs[:half] {
+		layer = append(layer, previous[r.Offset:r.Offset+r.Len]...)
+		hashes = append(hashes, r.Hash)
+	}
+	fh := sha256.Sum256(fresh)
+	if err := c.StageChunk(context.Background(), fh, fresh); err != nil {
+		t.Fatal(err)
+	}
+	layer = append(layer, fresh...)
+	hashes = append(hashes, fh)
+	for _, r := range prevRefs[half:] {
+		layer = append(layer, previous[r.Offset:r.Offset+r.Len]...)
+		hashes = append(hashes, r.Hash)
+	}
+	diffID := digest.FromBytes(layer)
+	cs.opens.Store(0)
+	cs.reads.Store(0)
+
+	if err := c.AssembleLayerFromChunks(context.Background(), diffID.String(), hashes); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := cs.Info(context.Background(), diffID)
+	if err != nil || info.Size != int64(len(layer)) {
+		t.Fatalf("assembled blob: %+v, %v", info, err)
+	}
+	if got := cs.opens.Load(); got != 1 {
+		t.Fatalf("opened the previous blob %d times, want once for the whole assembly", got)
+	}
+	if got := cs.reads.Load(); got != 2 {
+		t.Fatalf("%d reads for %d reused chunks in two runs, want 2", got, len(prevRefs))
+	}
+}
+
+func TestAssembleLayerFromChunksResumesAPartialIngest(t *testing.T) {
+	c, cs := newCountingStoreClient(t)
+	layer := randomBytes(3, 600_000)
+	refs, err := chunk.ChunkBytes(layer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashes := make([][32]byte, len(refs))
+	for i, r := range refs {
+		hashes[i] = r.Hash
+		if err := c.StageChunk(context.Background(), r.Hash, layer[r.Offset:r.Offset+r.Len]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	diffID := digest.FromBytes(layer)
+
+	// An earlier attempt wrote part of the layer under the same ref, then died.
+	w, err := content.OpenWriter(context.Background(), cs, content.WithRef(diffID.String()),
+		content.WithDescriptor(ocispec.Descriptor{Digest: diffID, Size: int64(len(layer))}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(layer[:250_000]); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	if err := c.AssembleLayerFromChunks(context.Background(), diffID.String(), hashes); err != nil {
+		t.Fatalf("resuming the partial ingest: %v", err)
+	}
+	ra, err := cs.Store.ReaderAt(context.Background(), ocispec.Descriptor{Digest: diffID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ra.Close()
+	got := make([]byte, len(layer))
+	if _, err := ra.ReadAt(got, 0); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, layer) {
+		t.Fatal("resumed blob differs from the layer")
+	}
+}
+
+func TestAssembleLayerFromChunksRejectsACorruptStagedChunk(t *testing.T) {
+	c, cs := newCountingStoreClient(t)
+	data := randomBytes(4, 50_000)
+	h := sha256.Sum256(data)
+	if err := c.StageChunk(context.Background(), h, data); err != nil {
+		t.Fatal(err)
+	}
+	// Bit rot after staging: the file no longer matches its name.
+	if err := os.WriteFile(c.staging.path(h), randomBytes(5, len(data)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	diffID := digest.FromBytes(data)
+	err := c.AssembleLayerFromChunks(context.Background(), diffID.String(), [][32]byte{h})
+	if err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+		t.Fatalf("error = %v, want a hash mismatch", err)
+	}
+	if _, err := cs.Info(context.Background(), diffID); err == nil {
+		t.Fatal("a layer with a corrupt chunk was committed")
+	}
+}
+
+// TestWriteAssembledLayerReportsUnverifiedWhenTheBlobAlreadyExists covers rule
+// 1's first bullet directly: content.OpenWriter reports AlreadyExists before
+// anything reads a segment, so writeAssembledLayer must say so rather than
+// claim it verified a manifest it never looked at.
+func TestWriteAssembledLayerReportsUnverifiedWhenTheBlobAlreadyExists(t *testing.T) {
+	c, cs := newCountingStoreClient(t)
+	data := randomBytes(7, 1_000)
+	dgst, _ := commitIndexedBlob(t, c, cs, data)
+
+	verified, err := c.writeAssembledLayer(context.Background(), dgst.String(), int64(len(data)), nil)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if verified {
+		t.Fatal("verified = true for a blob this call never read")
 	}
 }

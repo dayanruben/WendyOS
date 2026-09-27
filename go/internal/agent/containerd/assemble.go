@@ -240,3 +240,67 @@ func (s *staging) readInto(h [32]byte, dst []byte) error {
 	}
 	return nil
 }
+
+// writeAssembledLayer writes segs into the content store as diffID, one Write
+// per verified segment instead of content.WriteBlob's 1 MiB copy loop. Like
+// content.Copy, it resumes a partial ingest by skipping the bytes the ingest
+// already holds, so concurrent assemblies of the same layer still serialize on
+// containerd's per-ref lock rather than clobbering each other.
+//
+// verified reports whether this call itself read and hash-checked diffID's
+// chunks: false when the blob was already committed — either found by
+// OpenWriter before anything was read, or committed by a concurrent assembly
+// between this call's OpenWriter and its Commit — so nothing here confirms
+// this manifest's ranges against the blob. containerd's local store checks
+// the digest before it detects an existing target (plugins/content/local/
+// writer.go), so an AlreadyExists at Commit still means every byte this call
+// wrote hashed to diffID; only the leading bytes skipped as already-ingested
+// went unverified here.
+func (c *Client) writeAssembledLayer(ctx context.Context, diffID string, size int64, segs []assemblySegment) (verified bool, err error) {
+	dgst, err := digest.Parse(diffID)
+	if err != nil {
+		return false, fmt.Errorf("parsing digest %q: %w", diffID, err)
+	}
+	w, err := content.OpenWriter(ctx, c.client.ContentStore(),
+		content.WithRef(diffID),
+		content.WithDescriptor(ocispec.Descriptor{Digest: dgst, Size: size}))
+	if err != nil {
+		if errdefs.IsAlreadyExists(err) {
+			c.logger.Debug("Layer already exists in content store", zap.String("digest", diffID))
+			return false, nil
+		}
+		return false, fmt.Errorf("opening layer %s for writing: %w", diffID, err)
+	}
+	defer w.Close()
+	st, err := w.Status()
+	if err != nil {
+		return false, fmt.Errorf("checking layer %s ingest: %w", diffID, err)
+	}
+
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel() // stops the reader if a write fails
+	for seg := range c.readSegments(readCtx, segs, st.Offset) {
+		if seg.err != nil {
+			return false, fmt.Errorf("reassembling layer %s: %w", diffID, seg.err)
+		}
+		if _, err := w.Write(seg.data); err != nil {
+			return false, fmt.Errorf("writing layer %s: %w", diffID, err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	labels := map[string]string{
+		labelKeyGCRoot:     gcTimestamp(),
+		labelKeyWendyLayer: "true",
+	}
+	if err := w.Commit(ctx, size, dgst, content.WithLabels(labels)); err != nil {
+		if errdefs.IsAlreadyExists(err) {
+			c.logger.Debug("Layer already exists in content store", zap.String("digest", diffID))
+			return true, nil
+		}
+		return false, fmt.Errorf("committing layer %s: %w", diffID, err)
+	}
+	c.logger.Info("Wrote layer to content store", zap.String("digest", diffID), zap.Int64("size", size))
+	return true, nil
+}
