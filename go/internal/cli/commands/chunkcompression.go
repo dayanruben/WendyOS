@@ -11,6 +11,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunkupload"
+	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
@@ -162,11 +163,44 @@ func chunkUploadStalledRecently(key string, now time.Time) bool {
 
 // rememberChunkUploadStall records that key's device stalled uncompressed at
 // now, and drops entries older than chunkStallMemory. It replaces the file
-// atomically. Callers treat an error as best effort.
+// atomically, serializing writers with a lock file to prevent concurrent
+// read-modify-write races. Callers treat an error as best effort.
 func rememberChunkUploadStall(key string, now time.Time) error {
 	if key == "" {
 		return nil
 	}
+	p, err := chunkStallPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+
+	// Serialize writers with a lock file to prevent concurrent
+	// read-modify-write races from losing updates.
+	lockPath := p + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("opening stall lock: %w", err)
+	}
+	defer f.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	locked, err := flock.TryLock(f)
+	if err != nil {
+		return fmt.Errorf("acquiring stall lock: %w", err)
+	}
+	if !locked {
+		if err := blockLockFile(ctx, f); err != nil {
+			return fmt.Errorf("acquiring stall lock: %w", err)
+		}
+	}
+	defer flock.Unlock(f)
+
+	// Hold the lock across the entire read → prune → write → rename sequence.
 	stalls := loadChunkStalls()
 	for k, at := range stalls {
 		if now.Sub(at) >= chunkStallMemory {
@@ -176,13 +210,6 @@ func rememberChunkUploadStall(key string, now time.Time) error {
 	stalls[key] = now
 	data, err := json.Marshal(stalls)
 	if err != nil {
-		return err
-	}
-	p, err := chunkStallPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(p), "chunk-upload-stalls-*")

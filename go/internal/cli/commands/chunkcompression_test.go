@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,5 +115,42 @@ func TestChunkUploadConfigDescribe(t *testing.T) {
 	}
 	if got := (chunkUploadConfig{stallTimeout: 30 * time.Second}).describe(); got != "uncompressed, stall watchdog 30s" {
 		t.Fatalf("uncompressed describe = %q", got)
+	}
+}
+
+func TestChunkStallMemoryKeepsConcurrentRecords(t *testing.T) {
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { chunkStallTestDir = "" })
+	now := time.Now()
+
+	// 16 goroutines each record a stall concurrently using a start barrier.
+	numGoroutines := 16
+	var wg sync.WaitGroup
+	ready := make(chan struct{})
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+			// Wait for the signal to start.
+			<-ready
+			key := fmt.Sprintf("dev%d@0.19.3", i)
+			if err := rememberChunkUploadStall(key, now); err != nil {
+				t.Errorf("goroutine %d: %v", i, err)
+			}
+		}(i)
+	}
+
+	// Signal all goroutines to proceed concurrently.
+	close(ready)
+	wg.Wait()
+
+	// Verify all 16 keys were recorded without loss.
+	stalls := loadChunkStalls()
+	for i := 0; i < numGoroutines; i++ {
+		key := fmt.Sprintf("dev%d@0.19.3", i)
+		if _, ok := stalls[key]; !ok {
+			t.Errorf("concurrent record for goroutine %d was lost", i)
+		}
 	}
 }
