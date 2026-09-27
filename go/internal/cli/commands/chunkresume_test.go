@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	_ "google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -272,7 +273,41 @@ type probeAgent struct {
 	dropAfter int64
 	drop      func()
 	dropOnce  sync.Once
+
+	// stallAfter > 0 wedges this agent like the #1765 link: once it has
+	// received stallAfter chunks, every WriteChunks handler stops reading and
+	// waits for its stream to end, so no stream makes progress.
+	stallAfter int64
+	encMu      sync.Mutex
+	encs       []string // grpc-encoding of each WriteChunks stream, in arrival order
 }
+
+// encodings returns the grpc-encoding each WriteChunks stream arrived with
+// ("" for uncompressed).
+func (a *probeAgent) encodings() []string {
+	a.encMu.Lock()
+	defer a.encMu.Unlock()
+	return append([]string(nil), a.encs...)
+}
+
+// encodingRecorder is a server stats.Handler that records the compression
+// each WriteChunks stream arrived with.
+type encodingRecorder struct{ a *probeAgent }
+
+func (r encodingRecorder) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context {
+	return ctx
+}
+func (r encodingRecorder) HandleRPC(_ context.Context, s stats.RPCStats) {
+	if in, ok := s.(*stats.InHeader); ok && strings.HasSuffix(in.FullMethod, "/WriteChunks") {
+		r.a.encMu.Lock()
+		r.a.encs = append(r.a.encs, in.Compression)
+		r.a.encMu.Unlock()
+	}
+}
+func (r encodingRecorder) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context {
+	return ctx
+}
+func (r encodingRecorder) HandleConn(context.Context, stats.ConnStats) {}
 
 func (a *probeAgent) QueryChunks(_ context.Context, req *agentpb.QueryChunksRequest) (*agentpb.QueryChunksResponse, error) {
 	a.dev.mu.Lock()
@@ -311,6 +346,10 @@ func (a *probeAgent) WriteChunks(stream grpc.ClientStreamingServer[agentpb.Write
 		}
 		var h [32]byte
 		copy(h[:], msg.GetHash())
+		if a.stallAfter > 0 && a.received.Load() >= a.stallAfter {
+			<-stream.Context().Done()
+			return stream.Context().Err()
+		}
 		a.dev.mu.Lock()
 		a.dev.staged[h]++
 		a.dev.mu.Unlock()
@@ -327,7 +366,7 @@ func (a *probeAgent) WriteChunks(stream grpc.ClientStreamingServer[agentpb.Write
 func startProbeAgent(t *testing.T, a *probeAgent) (*grpcclient.AgentConnection, *grpc.Server) {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer(grpc.InitialWindowSize(8<<20), grpc.InitialConnWindowSize(16<<20))
+	srv := grpc.NewServer(grpc.InitialWindowSize(8<<20), grpc.InitialConnWindowSize(16<<20), grpc.StatsHandler(encodingRecorder{a: a}))
 	agentpb.RegisterWendyContainerServiceServer(srv, a)
 	go func() { _ = srv.Serve(lis) }()
 	cc, err := grpc.NewClient("passthrough:///bufnet",

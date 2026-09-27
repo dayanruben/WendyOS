@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -270,15 +271,15 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 // printing over Bubble Tea's frame. A nil output preserves the ordinary CLI
 // behavior for callers without a live renderer.
 func pushLayersByChunksWithPrepareOutput(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer) ([]*agentpb.RunContainerLayerHeader, error) {
-	return pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, output, false, nil)
+	return pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, output, false, nil, gzipChunkUploadConfig)
 }
 
 // pushLayersByChunksWithStrictPrepareOutput is for callers, such as Compose,
 // that will create a container by image name after this function returns. They
 // cannot use the single-container path's lenient "finish during RunContainer"
 // behavior: PrepareImage must have registered the named image first.
-func pushLayersByChunksWithStrictPrepareOutput(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer) ([]*agentpb.RunContainerLayerHeader, error) {
-	return pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, output, true, nil)
+func pushLayersByChunksWithStrictPrepareOutput(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer, cfg chunkUploadConfig) ([]*agentpb.RunContainerLayerHeader, error) {
+	return pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, output, true, nil, cfg)
 }
 
 // pushLayersByChunksWithPrepareMode is the full-parameter core. prog, when
@@ -287,8 +288,8 @@ func pushLayersByChunksWithStrictPrepareOutput(ctx context.Context, cs agentpb.W
 // the interactive bar / plain heartbeat can render the push. Compose callers
 // pass nil prog and get their progress through output's optional
 // chunk*ProgressWriter interfaces instead; both sinks are nil-safe.
-func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer, strictPrepare bool, prog *chunkPushProgress) ([]*agentpb.RunContainerLayerHeader, error) {
-	headers, err := pushLayersByChunksWithPrepareModeAndCache(ctx, cs, layers, prepare, output, strictPrepare, prog, loadManifestCache)
+func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer, strictPrepare bool, prog *chunkPushProgress, cfg chunkUploadConfig) ([]*agentpb.RunContainerLayerHeader, error) {
+	headers, err := pushLayersByChunksWithPrepareModeAndCache(ctx, cs, layers, prepare, output, strictPrepare, prog, loadManifestCache, cfg)
 	return headers, classifyCommandError(errTransferFailed, err)
 }
 
@@ -301,7 +302,7 @@ type cachedManifestResult struct {
 // so tests can control cache-read timing without touching the process-global
 // cache directory. Cache reads are metadata-only: a miss never decompresses or
 // chunks a layer until QueryLayers has confirmed that the full layer is absent.
-func pushLayersByChunksWithPrepareModeAndCache(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer, strictPrepare bool, prog *chunkPushProgress, loadCache func(string) (*cachedManifest, bool)) ([]*agentpb.RunContainerLayerHeader, error) {
+func pushLayersByChunksWithPrepareModeAndCache(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer, strictPrepare bool, prog *chunkPushProgress, loadCache func(string) (*cachedManifest, bool), cfg chunkUploadConfig) ([]*agentpb.RunContainerLayerHeader, error) {
 	headers := make([]*agentpb.RunContainerLayerHeader, len(layers))
 
 	// Start both remote preflight queries and local manifest-cache reads together.
@@ -430,8 +431,10 @@ func pushLayersByChunksWithPrepareModeAndCache(ctx context.Context, cs agentpb.W
 	}
 	prepareCtx, cancelPrepare := context.WithCancel(ctx)
 	defer cancelPrepare()
-	uploadCtx, cancelUpload := context.WithCancel(ctx)
-	defer cancelUpload()
+	// The cause tells a watchdog cancellation (chunkupload.ErrStalled) apart
+	// from a strict-prepare rejection or the caller's own cancellation.
+	uploadCtx, cancelUpload := context.WithCancelCause(ctx)
+	defer cancelUpload(nil)
 	var prepareDone chan error
 	if prepare != nil {
 		prepareDone = make(chan error, 1)
@@ -443,24 +446,39 @@ func pushLayersByChunksWithPrepareModeAndCache(ctx context.Context, cs agentpb.W
 			// otherwise we upload the entire delta before discovering the error
 			// and then upload the full image again through the registry fallback.
 			if strictPrepare && err != nil {
-				cancelUpload()
+				cancelUpload(nil)
 			}
 		}()
 	}
 
+	// Uncompressed uploads get a stall watchdog. #1765 wedged a USB-NCM link on
+	// particular raw payloads, and this link's 15-minute keepalive would take
+	// that long to notice. The watchdog counts only time with a stream open,
+	// so lazy decompression and QueryChunks never look like a stall.
+	var activity *chunkupload.Activity
 	if len(toPush) > 0 {
-		logChunkUploadTuning()
+		logChunkUploadTuning(cfg)
+		if cfg.compressor == "" && cfg.stallTimeout > 0 {
+			activity = &chunkupload.Activity{}
+			stop := chunkupload.Watch(activity, cfg.stallTimeout, cancelUpload)
+			defer stop()
+		}
 	}
 	uploadGroup, uploadGroupCtx := errgroup.WithContext(uploadCtx)
 	uploadGroup.SetLimit(limit)
 	for _, idx := range toPush {
 		r := resolved[idx]
 		uploadGroup.Go(func() error {
-			return r.upload(uploadGroupCtx, cs, indexProgress, transferProgress, prog)
+			return r.upload(uploadGroupCtx, cs, indexProgress, transferProgress, prog, cfg.compressor, activity)
 		})
 	}
 	uploadErr := uploadGroup.Wait()
 	indexProgress.finish()
+	// Once the watchdog fires, every stream and QueryChunks fails with a bare
+	// cancellation; report the cause so the resume loop can fall back to gzip.
+	if uploadErr != nil && errors.Is(context.Cause(uploadCtx), chunkupload.ErrStalled) {
+		uploadErr = fmt.Errorf("no chunk upload progress for %s: %w", cfg.stallTimeout, chunkupload.ErrStalled)
+	}
 	if uploadErr != nil {
 		cancelPrepare()
 		if prepareDone != nil {
@@ -672,7 +690,7 @@ func resolveChunkLayerWithCache(l localLayer, progress *chunkIndexProgress, cach
 	}, nil
 }
 
-func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContainerServiceClient, indexProgress *chunkIndexProgress, transferProgress *chunkTransferProgress, prog *chunkPushProgress) error {
+func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContainerServiceClient, indexProgress *chunkIndexProgress, transferProgress *chunkTransferProgress, prog *chunkPushProgress, compressor string, activity *chunkupload.Activity) error {
 	orderedHashes := r.header.GetChunkHashes()
 	qresp, err := cs.QueryChunks(ctx, &agentpb.QueryChunksRequest{ChunkHashes: orderedHashes})
 	if err != nil {
@@ -711,10 +729,10 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 		Layer:       r.header.GetDiffId(),
 		BatchChunks: batch,
 		Streams:     streams,
-		// Hardware reproduction (#1765, WendyOS 0.18.2) showed particular raw
-		// chunk payloads can stall a USB-NCM link while compressed ones pass;
-		// gRPC inflates each message before the agent hashes and stages it.
-		Compressor: chunkupload.Gzip,
+		// chunkUploadConfig chooses gzip or none per link and device; see
+		// chooseChunkUploadConfig.
+		Compressor: compressor,
+		Activity:   activity,
 		OnSent: func(n int) {
 			prog.ChunkSent(n)
 			transferProgress.addSent(int64(n))
@@ -739,9 +757,9 @@ func chunkUploadTuning() (streams, batch int) {
 // push, through the same [timing] line phaseTimer prints elsewhere in this
 // package, so a developer running WENDY_TIMING=1 can see what a benchmark run
 // actually measured instead of assuming the defaults or an out-of-range knob.
-func logChunkUploadTuning() {
+func logChunkUploadTuning(cfg chunkUploadConfig) {
 	streams, batch := chunkUploadTuning()
-	phaseTimer()(fmt.Sprintf("chunk upload tuning: %d streams x %d chunks/batch", streams, batch))
+	phaseTimer()(fmt.Sprintf("chunk upload tuning: %d streams x %d chunks/batch, %s", streams, batch, cfg.describe()))
 }
 
 // envIntInRange parses the integer environment variable key, returning
@@ -760,7 +778,7 @@ func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClie
 		return nil, err
 	}
 	defer r.close()
-	if err := r.upload(ctx, cs, nil, nil, nil); err != nil {
+	if err := r.upload(ctx, cs, nil, nil, nil, chunkupload.Gzip, nil); err != nil {
 		return nil, err
 	}
 	return r.header, nil

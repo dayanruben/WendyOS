@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -235,7 +236,7 @@ func TestPushLayersByChunksStrictPrepareReturnsUnimplemented(t *testing.T) {
 		Blob:      layerTar,
 	}}, func(context.Context, []*agentpb.RunContainerLayerHeader) error {
 		return status.Error(codes.Unimplemented, "old agent")
-	}, nil)
+	}, nil, gzipChunkUploadConfig)
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("strict preparation error = %v, want Unimplemented", err)
 	}
@@ -258,7 +259,7 @@ func TestPushLayersByChunksReportsPostUploadPreparation(t *testing.T) {
 		_, err := pushLayersByChunksWithStrictPrepareOutput(context.Background(), fake, []localLayer{{DiffID: diffID}}, func(context.Context, []*agentpb.RunContainerLayerHeader) error {
 			<-release
 			return nil
-		}, recorder)
+		}, recorder, gzipChunkUploadConfig)
 		done <- err
 	}()
 
@@ -306,7 +307,7 @@ func TestPushLayersByChunksStrictPrepareCancelsUploadOnPrepareFailure(t *testing
 	}}, func(context.Context, []*agentpb.RunContainerLayerHeader) error {
 		<-fake.writeStarted
 		return status.Error(codes.Unimplemented, "old agent")
-	}, nil)
+	}, nil, gzipChunkUploadConfig)
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("strict preparation error = %v, want Unimplemented", err)
 	}
@@ -497,7 +498,7 @@ func TestResolvedChunkLayerUploadSendsDuplicateHashOnce(t *testing.T) {
 		},
 	}
 	progress := newChunkPushProgress()
-	if err := resolved.upload(context.Background(), fake, nil, nil, progress); err != nil {
+	if err := resolved.upload(context.Background(), fake, nil, nil, progress, chunkupload.Gzip, nil); err != nil {
 		t.Fatal(err)
 	}
 	if fake.chunksWritten != 1 {
@@ -671,6 +672,7 @@ func TestPushLayersByChunksOverlapsRemotePreflightAndLocalCacheReads(t *testing.
 				<-cacheRelease
 				return nil, false
 			},
+			gzipChunkUploadConfig,
 		)
 		done <- err
 	}()
@@ -792,7 +794,7 @@ func TestPushLayersByChunksReportsProgress(t *testing.T) {
 			MediaType: "application/vnd.oci.image.layer.v1.tar",
 			Blob:      layerTar,
 		},
-	}, nil, nil, false, prog)
+	}, nil, nil, false, prog, gzipChunkUploadConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -859,7 +861,7 @@ func TestPushLayersByChunksReuseLineSkipsInteractive(t *testing.T) {
 		restore := forceBuildProgressInteractive(true)
 		defer restore()
 		out := captureStderr(t, func() {
-			if _, err := pushLayersByChunksWithPrepareMode(context.Background(), newFake(), layers, nil, nil, false, newChunkPushProgress()); err != nil {
+			if _, err := pushLayersByChunksWithPrepareMode(context.Background(), newFake(), layers, nil, nil, false, newChunkPushProgress(), gzipChunkUploadConfig); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -872,7 +874,7 @@ func TestPushLayersByChunksReuseLineSkipsInteractive(t *testing.T) {
 		restore := forceBuildProgressInteractive(false)
 		defer restore()
 		out := captureStderr(t, func() {
-			if _, err := pushLayersByChunksWithPrepareMode(context.Background(), newFake(), layers, nil, nil, false, newChunkPushProgress()); err != nil {
+			if _, err := pushLayersByChunksWithPrepareMode(context.Background(), newFake(), layers, nil, nil, false, newChunkPushProgress(), gzipChunkUploadConfig); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -880,4 +882,58 @@ func TestPushLayersByChunksReuseLineSkipsInteractive(t *testing.T) {
 			t.Fatalf("non-interactive/plain mode should keep the reuse line (nothing else renders to stderr there), got %q", out)
 		}
 	})
+}
+
+// TestChunkPushWatchdogStopsAWedgedUncompressedUpload: an uncompressed push
+// whose link wedges with streams open fails with ErrStalled shortly after the
+// stall timeout, instead of waiting out the 15-minute keepalive. A gzip push
+// runs no watchdog.
+func TestChunkPushWatchdogStopsAWedgedUncompressedUpload(t *testing.T) {
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "16")
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := variedChunkTestData(200 * 64 << 10)
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}
+	agent := &probeAgent{dev: &probeDevice{staged: map[[32]byte]int{}}, stallAfter: 40}
+	conn, _ := startProbeAgent(t, agent)
+	cfg := chunkUploadConfig{stallTimeout: 300 * time.Millisecond}
+
+	start := time.Now()
+	_, err := pushLayersByChunksWithPrepareModeAndCache(context.Background(), conn.ContainerService, layers, nil, nil, false, nil, loadManifestCache, cfg)
+	if !errors.Is(err, chunkupload.ErrStalled) {
+		t.Fatalf("error = %v, want ErrStalled", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("stall surfaced after %v, want about the 300ms timeout", took)
+	}
+	for _, enc := range agent.encodings() {
+		if enc != "" {
+			t.Fatalf("uncompressed push opened a %q stream", enc)
+		}
+	}
+
+	gz := &probeAgent{dev: &probeDevice{staged: map[[32]byte]int{}}}
+	gzConn, _ := startProbeAgent(t, gz)
+	if _, err := pushLayersByChunksWithPrepareModeAndCache(context.Background(), gzConn.ContainerService, layers, nil, nil, false, nil, loadManifestCache, gzipChunkUploadConfig); err != nil {
+		t.Fatal(err)
+	}
+	encs := gz.encodings()
+	if len(encs) == 0 {
+		t.Fatal("gzip push opened no streams")
+	}
+	for _, enc := range encs {
+		if enc != "gzip" {
+			t.Fatalf("gzip push opened a %q stream", enc)
+		}
+	}
 }

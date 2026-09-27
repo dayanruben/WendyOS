@@ -98,7 +98,8 @@ func pushLayersResumingTunnelDrops(ctx context.Context, conn *grpcclient.AgentCo
 		if prepareFor != nil {
 			prepare = prepareFor(cur.ContainerService)
 		}
-		headers, err := pushLayersWithProgress(ctx, cur.ContainerService, layers, prepare)
+		// Task 4 replaces gzipChunkUploadConfig with a per-device/link config.
+		headers, err := pushLayersWithProgress(ctx, cur.ContainerService, layers, prepare, gzipChunkUploadConfig)
 		if err == nil {
 			return cur, headers, nil
 		}
