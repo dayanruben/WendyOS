@@ -2058,6 +2058,9 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 			} else if isInteractiveTerminal() {
 				pw, perr := tui.PromptPassword(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
 				if perr != nil {
+					if errors.Is(perr, tui.ErrCancelled) {
+						return nil, ErrUserCancelled
+					}
 					return nil, fmt.Errorf("reading WiFi password: %w", perr)
 				}
 				c.Password = pw
@@ -2074,6 +2077,9 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 	// Interactive path: Y/N → loop until the user declines another network.
 	enable, err := tui.ConfirmDefaultYes("Set up WiFi on first boot?")
 	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return nil, ErrUserCancelled
+		}
 		return nil, err
 	}
 	if !enable {
@@ -2092,6 +2098,9 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 
 		more, err := tui.Confirm("Add another WiFi network?")
 		if err != nil {
+			if errors.Is(err, tui.ErrCancelled) {
+				return nil, ErrUserCancelled
+			}
 			return nil, err
 		}
 		if !more {
@@ -2192,53 +2201,25 @@ type wifiScanSelection struct {
 	ScanErr     error  // scan failure recorded while the picker was open
 }
 
-// selectWifiNetworkStreaming shows the WiFi picker immediately and streams
-// the scan results in: the CoreWLAN/nmcli/netsh scan can take several
-// seconds, and a visible "Scanning..." list reads better than blocking
-// before any UI appears.
+// selectWifiNetworkStreaming shows cached results while the first scan runs,
+// then refreshes the list until the user selects a network or exits.
 func selectWifiNetworkStreaming() (wifiScanSelection, error) {
-	var sel wifiScanSelection
-
-	picker := tui.NewPickerWithTitleAndColumns("Select WiFi network (or esc to type manually)", wifiPickerColumns())
-	picker.Filterable = true
-	p := tea.NewProgram(picker)
-
-	// The user can quit the picker before the scan goroutine finishes, so
-	// every access to sel is mutex-guarded.
-	var mu sync.Mutex
-	go func() {
-		defer p.Send(tui.PickerDoneMsg{})
-		// Stream the host scan: cached results paint the picker instantly, then
-		// the fresh rescan fills it in — so SSIDs trickle in rather than the
-		// picker sitting on "Scanning..." until the whole scan completes
-		// (matching the device-side picker in pickWifiNetwork).
-		hadNetworks := false
-		err := streamLocalWifiScan(func(batch []localWifiNetwork) {
-			if len(batch) > 0 {
-				hadNetworks = true
-			}
-			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(batch)})
-		})
-		mu.Lock()
-		sel.ScanErr = err
-		sel.HadNetworks = hadNetworks
-		mu.Unlock()
-	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := tea.NewProgram(newLocalWifiPickerModel(ctx))
 	fmt.Println()
 	finalModel, runErr := p.Run()
+	if errors.Is(runErr, tea.ErrInterrupted) {
+		return wifiScanSelection{}, ErrUserCancelled
+	}
 	if runErr != nil {
 		return wifiScanSelection{}, fmt.Errorf("scanning WiFi networks: %w", runErr)
 	}
-	pm, ok := finalModel.(tui.PickerModel)
+	pm, ok := finalModel.(localWifiPickerModel)
 	if !ok {
 		return wifiScanSelection{}, fmt.Errorf("scanning WiFi networks: unexpected picker model %T", finalModel)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if picked := pm.Selected(); picked != nil {
-		sel.SSID, _ = picked.Value.(string)
-	}
-	return sel, nil
+	return pm.result()
 }
 
 // promptAddOneCredential runs the local scan + picker + password prompt to
@@ -2246,8 +2227,12 @@ func selectWifiNetworkStreaming() (wifiScanSelection, error) {
 // already collected (used to suggest a descending priority). Returns
 // added=false (with nil error) when the user chooses to skip WiFi setup
 // after a failed or empty scan (WDY-1474).
-func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
-	var c wendyconf.WifiCredential
+func promptAddOneCredential(index int) (c wendyconf.WifiCredential, added bool, err error) {
+	defer func() {
+		if errors.Is(err, tui.ErrCancelled) {
+			err = ErrUserCancelled
+		}
+	}()
 
 	sel, err := selectWifiNetworkFromScan()
 	if err != nil {
