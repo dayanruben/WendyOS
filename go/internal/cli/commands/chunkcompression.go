@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -126,10 +127,30 @@ func osNeedsGzipChunks(osVersion string) bool {
 	return version.CompareVersions(v, firstUncompressedChunkOSVersion) < 0
 }
 
+// warnUnknownChunkCompressionOnce guards the unrecognized-WENDY_CHUNK_COMPRESSION
+// warning so a long-lived process (or a loop of deploys in one `wendy`
+// invocation) prints it once, not on every push. It is a *sync.Once, rather
+// than a plain sync.Once, purely so tests can reset it between cases.
+var warnUnknownChunkCompressionOnce = &sync.Once{}
+
 // chunkCompressionModeFromEnv reads WENDY_CHUNK_COMPRESSION for
-// chunkUploadConfigFor.
+// chunkUploadConfigFor. An unrecognized value (anything but ""/auto/gzip/none,
+// case- and space-insensitive — chooseChunkUploadConfig's own normalization)
+// is most often a typo, and typo'd env vars are usually silent; warn about it
+// once via cliNotice, naming the valid values, then fall back to auto exactly
+// as chooseChunkUploadConfig already would. The validation lives here rather
+// than in chooseChunkUploadConfig so that function stays a pure mapping from
+// (already read) inputs to a config, with no I/O of its own.
 func chunkCompressionModeFromEnv() string {
-	return os.Getenv(chunkCompressionEnv)
+	mode := os.Getenv(chunkCompressionEnv)
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "auto", "gzip", "none":
+	default:
+		warnUnknownChunkCompressionOnce.Do(func() {
+			cliNotice("%s=%q is not one of auto, gzip or none; using auto.", chunkCompressionEnv, mode)
+		})
+	}
+	return mode
 }
 
 // chunkUploadConfigFor resolves the config for a push over conn. A failed
@@ -227,13 +248,27 @@ func rememberChunkUploadStall(key string, now time.Time) error {
 	}
 
 	// Serialize writers with a lock file to prevent concurrent
-	// read-modify-write races from losing updates.
+	// read-modify-write races from losing updates. Opened read-only (rather
+	// than O_RDWR) and created 0644 rather than 0600: under `sudo wendy run`
+	// this file (and the data file below) would otherwise become root-owned,
+	// silently breaking the user's own later, unprivileged runs (M5). flock(2)
+	// locks a whole file regardless of the descriptor's read/write mode on
+	// darwin and linux (unlike fcntl(2) record locks, which do care) — verified
+	// directly against this package's TryLock/Unlock on darwin; linux shares
+	// the same flock(2) semantics and is exercised by this package's own
+	// GOOS=linux build gate.
 	lockPath := p + ".lock"
-	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(lockPath, os.O_RDONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		return fmt.Errorf("opening stall lock: %w", err)
 	}
 	defer f.Close()
+	// OpenFile's mode is subject to the process umask, and a pre-existing
+	// lock file from before this fix could still be 0600; Chmod makes the
+	// 0644 exact. Best effort: a foreign-owned lock file this process can
+	// already read (that's how it got this far) but not chmod is left as is,
+	// which is no worse than before this fix.
+	_ = f.Chmod(0o644)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -266,6 +301,14 @@ func rememberChunkUploadStall(key string, now time.Time) error {
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	// os.CreateTemp creates the file 0600; match the 0644 of the lock file
+	// and sibling cache files, so a run under sudo doesn't leave a
+	// root-only-readable file blocking the user's later, unprivileged runs.
+	if err := tmp.Chmod(0o644); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
 		return err

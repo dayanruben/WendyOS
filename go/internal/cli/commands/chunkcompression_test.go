@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -58,6 +59,43 @@ func TestChooseChunkUploadConfig(t *testing.T) {
 	}
 }
 
+// TestChunkCompressionModeFromEnvWarnsOnceOnAnUnknownValue is M4: a typo'd
+// WENDY_CHUNK_COMPRESSION must not fail silently into auto.
+func TestChunkCompressionModeFromEnvWarnsOnceOnAnUnknownValue(t *testing.T) {
+	warnUnknownChunkCompressionOnce = &sync.Once{}
+	t.Cleanup(func() { warnUnknownChunkCompressionOnce = &sync.Once{} })
+	t.Setenv(chunkCompressionEnv, "zstd")
+
+	out := captureStderr(t, func() {
+		if got := chunkCompressionModeFromEnv(); got != "zstd" {
+			t.Fatalf("mode = %q, want the raw env value returned unchanged", got)
+		}
+	})
+	if !strings.Contains(out, "zstd") || !strings.Contains(out, "auto") {
+		t.Fatalf("warning = %q, want it to name the bad value and the valid ones", out)
+	}
+
+	// A second read of the same bad value must not warn again (sync.Once).
+	out2 := captureStderr(t, func() { chunkCompressionModeFromEnv() })
+	if out2 != "" {
+		t.Fatalf("warned a second time: %q", out2)
+	}
+}
+
+// TestChunkCompressionModeFromEnvAcceptsKnownValues: every value
+// chooseChunkUploadConfig itself recognizes must never warn.
+func TestChunkCompressionModeFromEnvAcceptsKnownValues(t *testing.T) {
+	warnUnknownChunkCompressionOnce = &sync.Once{}
+	t.Cleanup(func() { warnUnknownChunkCompressionOnce = &sync.Once{} })
+	for _, v := range []string{"", "auto", "gzip", "none", " GZIP ", "None", " "} {
+		t.Setenv(chunkCompressionEnv, v)
+		out := captureStderr(t, func() { chunkCompressionModeFromEnv() })
+		if out != "" {
+			t.Fatalf("value %q warned: %q", v, out)
+		}
+	}
+}
+
 func TestChunkStallMemory(t *testing.T) {
 	chunkStallTestDir = t.TempDir()
 	t.Cleanup(func() { chunkStallTestDir = "" })
@@ -87,6 +125,32 @@ func TestChunkStallMemory(t *testing.T) {
 	}
 	if rememberChunkUploadStall("", now) != nil || chunkUploadStalledRecently("", now) {
 		t.Fatal("an empty key must record and report nothing")
+	}
+}
+
+// TestChunkStallMemoryFilesAreWorldReadable is M5: under `sudo wendy run` on
+// macOS, a 0600 stall data file or lock file becomes root-owned and blocks
+// the user's own later, unprivileged runs from ever reading or locking it
+// again. Both files must come out 0644, matching the CLI's other cache files.
+func TestChunkStallMemoryFilesAreWorldReadable(t *testing.T) {
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { chunkStallTestDir = "" })
+
+	if err := rememberChunkUploadStall("dev@0.19.3", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	p, err := chunkStallPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{p, p + ".lock"} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o644 {
+			t.Fatalf("%s mode = %o, want 0644", path, perm)
+		}
 	}
 }
 
