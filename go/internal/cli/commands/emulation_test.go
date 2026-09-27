@@ -31,12 +31,14 @@ func TestEmulatedBuildNotice(t *testing.T) {
 		platform string
 		want     []string // substrings; nil means no notice
 	}{
-		{"x86 host, arm64 device", "linux", "amd64", "linux/arm64", []string{"linux/arm64", "amd64 machine", "QEMU", "--build-host=DEVICE", "native arm64 WendyOS device"}},
-		{"x86_64 spelling", "linux", "x86_64", "linux/arm64", []string{"QEMU"}},
-		{"Apple silicon, x86 device", "darwin", "arm64", "linux/amd64", []string{"linux/amd64", "arm64 machine", "native amd64 WendyOS device"}},
+		{"x86 host, arm64 device", "linux", "amd64", "linux/arm64", []string{"RUN steps for linux/arm64", "amd64 machine", "CPU emulation (typically QEMU)", "usually much slower than a native build", "--build-host=DEVICE", "WendyOS device with a native arm64 CPU"}},
+		{"x86_64 spelling", "linux", "x86_64", "linux/arm64", []string{"CPU emulation"}},
+		{"Apple silicon, x86 device", "darwin", "arm64", "linux/amd64", []string{"RUN steps for linux/amd64", "arm64 machine", "native amd64 CPU"}},
 		{"arm64 Linux host, 32-bit arm device: compat mode runs it natively, no QEMU", "linux", "arm64", "linux/arm/v7", nil},
 		{"arm64 Windows host, 32-bit arm device: not Apple silicon, no QEMU", "windows", "arm64", "linux/arm/v7", nil},
-		{"Apple silicon, 32-bit arm device: no AArch32 support, really QEMU", "darwin", "arm64", "linux/arm/v7", []string{"linux/arm/v7"}},
+		// An arm64 WendyOS device (a Pi 4 or 5, an Orin) builds arm/v7
+		// natively, so the hint must not ask for a 32-bit device.
+		{"Apple silicon, 32-bit arm device: no AArch32 support, really QEMU", "darwin", "arm64", "linux/arm/v7", []string{"RUN steps for linux/arm/v7", "native arm64 or 32-bit arm CPU"}},
 		{"native arm64", "linux", "arm64", "linux/arm64", nil},
 		{"native arm64 with variant", "linux", "arm64", "linux/arm64/v8", nil},
 		{"native aarch64 spelling", "linux", "arm64", "linux/aarch64", nil},
@@ -56,6 +58,9 @@ func TestEmulatedBuildNotice(t *testing.T) {
 				if !strings.Contains(got, s) {
 					t.Fatalf("notice %q lacks %q", got, s)
 				}
+			}
+			if strings.Contains(got, "\n") {
+				t.Fatalf("notice %q spans more than one line", got)
 			}
 		})
 	}

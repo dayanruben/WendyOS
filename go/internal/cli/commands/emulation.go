@@ -65,11 +65,23 @@ func emulatedBuildNotice(hostOS, hostArch, platform string, buildHostSupported b
 	if host == "arm64" && target == "arm" && hostOS != "darwin" {
 		return ""
 	}
-	msg := fmt.Sprintf("Building %s on this %s machine: RUN steps run under QEMU emulation, often several times slower than native.", platform, host)
+	// "Typically QEMU": Docker Desktop may use Rosetta, and a remote builder or
+	// a $BUILDPLATFORM stage runs natively, so the notice does not promise.
+	msg := fmt.Sprintf("RUN steps for %s will run under CPU emulation (typically QEMU) on this %s machine, which is usually much slower than a native build.", platform, host)
 	if buildHostSupported {
-		return msg + fmt.Sprintf(" Use --build-host=DEVICE to build on a native %s WendyOS device instead.", target)
+		return msg + fmt.Sprintf(" Or pass --build-host=DEVICE to build on a WendyOS device with a native %s CPU.", nativeBuildCPUs(target))
 	}
 	return msg + " (--build-host, which builds on a WendyOS device, supports single-service projects only.)"
+}
+
+// nativeBuildCPUs names the device CPUs that build target natively. An arm64
+// CPU runs 32-bit arm binaries too (a Pi 4 or 5, a Jetson Orin), so an arm/v7
+// build needs no 32-bit device.
+func nativeBuildCPUs(target string) string {
+	if target == "arm" {
+		return "arm64 or 32-bit arm"
+	}
+	return target
 }
 
 // emulatedBuildNoticeOnce limits the notice to one per process: `wendy watch`
