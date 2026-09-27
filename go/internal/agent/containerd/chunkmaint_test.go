@@ -1,9 +1,11 @@
 package containerd
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -202,6 +204,39 @@ func TestChunkStoreMaintenanceSurvivesAPanickingPass(t *testing.T) {
 	c.runChunkStoreMaintenance(ctx, time.Hour)
 	if n := logs.FilterMessage("Chunk store maintenance panicked").Len(); n != 1 {
 		t.Fatalf("logged %d maintenance panics, want 1", n)
+	}
+}
+
+// TestMissingChunksKeepsAReportedStagedChunkClearOfTheSweep: a chunk staged
+// long ago and reported present may be read much later. A build queued behind
+// a long one reads its context only when it runs, while the store sits idle.
+// An idle sweep in between must not take the chunk.
+func TestMissingChunksKeepsAReportedStagedChunkClearOfTheSweep(t *testing.T) {
+	c, _ := newMaintenanceClient(t)
+	data := []byte("build-context chunk staged by a build seven hours ago")
+	old := stageAged(t, c.staging, data, 7*time.Hour)
+	recent := stageAged(t, c.staging, []byte("chunk staged an hour ago"), time.Hour)
+	recentBefore, err := os.Stat(c.staging.path(recent))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := c.MissingChunks(context.Background(), [][32]byte{old, recent})
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("MissingChunks = %x, %v; want both staged chunks reported present", missing, err)
+	}
+	// Only files a sweep could reach soon are refreshed.
+	if recentAfter, err := os.Stat(c.staging.path(recent)); err != nil || !recentAfter.ModTime().Equal(recentBefore.ModTime()) {
+		t.Fatalf("a chunk staged an hour ago was touched: %v", err)
+	}
+
+	c.maintainIdleChunkStore(context.Background(), time.Now().Add(chunkStoreIdleAfter+time.Minute))
+	if !c.staging.has(old) {
+		t.Fatal("the idle sweep took a chunk MissingChunks had just reported present")
+	}
+	got, err := io.ReadAll(c.OpenChunkStream(context.Background(), [][32]byte{old}))
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("reading the reported chunk after the sweep = %q, %v", got, err)
 	}
 }
 

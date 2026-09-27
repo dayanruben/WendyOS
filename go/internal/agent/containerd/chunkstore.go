@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/errdefs"
@@ -79,6 +80,25 @@ func (s *staging) path(h [32]byte) string {
 func (s *staging) has(h [32]byte) bool {
 	_, err := os.Stat(s.path(h))
 	return err == nil
+}
+
+// retain reports whether the chunk is staged, as has does, and keeps a chunk
+// it reports present clear of the sweep. The read may come much later than
+// the report: a build queued behind a long one reads its context only when it
+// runs, and the store can sit idle meanwhile. So a file older than
+// stagingRetention/2 gets its mtime moved to now, which keeps it at least that
+// long; a newer file costs nothing beyond has's stat. The refresh is best
+// effort: if it fails, a sweep can still take the chunk, and its read fails
+// closed as before.
+func (s *staging) retain(h [32]byte, now time.Time) bool {
+	fi, err := os.Stat(s.path(h))
+	if err != nil {
+		return false
+	}
+	if fi.ModTime().Before(now.Add(-stagingRetention / 2)) {
+		_ = os.Chtimes(s.path(h), now, now)
+	}
+	return true
 }
 
 // read returns the staged chunk bytes, or an os.IsNotExist error if absent.
@@ -178,8 +198,9 @@ func (s *chunkStream) Read(p []byte) (int, error) {
 }
 
 func (c *Client) MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]byte, error) {
-	// Maintenance never sweeps staged chunks while a query holds this: a chunk
-	// reported present stays present for the assembly that relies on it.
+	// Maintenance never sweeps staged chunks while a query holds this, and
+	// staging.retain keeps each staged chunk this reports present clear of the
+	// sweep afterwards, whichever call reads it later.
 	c.chunkSweepMu.RLock()
 	defer c.chunkSweepMu.RUnlock()
 	c.chunkActivity.touch()
@@ -191,9 +212,10 @@ func (c *Client) MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]by
 	// layers because nearly the entire layer may be streamed before the stale
 	// chunk is encountered.
 	nsCtx := c.withNamespace(ctx)
+	now := time.Now()
 	candidates := make([][32]byte, 0, len(hashes))
 	for _, h := range hashes {
-		if !c.staging.has(h) {
+		if !c.staging.retain(h, now) {
 			candidates = append(candidates, h)
 		}
 	}
