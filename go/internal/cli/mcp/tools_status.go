@@ -24,9 +24,12 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 	if conn == nil {
 		out := map[string]any{
 			"connected":             false,
-			"suggested_next_step":   "Call device_list (scan=true adds LAN discovery), then device_connect or cloud_connect. If this is a new board without WendyOS/Agent, use os_install_plan; an empty scan does not distinguish uninstalled hardware from a network problem.",
+			"suggested_next_step":   "Call device_list, then device_connect with the returned device selector. For uninstalled hardware enable setup with wendy_tools, then use os_install_plan. An empty scan does not establish a network failure.",
+			"tool_groups":           s.selectedToolGroups(),
 			"cli_version":           version.Version,
 			"installation_planning": s.installation.Plan != nil,
+			"installation_jobs":     s.installation.Start != nil,
+			"simulator_management":  s.simulators.List != nil,
 			"proxy_diagnostics":     s.proxyDiagnostics(),
 		}
 		return okResult(out), nil
@@ -38,11 +41,14 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 	}
 	out := map[string]any{
 		"connected":             true,
+		"tool_groups":           s.selectedToolGroups(),
 		"cli_version":           version.Version,
 		"installation_planning": s.installation.Plan != nil,
+		"installation_jobs":     s.installation.Start != nil,
+		"simulator_management":  s.simulators.List != nil,
 		"device":                host,
 		"connection_type":       connType,
-		"suggested_next_step":   fmt.Sprintf("connected to %s via %s — ready to use container, wifi, hardware, telemetry, and os tools", host, connType),
+		"suggested_next_step":   fmt.Sprintf("Connected to %s via %s. Use run or inspect containers and logs; enable specialist groups with wendy_tools.", host, connType),
 		"proxy_diagnostics":     s.proxyDiagnostics(),
 	}
 	if target.Device != "" {

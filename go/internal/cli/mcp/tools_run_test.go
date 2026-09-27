@@ -122,3 +122,39 @@ func TestCloudRunPinsOrganizationAndAsset(t *testing.T) {
 		t.Fatalf("lost tenant identity: %+v", target)
 	}
 }
+
+func TestRunStartAndLegacyDeploy(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "wendy.json"), []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args             map[string]any
+		created, invalid bool
+	}{
+		{nil, false, false}, {map[string]any{"start": false}, true, false},
+		{map[string]any{"deploy": true}, true, false}, {map[string]any{"start": false, "deploy": true}, true, false},
+		{map[string]any{"start": true, "deploy": true}, false, true}, {map[string]any{"start": "no"}, false, true},
+	} {
+		s := New(&config.Config{}, nil)
+		called := false
+		s.runCommandFn = func(_ context.Context, args []string, _ commandTarget, limit int) (string, bool, error) {
+			called = true
+			if strings.Contains(strings.Join(args, " "), "--deploy") != tc.created || limit != 16384 {
+				t.Fatalf("wrong flags/budget: %v %d", args, limit)
+			}
+			return "ok", false, nil
+		}
+		args := map[string]any{"project_path": project, "device": "vm:test"}
+		for k, v := range tc.args {
+			args[k] = v
+		}
+		r, err := s.handleRun(context.Background(), callToolReq("run", args))
+		if err != nil || r.IsError != tc.invalid || called == tc.invalid {
+			t.Fatalf("args %v: %v %v", args, r, err)
+		}
+		if !tc.invalid && (structuredMap(t, r)["status"] == "created") != tc.created {
+			t.Fatalf("incorrect deployment status: %v", r)
+		}
+	}
+}

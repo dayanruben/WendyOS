@@ -1,5 +1,8 @@
 # Device-to-robot acceptance scenarios
 
+For timed, unassisted runs with token accounting across Codex, Claude Code, and
+Wendy chat, see the [agent experience benchmark](../../../evals/agent-experience/README.md).
+
 Run each scenario in a fresh assistant session with the runtime skills and a CLI
 built from the candidate revision. Record CLI/agent versions, offered MCP tools,
 the prompt, actual tool calls, target identities, resulting files and observable

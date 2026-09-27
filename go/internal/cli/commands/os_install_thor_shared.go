@@ -38,9 +38,10 @@ var errGadgetUnreachable = errors.New("thor flashing gadget did not appear over 
 // PathKey is the stable physical-location key used to re-find the device across
 // the RCM→gadget re-enumeration; Label is a human description.
 type thorDevice struct {
-	PathKey  string
-	Label    string
-	Instance string // exact Windows recovery devnode; empty on Unix
+	PathKey      string
+	Label        string
+	Instance     string // exact Windows recovery devnode; empty on Unix
+	ExpectedECID string // optional chip pin for durable jobs, checked on claim
 }
 
 // installThor flashes a Jetson AGX Thor over USB recovery: plan the flashpack,

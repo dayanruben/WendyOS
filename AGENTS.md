@@ -29,9 +29,20 @@ Supports: Claude Code, Claude Desktop, Cursor, Windsurf, Codex.
 4. Use container, WiFi, hardware, telemetry, and OS tools.
 
 For a new board without WendyOS/Agent, use `os_install_plan` and `os_list_drives`
-before connecting. Execute the planned installation through the CLI, then check
-first boot with `os_install_verify` at an explicit address. Unitree G1 PC2 keeps
+before connecting. For supported image installs, use `os_install_start`, show the
+physical instructions, then `os_install_resume` to probe the target. Obtain explicit
+erase authorization for the returned fingerprint before starting the write. Poll
+`os_install_status`; resume with an explicit address to verify first boot, or use
+`os_install_verify` independently. Follow the returned terminal command if elevation
+is required. Unitree G1 PC2 keeps
 vendor Ubuntu and receives the Agent rather than a generic Jetson image.
+
+Enable specialist groups with `wendy_tools`: `simulator` manages local VM lifecycle,
+`observability` adds `app_inspect` and kernel logs, `setup` includes project validation
+and agent updates, and `cloud` includes tunnel list/close. Simulator creation returns
+a stopped VM; connect to its `vm:name` selector to boot. Validate projects before
+deployment and inspect individual service states afterward. Missing readiness
+evidence stays unknown, including unverified cloud/simulator TCP forwarding.
 
 To build and deploy a local project to any device (direct or cloud):
 

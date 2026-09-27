@@ -62,10 +62,26 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	if err != nil {
 		return errResult(errCodeInvalidArgument, err.Error()), nil
 	}
-	timeout := intParam(req, "timeout_seconds", 300)
-	maxBytes := intParam(req, "max_bytes", 100000)
-	if timeout < 1 || timeout > 3600 || maxBytes < 1 || maxBytes > 1000000 {
-		return errResult(errCodeInvalidArgument, "timeout_seconds must be 1–3600 and max_bytes must be 1–1000000"), nil
+	timeout, err := ros2Int(req, "timeout_seconds", 300, 1, 3600)
+	if err != nil {
+		return errResult(errCodeInvalidArgument, err.Error()), nil
+	}
+	maxBytes, err := ros2Int(req, "max_bytes", 16384, 1, 1000000)
+	if err != nil {
+		return errResult(errCodeInvalidArgument, err.Error()), nil
+	}
+	start := true
+	if value, present := req.GetArguments()["start"]; present {
+		var ok bool
+		start, ok = value.(bool)
+		if !ok {
+			return errResult(errCodeInvalidArgument, "start must be a boolean"), nil
+		}
+		if legacy, present := req.GetArguments()["deploy"]; present && legacy != !start {
+			return errResult(errCodeInvalidArgument, "start conflicts with legacy deploy"), nil
+		}
+	} else {
+		start = !req.GetBool("deploy", false)
 	}
 	selector := target.Device
 	if target.Selector != "" {
@@ -86,7 +102,10 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 			args = append(args, "--"+strings.ReplaceAll(name, "_", "-"), value)
 		}
 	}
-	for _, name := range []string{"debug", "deploy", "detach"} {
+	if !start {
+		args = append(args, "--deploy")
+	}
+	for _, name := range []string{"debug", "detach"} {
 		if req.GetBool(name, name == "detach") {
 			args = append(args, "--"+name)
 		}
@@ -121,7 +140,7 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 		return r, nil
 	}
 	result["status"] = "started"
-	if req.GetBool("deploy", false) {
+	if !start {
 		result["status"] = "created"
 	}
 	result["suggested_next_step"] = "Connect to the returned target, check container_list and telemetry_logs, then test the app's health endpoint or ROS interface. Deployment alone does not verify behavior."

@@ -41,8 +41,12 @@ type Plan struct {
 }
 
 // Backend supplies host-dependent operations without importing command code
-// into the MCP server. Neither operation writes disks or enrolls a device.
+// into the MCP server. Plan and Drives are read-only. Start records a job;
+// Resume can launch a write after an observed target is explicitly authorized.
 type Backend struct {
 	Plan   func(context.Context, Options) (*Plan, error)
 	Drives func() ([]Drive, error)
+	Start  func(context.Context, StartOptions) (*Job, error)
+	Status func(context.Context, string) (*Job, error)
+	Resume func(context.Context, ResumeOptions) (*Job, error)
 }
