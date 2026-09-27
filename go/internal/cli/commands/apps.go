@@ -33,8 +33,9 @@ var (
 
 func newAppsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "apps",
-		Short: "Manage applications on the target device",
+		Use:    "apps",
+		Short:  "Manage applications on the target device",
+		Hidden: true,
 	}
 
 	cmd.AddCommand(
@@ -255,6 +256,11 @@ func terminationSummary(reason string, exitCode int32) string {
 		return "start failed"
 	case "entitlement_denied":
 		return "entitlement denied"
+	case "device_unavailable":
+		// Deliberately says where to look. This reason exists because the same
+		// failure used to surface as "crashed (exit 139)", which sends people
+		// into the app's code instead of at the device it asked for.
+		return "device unavailable on the host (see 'wendy device hardware list')"
 	case "exited":
 		return "exited"
 	default:
@@ -516,7 +522,7 @@ func reportStartOutcome(ctx context.Context, svc agentpb.WendyContainerServiceCl
 			} else {
 				cliSuccess("Application %s stopped.", appName)
 			}
-		default: // crashed / oom_killed / start_failed / entitlement_denied
+		default: // crashed / oom_killed / start_failed / entitlement_denied / device_unavailable
 			cliNotice("Application %s %s.", appName,
 				terminationSummary(c.GetTerminationReason(), c.GetExitCode()))
 		}

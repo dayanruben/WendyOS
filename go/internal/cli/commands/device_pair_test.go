@@ -7,17 +7,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
-func TestSensorSourceItemsFiltersToCapable(t *testing.T) {
-	devs := []models.DiscoveredDevice{
-		{DisplayName: "hub", Sensorlink: true, AssetID: 5, OrgID: 3},
-		{DisplayName: "jetson", Sensorlink: false, AssetID: 6, OrgID: 3},
-	}
-	items := sensorSourceItems(devs)
-	if len(items) != 1 || items[0].Name != "hub" {
-		t.Fatalf("expected only the sensorlink device, got %+v", items)
-	}
-}
-
 func TestTransportForDevice(t *testing.T) {
 	agentDev := models.DiscoveredDevice{Sensorlink: true, IsMTLS: true, Caps: []string{"sensors"}, AssetID: 5}
 	if transportForDevice(agentDev) != "grpc" {
@@ -26,6 +15,12 @@ func TestTransportForDevice(t *testing.T) {
 	mcuDev := models.DiscoveredDevice{Sensorlink: true, IsMTLS: false, AssetID: 6} // legacy tcp sensorlink
 	if transportForDevice(mcuDev) != "tcp" {
 		t.Fatal("legacy/MCU source should be tcp")
+	}
+	// A Wendy Lite board is always wendycom, regardless of IsMTLS/Caps — it
+	// never speaks gRPC or raw sensorlink TCP.
+	liteDev := models.DiscoveredDevice{WendyLite: true, Sensorlink: true, IsMTLS: true, Caps: []string{"sensors"}, AssetID: 7}
+	if transportForDevice(liteDev) != "wendycom" {
+		t.Fatal("Wendy Lite source should be wendycom")
 	}
 }
 

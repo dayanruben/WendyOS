@@ -14,12 +14,15 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -50,6 +53,9 @@ func (f closeFunc) Close() error {
 }
 
 func certXFCC(cert config.CertificateInfo) string {
+	if cert.PrincipalURI != "" {
+		return "URI=" + cert.PrincipalURI
+	}
 	if cert.UserID != "" {
 		return fmt.Sprintf("URI=urn:wendy:org:%d:user:%s", cert.OrganizationID, cert.UserID)
 	}
@@ -60,22 +66,33 @@ func certXFCC(cert config.CertificateInfo) string {
 }
 
 func cloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context, error) {
-	if len(auth.Certificates) == 0 {
-		return ctx, nil
+	if auth.OAuthIssuer != "" {
+		// Discovery can build several RPC contexts concurrently from one auth
+		// entry. Refresh a local snapshot rather than mutating shared state.
+		local := *auth
+		auth = &local
+		if err := ensureOAuthAccessToken(ctx, auth); err != nil {
+			return nil, err
+		}
 	}
-	cert := auth.Certificates[0]
 	md := metadata.MD{}
-	if auth.HasAPIKey() {
+	// A DPoP-bound token (OAuth login) must not go out as Bearer — the DPoP
+	// interceptor (dpopDialOptions, installed by withCloudRequestSigning) sets
+	// `authorization: DPoP <token>` plus a per-call proof. Only unbound
+	// API-key/legacy sessions carry a Bearer here (WDY-3107).
+	if auth.HasAPIKey() && !authIsDPoPBound(auth) {
 		bearerToken, err := auth.BearerToken()
 		if err != nil {
 			return nil, fmt.Errorf("loading API token: %w", err)
 		}
 		md.Set("authorization", "Bearer "+bearerToken)
 	}
-	certHeader := certXFCC(cert)
-	if certHeader != "" {
-		md.Set("x-wendy-client-cert", certHeader)
-		md.Set("x-forwarded-client-cert", certHeader)
+	if len(auth.Certificates) > 0 {
+		certHeader := certXFCC(auth.Certificates[0])
+		if certHeader != "" {
+			md.Set("x-wendy-client-cert", certHeader)
+			md.Set("x-forwarded-client-cert", certHeader)
+		}
 	}
 	return metadata.NewOutgoingContext(ctx, md), nil
 }
@@ -86,27 +103,41 @@ func connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL s
 		return nil, err
 	}
 
-	asset, err := pickCloudDevice(ctx, auth, deviceName, brokerURL)
+	asset, err := pickCloudDiscoveryDevice(ctx, auth, deviceName, brokerURL)
 	if err != nil {
 		return nil, err
 	}
 	cliLogln("Connecting to %s via cloud tunnel...", asset.GetName())
 
-	return connectCloudAsset(ctx, auth, asset, brokerURL)
+	return asset.connect(ctx, auth, brokerURL)
 }
 
 func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) (*grpcclient.AgentConnection, error) {
+	return connectCloudDiscoveryDevice(ctx, auth, cloudDiscoveryDevice{cloudAssetMetadata: asset, legacy: asset, key: fmt.Sprint(asset.GetId())}, brokerURL)
+}
+
+func connectCloudAssetV2(ctx context.Context, auth *config.AuthConfig, asset *cloudpbv2.Asset, brokerURL string) (*grpcclient.AgentConnection, error) {
+	return connectCloudDiscoveryDevice(ctx, auth, cloudDiscoveryDevice{cloudAssetMetadata: asset, v2: asset, key: asset.GetId()}, brokerURL)
+}
+
+func connectCloudDiscoveryDevice(ctx context.Context, auth *config.AuthConfig, asset cloudDiscoveryDevice, brokerURL string) (*grpcclient.AgentConnection, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
-	if err != nil {
-		return nil, err
+	var brokerConn *grpc.ClientConn
+	if asset.legacy != nil {
+		var err error
+		brokerConn, err = clouddefaults.DialBroker(auth, brokerURL)
+		if err != nil {
+			return nil, err
+		}
+	} else if brokerURL != "" {
+		return nil, fmt.Errorf("Cloud selects the authorized relay; --broker-url is supported only for legacy sessions")
 	}
 
 	cleanupBroker := true
 	defer func() {
-		if cleanupBroker {
+		if cleanupBroker && brokerConn != nil {
 			_ = brokerConn.Close()
 		}
 	}()
@@ -115,7 +146,7 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	// plaintext port (50051) is shut down after provisioning. (On-device containers
 	// with the admin entitlement can reach the agent via the local unix socket.)
 	dialOpt := clouddefaults.TunnelDialer(func(tunnelCtx context.Context) (net.Conn, error) {
-		return openBrokerTunnel(tunnelCtx, brokerConn, auth, asset.GetId(), defaultAgentPort+1)
+		return asset.openTunnel(tunnelCtx, brokerConn, auth, defaultAgentPort+1)
 	})
 
 	cert := auth.Certificates[0]
@@ -123,13 +154,19 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	if err != nil {
 		return nil, fmt.Errorf("loading client key: %w", err)
 	}
-	x509Cert, err := tls.X509KeyPair([]byte(cert.PemCertificate), []byte(keyPEM))
+	x509Cert, err := certs.TLSKeyPair(cert.PemCertificate, cert.PemCertificateChain, keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("loading agent mTLS cert: %w", err)
 	}
+	expectedIdentity := &certs.WendyIdentity{OrgID: int32(cert.OrganizationID), EntityType: "asset", EntityID: asset.key}
+	if asset.v2 != nil {
+		expectedIdentity.TenantUUID = cert.TenantUUID()
+		expectedIdentity.Principal = "spiffe://wendy.sh/tenant/" + cert.TenantUUID() + "/device/" + asset.key
+	}
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
-		ChainPEM:      cert.PemCertificateChain,
-		ExpectedOrgID: int32(cert.OrganizationID),
+		ChainPEM:         cert.PemCertificateChain,
+		ExpectedOrgID:    int32(cert.OrganizationID),
+		ExpectedIdentity: expectedIdentity,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("building TLS verifier: %w", err)
@@ -164,25 +201,33 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	agentConn.IsMTLS = true
 	agentConn.CertInfo = &cert
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
-		return openBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), uint32(port))
+		return asset.openTunnel(ctx, brokerConn, auth, uint32(port))
 	}
 	// Pin reconnect to this exact asset (by id) so a post-restart reconnect
 	// can't drift to a different cloud device — the asset name may be empty or
 	// ambiguous, and re-running device discovery while the agent is mid-restart
 	// can match whichever other device happens to be reachable.
 	agentConn.Reconnect = func(rctx context.Context) (*grpcclient.AgentConnection, error) {
-		return waitForCloudAgentRestart(rctx, auth, asset, brokerURL)
+		return asset.reconnect(rctx, auth, brokerURL)
 	}
-	agentConn.ExtraClosers = append(agentConn.ExtraClosers, brokerConn)
+	if brokerConn != nil {
+		agentConn.ExtraClosers = append(agentConn.ExtraClosers, brokerConn)
+	}
 	cleanupBroker = false
 	return agentConn, nil
 }
 
 func waitForCloudAgentRestart(ctx context.Context, auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) (*grpcclient.AgentConnection, error) {
+	return waitForCloudDeviceRestart(ctx, asset.GetName(), fmt.Sprint(asset.GetId()), func(ctx context.Context) (*grpcclient.AgentConnection, error) {
+		return connectCloudAsset(ctx, auth, asset, brokerURL)
+	})
+}
+
+func waitForCloudDeviceRestart(ctx context.Context, name, id string, connect func(context.Context) (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	restartErr := func() error {
-		return fmt.Errorf("timed out waiting for %s (id=%d) to restart", asset.GetName(), asset.GetId())
+		return fmt.Errorf("timed out waiting for %s (id=%s) to restart", name, id)
 	}
 	// Give the agent a moment to begin shutdown.
 	select {
@@ -197,7 +242,7 @@ func waitForCloudAgentRestart(ctx context.Context, auth *config.AuthConfig, asse
 		default:
 		}
 		attemptCtx, attemptCancel := context.WithTimeout(ctx, 10*time.Second)
-		conn, err := connectCloudAsset(attemptCtx, auth, asset, brokerURL)
+		conn, err := connect(attemptCtx)
 		if err != nil {
 			attemptCancel()
 			select {
@@ -248,6 +293,51 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 		return nil, fmt.Errorf("sending tunnel open: %w", err)
 	}
 
+	return pipeBrokerTunnel(func() ([]byte, bool, error) {
+		msg, err := stream.Recv()
+		if err != nil {
+			return nil, false, err
+		}
+		return msg.Payload, msg.HalfClose, nil
+	}, func(payload []byte, halfClose bool) error {
+		return stream.Send(&cloudpb.ClientTunnelMessage{Content: &cloudpb.ClientTunnelMessage_Data{Data: &cloudpb.TunnelData{Payload: payload, HalfClose: halfClose}}})
+	}, stream.CloseSend), nil
+}
+
+func (d cloudDiscoveryDevice) openTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, remotePort uint32) (net.Conn, error) {
+	if d.legacy != nil {
+		return openBrokerTunnel(ctx, brokerConn, auth, d.legacy.GetId(), remotePort)
+	}
+	service := ""
+	switch remotePort {
+	case 50052:
+		service = "wendy-agent"
+	case 22:
+		service = "ssh"
+	default:
+		return nil, fmt.Errorf("Cloud's authorized tunnel catalog has no service for port %d", remotePort)
+	}
+	signer, err := tunnelPrincipalSigner(auth)
+	if err != nil {
+		return nil, err
+	}
+	cloudCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := dialCloudGRPC(auth)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	issuer, err := cloudrelay.Issuer(auth.CloudGRPC, os.Getenv("WENDY_CLOUD_GRANT_ISSUER"))
+	if err != nil {
+		return nil, err
+	}
+	return cloudrelay.OpenTCP(ctx, cloudCtx, conn, &cloudrelay.Verifier{Issuer: issuer}, d.key, service, signer)
+}
+
+func pipeBrokerTunnel(recv func() ([]byte, bool, error), send func([]byte, bool) error, closeSend func() error) net.Conn {
 	local, remote := net.Pipe()
 	// A non-EOF end of the broker stream is the broker's verdict on this
 	// tunnel (unauthorized caller, asset offline, ...). Record it on the local
@@ -258,34 +348,26 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 	go func() {
 		defer remote.Close()
 		for {
-			msg, err := stream.Recv()
+			payload, halfClose, err := recv()
 			if err != nil {
 				tunnel.Fail(err)
-				if tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""; tlsDebug {
+				if os.Getenv("WENDY_TLS_DEBUG") != "" {
 					fmt.Fprintf(os.Stderr, "[tunnel-debug] broker stream closed: %v\n", err)
 				}
 				break
 			}
-			if len(msg.Payload) > 0 {
-				if _, err := remote.Write(msg.Payload); err != nil {
+			if len(payload) > 0 {
+				if _, err := remote.Write(payload); err != nil {
 					break
 				}
 			}
-			if msg.HalfClose {
+			if halfClose {
 				break
 			}
 		}
 	}()
-
-	go runTunnelUplink(remote, func(payload []byte, halfClose bool) error {
-		return stream.Send(&cloudpb.ClientTunnelMessage{
-			Content: &cloudpb.ClientTunnelMessage_Data{
-				Data: &cloudpb.TunnelData{Payload: payload, HalfClose: halfClose},
-			},
-		})
-	}, stream.CloseSend)
-
-	return tunnel, nil
+	go runTunnelUplink(remote, send, closeSend)
+	return tunnel
 }
 
 // tunnelUplinkQueueSlots bounds the uplink queue: reads are ≤256KiB, so 128
@@ -398,7 +480,7 @@ func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Ass
 		for _, a := range assets {
 			if strings.ToLower(a.GetName()) == lower {
 				if matched != nil {
-					return nil, fmt.Errorf("multiple devices match %q; use a more specific name", deviceName)
+					return nil, commandErrorf(errDeviceAmbiguous, "multiple devices match %q; use a more specific name", deviceName)
 				}
 				matched = a
 			}
@@ -430,7 +512,7 @@ func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Ass
 		}
 		fmt.Fprintf(&b, "%d=%s", a.GetId(), name)
 	}
-	return nil, fmt.Errorf("multiple cloud devices found; rerun with --device <id|name> (%s)", b.String())
+	return nil, commandErrorf(errDeviceAmbiguous, "multiple cloud devices found; rerun with --device <id|name> (%s)", b.String())
 }
 
 // upgradeOfflineResolveErr re-checks a resolveCloudAsset miss against the
@@ -451,7 +533,7 @@ func upgradeOfflineResolveErr(resolveErr error, deviceName string, fetchAll func
 		if clouddefaults.FindAssetByNameOrID(allAssets, deviceName) == nil {
 			return resolveErr
 		}
-		return fmt.Errorf("device %q is enrolled but currently reported offline; check the device's power and network connection, then retry ('wendy cloud discover --all --json' lists all enrolled devices)", deviceName)
+		return commandErrorf(errDeviceOffline, "device %q is enrolled but currently reported offline; check the device's power and network connection, then retry ('wendy cloud discover --all --json' lists all enrolled devices)", deviceName)
 	case errors.Is(resolveErr, errNoCloudDevicesEnrolled):
 		allAssets, err := fetchAll()
 		if err != nil {
@@ -460,7 +542,7 @@ func upgradeOfflineResolveErr(resolveErr error, deviceName string, fetchAll func
 		if len(allAssets) == 0 {
 			return resolveErr
 		}
-		return fmt.Errorf("all %d enrolled devices are currently reported offline; check their power and network connections, then retry ('wendy cloud discover --all --json' lists all enrolled devices)", len(allAssets))
+		return commandErrorf(errDeviceOffline, "all %d enrolled devices are currently reported offline; check their power and network connections, then retry ('wendy cloud discover --all --json' lists all enrolled devices)", len(allAssets))
 	default:
 		return resolveErr
 	}
@@ -475,6 +557,11 @@ func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, b
 // is set, it offers to log in again (the spinner has already exited, so the
 // terminal is free for the prompt) and retries once with the fresh credentials.
 func pickCloudDeviceWithRelogin(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string, allowRelogin bool) (*cloudpb.Asset, error) {
+	return pickCloudDeviceMode(ctx, auth, deviceName, brokerURL, allowRelogin, false)
+}
+
+// forcePicker keeps HIL selection explicit even when just one device is online.
+func pickCloudDeviceMode(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string, allowRelogin, forcePicker bool) (*cloudpb.Asset, error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
@@ -487,7 +574,7 @@ func pickCloudDeviceWithRelogin(ctx context.Context, auth *config.AuthConfig, de
 		if fresh == nil {
 			return nil, nil, false
 		}
-		asset, err := pickCloudDeviceWithRelogin(ctx, fresh, deviceName, brokerURL, false)
+		asset, err := pickCloudDeviceMode(ctx, fresh, deviceName, brokerURL, false, forcePicker)
 		return asset, err, true
 	}
 
@@ -523,10 +610,14 @@ func pickCloudDeviceWithRelogin(ctx context.Context, auth *config.AuthConfig, de
 		}
 	}
 
+	return pickCloudDeviceFromRoster(ctx, auth, deviceName, brokerURL, assets, forcePicker)
+}
+
+func pickCloudDeviceFromRoster(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string, assets []*cloudpb.Asset, forcePicker bool) (*cloudpb.Asset, error) {
 	// When running interactively with no --device and multiple assets, skip
 	// resolveCloudAsset (which now returns an enumerated error) and fall
 	// straight through to the interactive picker.
-	if isInteractiveTerminal() && deviceName == "" && len(assets) > 1 {
+	if isInteractiveTerminal() && deviceName == "" && (len(assets) > 1 || forcePicker) {
 		// fall through to picker below
 	} else {
 		asset, err := resolveCloudAsset(assets, deviceName)
@@ -553,19 +644,26 @@ func pickCloudDeviceWithRelogin(ctx context.Context, auth *config.AuthConfig, de
 	}
 
 	m := newCloudDiscoverModel(ctx, auth, brokerURL, false, true, assets)
-	p := tea.NewProgram(m)
-	finalModel, err := p.Run()
+	m.purpose = devicePickerPurposeFromContext(ctx)
+	cm, err := runCloudDevicePicker(m)
 	if err != nil {
 		return nil, fmt.Errorf("device picker: %w", err)
 	}
-	cm := finalModel.(cloudDiscoverModel)
 	if cm.quitting && cm.selected == nil {
 		return nil, ErrUserCancelled
 	}
 	if cm.selected == nil {
-		return nil, fmt.Errorf("no device selected")
+		return nil, commandErrorf(errNoDevice, "no device selected")
 	}
 	return cm.selected, nil
+}
+
+var runCloudDevicePicker = func(m cloudDiscoverModel) (cloudDiscoverModel, error) {
+	finalModel, err := tea.NewProgram(m).Run()
+	if err != nil {
+		return cloudDiscoverModel{}, err
+	}
+	return finalModel.(cloudDiscoverModel), nil
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -573,30 +671,31 @@ func boolPtr(b bool) *bool { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 
 func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
-	if len(auth.Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	cert := auth.Certificates[0]
 	var transport grpc.DialOption
 	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
-		keyPEM, err := cert.PrivateKeyPEM()
-		if err != nil {
-			return nil, fmt.Errorf("loading client key: %w", err)
+		if len(auth.Certificates) > 0 {
+			cert := auth.Certificates[0]
+			keyPEM, err := cert.PrivateKeyPEM()
+			if err != nil {
+				return nil, fmt.Errorf("loading client key: %w", err)
+			}
+			tlsCfg, err := certs.LoadTLSConfig(
+				cert.PemCertificate,
+				cert.PemCertificateChain,
+				keyPEM,
+				"",
+			)
+			if err != nil {
+				return nil, fmt.Errorf("loading TLS config: %w", err)
+			}
+			transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
+		} else {
+			transport = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
 		}
-		tlsCfg, err := certs.LoadTLSConfig(
-			cert.PemCertificate,
-			cert.PemCertificateChain,
-			keyPEM,
-			"",
-		)
-		if err != nil {
-			return nil, fmt.Errorf("loading TLS config: %w", err)
-		}
-		transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
 	} else {
 		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
-	conn, err := grpc.NewClient(auth.CloudGRPC,
+	dialOptions, err := withCloudRequestSigning(auth,
 		transport,
 		grpc.WithInitialWindowSize(8*1024*1024),
 		grpc.WithInitialConnWindowSize(16*1024*1024),
@@ -609,7 +708,28 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		}),
 	)
 	if err != nil {
+		return nil, err
+	}
+	conn, err := grpc.NewClient(auth.CloudGRPC, dialOptions...)
+	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
 	}
 	return conn, nil
+}
+
+// withCloudRequestSigning installs the pki-core operator-certificate signer.
+// The bootstrap paths that construct their own connection use this helper too,
+// so all Cloud mutations share one wire contract.
+func withCloudRequestSigning(auth *config.AuthConfig, options ...grpc.DialOption) ([]grpc.DialOption, error) {
+	signingOption, err := cloudrequest.DialOption(auth)
+	if err != nil {
+		return nil, fmt.Errorf("configuring Cloud request signing: %w", err)
+	}
+	if signingOption != nil {
+		options = append(options, signingOption)
+	}
+	// Per-RPC DPoP proof for a sender-constrained (cnf-bound) OAuth token; nil
+	// for unbound sessions (WDY-3107).
+	options = append(options, dpopDialOptions(auth)...)
+	return options, nil
 }

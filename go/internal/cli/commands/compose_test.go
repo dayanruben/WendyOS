@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -708,7 +709,7 @@ func TestComposeArgv_ScalarShellSplit(t *testing.T) {
 	}
 	cmd, extra := composeArgv(cfg.Services["svc"])
 	want := []string{"-m", "pip", "install", "-r", "requirements.txt"}
-	if cmd != "python3" || !equalStrings(extra, want) {
+	if cmd != "python3" || !slices.Equal(extra, want) {
 		t.Fatalf("cmd=%q extra=%v; want python3 + %v", cmd, extra, want)
 	}
 }
@@ -739,7 +740,7 @@ func TestShellSplit(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := shellSplit(c.in)
-		if !equalStrings(got, c.want) {
+		if !slices.Equal(got, c.want) {
 			t.Errorf("shellSplit(%q) = %v; want %v", c.in, got, c.want)
 		}
 	}

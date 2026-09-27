@@ -40,6 +40,7 @@ import (
 	"github.com/opencontainers/image-spec/identity"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
@@ -63,6 +64,12 @@ const DefaultAddress = "/run/containerd/containerd.sock"
 
 type AppSystemAPISocketProvider interface {
 	Ensure(appID, serviceName string, capabilities []string) (string, error)
+	Release(appID, serviceName string)
+	ReleaseApp(appID string)
+}
+
+type AppDataSocketProvider interface {
+	Ensure(appID, serviceName string) (string, error)
 	Release(appID, serviceName string)
 	ReleaseApp(appID string)
 }
@@ -97,6 +104,7 @@ type Client struct {
 	mu                      sync.Mutex
 	proxyManager            dbusProxyManager // nil if xdg-dbus-proxy is not available
 	systemAPISocketProvider AppSystemAPISocketProvider
+	dataSocketProvider      AppDataSocketProvider
 
 	// cameraLoopbackProvider is the VideoService camera-loopback API (Task
 	// C6), injected via SetCameraLoopbackProvider (camera_wiring.go). Nil is
@@ -238,6 +246,10 @@ func (c *Client) SetAppSystemAPISocketProvider(provider AppSystemAPISocketProvid
 	c.systemAPISocketProvider = provider
 }
 
+func (c *Client) SetAppDataSocketProvider(provider AppDataSocketProvider) {
+	c.dataSocketProvider = provider
+}
+
 type appSystemAPIOwner struct {
 	appID       string
 	serviceName string
@@ -262,7 +274,7 @@ func appSystemAPIOwnersFromLabels(labelSets []map[string]string) []appSystemAPIO
 // persisted container labels after an Agent restart. Stopped containers count
 // too because they retain the socket directory mount and may be started later.
 func (c *Client) RestoreAppSystemAPISockets(ctx context.Context) {
-	if c.systemAPISocketProvider == nil {
+	if c.systemAPISocketProvider == nil && c.dataSocketProvider == nil {
 		return
 	}
 	ctx = c.withNamespace(ctx)
@@ -281,10 +293,75 @@ func (c *Client) RestoreAppSystemAPISockets(ctx context.Context) {
 		labelSets = append(labelSets, info.Labels)
 	}
 	for _, owner := range appSystemAPIOwnersFromLabels(labelSets) {
-		if _, err := c.systemAPISocketProvider.Ensure(owner.appID, owner.serviceName, []string{services.SystemAPICapabilityNotifications}); err != nil {
-			c.logger.Warn("restore app System API socket failed", zap.String(logfields.AppID, owner.appID), zap.Error(err))
+		if c.systemAPISocketProvider != nil {
+			if _, err := c.systemAPISocketProvider.Ensure(owner.appID, owner.serviceName, []string{services.SystemAPICapabilityNotifications}); err != nil {
+				c.logger.Warn("restore app System API socket failed", zap.String(logfields.AppID, owner.appID), zap.Error(err))
+			}
 		}
 	}
+	for _, labels := range labelSets {
+		appID, serviceName := labels[labelKeyAppID], labels[labelKeyServiceName]
+		entitlements := parseEntitlementsFromAnnotations(labels)
+		if c.dataSocketProvider != nil && entitlementsContain(entitlements, appconfig.EntitlementEpisodeWrite) {
+			if _, err := ensureDataSockets(c.dataSocketProvider, appID, serviceName, entitlements); err != nil {
+				c.logger.Warn("restore app data socket failed", zap.String(logfields.AppID, appID), zap.Error(err))
+			}
+		}
+	}
+	c.sweepOrphanedSocketRoots(appIDsFromLabels(labelSets))
+}
+
+// appSocketSweeper is the optional capability of a socket provider to discard
+// directories that belong to no app. It is an interface of its own, rather than
+// a method on the provider interfaces, so a provider that cannot sweep stays
+// usable unchanged.
+type appSocketSweeper interface {
+	SweepOrphanedRoots(activeAppIDs []string)
+}
+
+// sweepOrphanedSocketRoots discards socket directories left behind by apps that
+// no longer have any container.
+//
+// A directory is named by a hash of the app identity, and the only record of
+// that identity is the container's own label. Delete the last container of an
+// app and the identity is gone with it, so nothing afterwards can work out
+// which directory belonged to it: the one-service app deleted by service name
+// leaves a directory that no Release call could ever name. Restore is the point
+// where the live set is known exactly, so it is where a directory outside that
+// set is provably an orphan.
+func (c *Client) sweepOrphanedSocketRoots(activeAppIDs []string) {
+	// A nil provider is a nil interface, which fails the assertion, so no
+	// separate nil check is needed.
+	if sweeper, ok := c.systemAPISocketProvider.(appSocketSweeper); ok {
+		sweeper.SweepOrphanedRoots(activeAppIDs)
+	}
+	if sweeper, ok := c.dataSocketProvider.(appSocketSweeper); ok {
+		sweeper.SweepOrphanedRoots(activeAppIDs)
+	}
+}
+
+// appIDsFromLabels lists the distinct, valid app identities present in a set of
+// container label maps. Labels are external state, so each identity is
+// re-validated before it is treated as one (SOC2-CC6, NIST-SI-10): an
+// unvalidated value here would decide which socket directories survive a sweep.
+func appIDsFromLabels(labelSets []map[string]string) []string {
+	seen := make(map[string]struct{}, len(labelSets))
+	out := make([]string, 0, len(labelSets))
+	for _, labels := range labelSets {
+		appID := labels[labelKeyAppID]
+		if appID == "" {
+			continue
+		}
+		if err := appconfig.ValidateAppID(appID); err != nil {
+			continue
+		}
+		if _, ok := seen[appID]; ok {
+			continue
+		}
+		seen[appID] = struct{}{}
+		out = append(out, appID)
+	}
+	return out
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -1100,8 +1177,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		defer resumeRestarts()
 
 		oldHadSystemAPI := false
+		oldHadData := false
 		if oldLabels, labelErr := existing.Labels(ctx); labelErr == nil {
-			oldHadSystemAPI = entitlementsContain(parseEntitlementsFromAnnotations(oldLabels), appconfig.EntitlementNotifications)
+			oldEntitlements := parseEntitlementsFromAnnotations(oldLabels)
+			oldHadSystemAPI = entitlementsContain(oldEntitlements, appconfig.EntitlementNotifications)
+			oldHadData = entitlementsContain(oldEntitlements, appconfig.EntitlementEpisodeWrite)
 			oldSpec, _ := existing.Spec(ctx)
 			if oldLabels[labelKeyNetworkIdentity] == desiredNetworkIdentity {
 				reusedNetworkSandbox, _ = c.reusableNetworkSandbox(ctx, containerName, desiredNetworkIdentity)
@@ -1166,6 +1246,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 		if oldHadSystemAPI && c.systemAPISocketProvider != nil {
 			c.systemAPISocketProvider.Release(appID, serviceName)
+		}
+		if oldHadData && c.dataSocketProvider != nil {
+			c.dataSocketProvider.Release(appID, serviceName)
 		}
 		// Stop old D-Bus proxy if any.
 		if c.proxyManager != nil {
@@ -1314,7 +1397,28 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Apply the NVIDIA CDI spec before entitlements so that entitlements can
 	// override CDI-injected env vars (e.g. NVIDIA_VISIBLE_DEVICES=void → =all).
 	if needsNvidiaCDI(appCfg) {
-		c.applyNvidiaCDI(spec)
+		if cdiErr := c.applyNvidiaCDI(spec); cdiErr != nil {
+			// A CDI spec that names devices this host cannot resolve is a
+			// broken hand-off, not an absent one: give a gpu-entitled app that
+			// container and it starts cleanly, then dies at its first CUDA
+			// call with a message naming neither the container nor the device
+			// — which is how a provisioning failure comes to look like an app
+			// bug. Fail the create so the error reaches the deploy that caused
+			// it.
+			//
+			// Deliberately narrow. applyNvidiaCDI returns this error only when
+			// NVIDIA CDI provisioning is present and unusable; a host with no
+			// CDI spec at all still warns and continues, because the gpu
+			// entitlement discovers and injects the NVIDIA nodes by itself
+			// (see oci.applyGPU) and plenty of boards — a Pi with DRM, an AMD
+			// box, any host without nvidia-ctk — legitimately have no spec to
+			// apply. A display-only app stays best-effort for the same reason.
+			if appCfg.HasEntitlement(appconfig.EntitlementGPU) && errors.Is(cdiErr, cdi.ErrDevicesUnresolved) {
+				return fmt.Errorf("provisioning NVIDIA devices for gpu entitlement: %w", cdiErr)
+			}
+			c.logger.Warn("NVIDIA CDI provisioning incomplete; continuing",
+				zap.String("app_id", appID), zap.Error(cdiErr))
+		}
 	}
 	if needsQualcommNPURuntime(appCfg) {
 		c.applyQualcommNPURuntime(spec)
@@ -1322,6 +1426,8 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	var systemAPISocketDir string
 	systemAPIRefOwned := false
+	var dataSocketDir string
+	dataRefOwned := false
 	if appCfg.HasEntitlement(appconfig.EntitlementNotifications) {
 		if c.systemAPISocketProvider == nil {
 			return fmt.Errorf("notifications entitlement unavailable: app System API socket manager is not configured")
@@ -1338,6 +1444,21 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		defer func() {
 			if systemAPIRefOwned {
 				c.systemAPISocketProvider.Release(appID, serviceName)
+			}
+		}()
+	}
+	if appCfg.HasEntitlement(appconfig.EntitlementEpisodeWrite) {
+		if c.dataSocketProvider == nil {
+			return fmt.Errorf("episode-write entitlement unavailable: app data socket manager is not configured")
+		}
+		dataSocketDir, err = ensureDataSockets(c.dataSocketProvider, appID, serviceName, appCfg.Entitlements)
+		if err != nil {
+			return fmt.Errorf("preparing app data socket: %w", err)
+		}
+		dataRefOwned = true
+		defer func() {
+			if dataRefOwned {
+				c.dataSocketProvider.Release(appID, serviceName)
 			}
 		}()
 	}
@@ -1361,6 +1482,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	opts := localoci.ApplyOptions{
 		DBusProxySocketDir: dbusProxySocketDir,
 		SystemAPISocketDir: systemAPISocketDir,
+		DataSocketDir:      dataSocketDir,
 		HostResolvConfPath: hostResolvConfPath,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
@@ -1652,6 +1774,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Container created successfully; keep its external socket resources running.
 	dbusProxyStarted = false
 	systemAPIRefOwned = false
+	dataRefOwned = false
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_COMPLETE})
 
@@ -1708,9 +1831,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 // on a Jetson the EGL/GLES userspace a display app needs arrives through this
 // same injection. A warning naming a GPU would send someone debugging a
 // display-only app looking for an entitlement it never declared.
-func (c *Client) applyNvidiaCDI(spec *localoci.Spec) {
+func (c *Client) applyNvidiaCDI(spec *localoci.Spec) error {
 	mgr := cdi.NewManager()
-	cdiSpec, err := mgr.LoadNVIDIACDISpec()
+	cdiSpec, specPath, err := mgr.LoadNVIDIACDISpec()
 	if err != nil {
 		// No nvidia-ctk-generated CDI spec. On Tegra/L4T this is expected when the
 		// device's nvidia-container-toolkit predates `nvidia-ctk cdi generate`
@@ -1722,26 +1845,165 @@ func (c *Client) applyNvidiaCDI(spec *localoci.Spec) {
 		} else if applied > 0 {
 			c.logger.Info("Applied L4T CSV NVIDIA driver provisioning (no CDI spec; nvidia-ctk predates CDI)",
 				zap.Int("count", applied))
-			return
+			return nil
 		}
 		c.logger.Warn("No NVIDIA CDI spec and no usable L4T CSV files; NVIDIA driver library mounts may be incomplete",
 			zap.Error(err))
-		return
+		return fmt.Errorf("no NVIDIA CDI spec and no usable L4T CSV files: %w", err)
 	}
 
+	return c.applyNvidiaCDISpec(spec, cdiSpec, specPath)
+}
+
+func (c *Client) applyNvidiaCDISpec(spec *localoci.Spec, cdiSpec *cdi.CDISpecification, specPath string) error {
 	// nvidia-ctk in CSV mode generates a device named "all".
 	// Try that first, then fall back to the first device in the spec.
-	if err := cdi.ApplyCDIDevice(spec, cdiSpec, "all"); err == nil {
-		c.logger.Info("Applied NVIDIA CDI spec")
-		return
+	allErr := cdi.ApplyCDIDevice(spec, cdiSpec, "all")
+	if allErr == nil {
+		c.logger.Info("Applied NVIDIA CDI spec", zap.String("cdi_spec_path", specPath))
+		return nil
+	}
+	// A provisioning error can follow partial edits. Only a missing name is
+	// safe to retry with a different selection; otherwise preserve the cause
+	// and avoid applying mounts or hooks twice.
+	if !errors.Is(allErr, cdi.ErrDeviceNotFound) {
+		return fmt.Errorf("applying NVIDIA CDI device %q from %s: %w", "all", specPath, allErr)
 	}
 	if len(cdiSpec.Devices) > 0 {
-		if err := cdi.ApplyCDIDevice(spec, cdiSpec, cdiSpec.Devices[0].Name); err == nil {
-			c.logger.Info("Applied NVIDIA CDI device", zap.String("device", cdiSpec.Devices[0].Name))
-			return
+		first := cdiSpec.Devices[0].Name
+		if firstErr := cdi.ApplyCDIDevice(spec, cdiSpec, first); firstErr == nil {
+			c.logger.Info("Applied NVIDIA CDI device",
+				zap.String("device", first), zap.String("cdi_spec_path", specPath))
+			return nil
+		} else if !errors.Is(firstErr, cdi.ErrDeviceNotFound) {
+			// The named device exists but some of its nodes would not resolve.
+			// Report that rather than the "all" lookup miss, which is the
+			// expected outcome on a spec that names its devices individually.
+			c.logger.Warn("NVIDIA CDI device could not be fully applied",
+				zap.String("device", first), zap.String("cdi_spec_path", specPath), zap.Error(firstErr))
+			return fmt.Errorf("applying NVIDIA CDI device %q from %s: %w", first, specPath, firstErr)
 		}
 	}
-	c.logger.Warn("CDI spec found but no devices could be applied")
+	c.logger.Warn("CDI spec found but no devices could be applied", zap.String("cdi_spec_path", specPath))
+	return fmt.Errorf("CDI spec %s has no applicable device: %w", specPath, allErr)
+}
+
+// refreshGPUDeviceNumbersForStart re-resolves every host device number pinned in
+// a GPU-entitled container's stored spec, persists the spec when any of them
+// have moved, and refuses the start when any of them are gone.
+//
+// Metadata-only annotation upgrades are best-effort. Once the stored bindings
+// are known to be wrong, a failed repair write must refuse the start rather
+// than hand those bindings to the runtime.
+//
+// The refusal half is not best-effort. A device that no longer exists cannot be
+// repaired, and starting the app regardless is what produces a crash loop whose
+// exit code names nothing — see ErrDeviceUnavailable.
+func (c *Client) refreshGPUDeviceNumbersForStart(ctx context.Context, container containerd.Container, appName string, labels map[string]string) error {
+	if !hasGPUEntitlement(parseEntitlementsFromAnnotations(labels)) {
+		return nil
+	}
+
+	info, err := container.Info(ctx)
+	if err != nil {
+		c.logger.Warn("Could not load container record to re-resolve GPU device numbers; starting with the stored spec",
+			zap.String("app_name", appName), zap.Error(err))
+		return nil
+	}
+	if info.Spec == nil {
+		return nil
+	}
+
+	var spec localoci.Spec
+	if err := json.Unmarshal(info.Spec.GetValue(), &spec); err != nil {
+		c.logger.Warn("Could not decode stored spec to re-resolve GPU device numbers; starting with the stored spec",
+			zap.String("app_name", appName), zap.Error(err))
+		return nil
+	}
+
+	refresh := localoci.RefreshHostDeviceNumbers(&spec)
+
+	// Do not persist a mixed generation when any required source is unresolved.
+
+	if len(refresh.Errors) > 0 {
+		return fmt.Errorf("resolving host devices for %s: %w", appName, errors.Join(refresh.Errors...))
+	}
+
+	if len(refresh.Missing) > 0 {
+		// A device that is gone cannot be re-pointed, so the repair path ends
+		// here and the preflight begins.
+		c.logger.Warn("Refusing to start: container names host devices that no longer exist",
+			zap.String("app_name", appName), zap.Strings("devices", refresh.Missing))
+		return fmt.Errorf("%w: %s names %s, absent on this host",
+			ErrDeviceUnavailable, appName, strings.Join(refresh.Missing, ", "))
+	}
+
+	if refresh.SpecModified() {
+		if perr := c.persistRefreshedSpec(ctx, container, info, &spec, appName); perr != nil {
+			if refresh.Changed() {
+				return fmt.Errorf("persisting required device repair for %s: %w", appName, perr)
+			}
+			c.logger.Warn("Could not persist refreshed device numbers; starting with the stored spec",
+				zap.String("app_name", appName), zap.Error(perr))
+		} else if refresh.Changed() {
+			c.logger.Info("Re-resolved stale host device numbers before start",
+				zap.String("app_name", appName), zap.Strings("devices", refresh.Updated),
+				zap.Strings("removed_legacy_devices", refresh.Removed))
+		} else {
+			// One-time upgrade for a container created before pins were
+			// recorded: its device entries now have explicit provenance.
+			// Legacy cgroup-only bindings cannot be inferred from that list.
+			c.logger.Info("Recorded pinned device paths for an existing container",
+				zap.String("app_name", appName))
+		}
+	}
+
+	return nil
+}
+
+// persistRefreshedSpec writes a repaired spec back to the container record. The
+// record is updated in place rather than through delete+recreate (as
+// refreshSecondaryNamespaces does). Containerd accepts a spec update without
+// replacing the container's snapshot. Any stale task is cleaned up later in
+// startContainer, before NewTask consumes the repaired configuration.
+func (c *Client) persistRefreshedSpec(ctx context.Context, container containerd.Container, info containers.Container, spec *localoci.Spec, appName string) error {
+	newSpecJSON, err := marshalRefreshedDeviceSpec(info.Spec.GetValue(), spec)
+	if err != nil {
+		return fmt.Errorf("encoding refreshed spec for %q: %w", appName, err)
+	}
+	// A field mask preserves labels/snapshot metadata updated by another
+	// lifecycle operation since Info was read.
+	_, err = c.client.ContainerService().Update(ctx, containers.Container{
+		ID: container.ID(), Spec: &anypb.Any{TypeUrl: info.Spec.GetTypeUrl(), Value: newSpecJSON},
+	}, "spec")
+	return err
+}
+
+// HasGPUEntitlement implements services.GPUDeviceReporter. It reads the
+// entitlements from the container's own labels (written at create time), so it
+// answers for a container that is currently down — which is exactly when the
+// monitor asks.
+func (c *Client) HasGPUEntitlement(ctx context.Context, appName string) (bool, error) {
+	ctx = c.withNamespace(ctx)
+	container, err := c.client.LoadContainer(ctx, appName)
+	if err != nil {
+		return false, err
+	}
+	labels, err := container.Labels(ctx)
+	if err != nil {
+		return false, err
+	}
+	return hasGPUEntitlement(parseEntitlementsFromAnnotations(labels)), nil
+}
+
+// hasGPUEntitlement reports whether a gpu entitlement is present.
+func hasGPUEntitlement(ents []appconfig.Entitlement) bool {
+	for _, e := range ents {
+		if e.Type == appconfig.EntitlementGPU {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
@@ -1814,6 +2076,8 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		// ListBootContainers (e.g. a direct restart of a single container).
 		// c.mu is already held here (muHeld), so use the lock-free core.
 		c.hydrateIsolationLocked(appID, labels)
+	} else {
+		return nil, fmt.Errorf("reading container labels before start: %w", lerr)
 	}
 	// The parsed name above can be ambiguous when app IDs contain underscores;
 	// repeat the check after authoritative labels resolve the actual app ID.
@@ -1855,6 +2119,12 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	// skips the recovery hooks (NewTask will report an invalid stored spec).
 	storedSpec, storedSpecErr := container.Spec(ctx)
 	if storedSpecErr == nil {
+		// Managed virtual robot VMs may use legacy netfilter kernels. Prepare their
+		// fixed firewall modules on the host before the confined bootstrap;
+		// this path also runs after VM reboot and never holds c.mu.
+		if err := prepareGo2KernelModulesForStart(ctx, containerLabels, storedSpec); err != nil {
+			return nil, fmt.Errorf("preparing managed robot kernel support: %w", err)
+		}
 		c.recreateHostResolvConfForStart(storedSpec.Mounts)
 		c.recreateMeshResolvConfForStart(storedSpec.Mounts)
 
@@ -1880,6 +2150,31 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	} else {
 		c.logger.Warn("could not load container spec to recreate managed start resources",
 			zap.String("app_name", appName), zap.Error(storedSpecErr))
+	}
+
+	// Same class of problem as the resolv.conf hook above, for device numbers:
+	// the spec pins the major/minor pairs the host had when the container was
+	// created, and several of the majors an accelerator depends on — Jetson's
+	// nvgpu and nvidia-uvm nodes, AMD's /dev/kfd — are allocated dynamically at
+	// module load, so they are stable for a registration rather than for the life of a
+	// container definition. Re-resolve them here, before NewTask consumes the
+	// spec, so a container whose numbers have gone stale is repaired by an
+	// ordinary restart instead of needing a reboot or a redeploy.
+	//
+	// Which pins are repaired is decided by the spec itself (every site that
+	// writes an exact pair records the path it came from), so this covers both
+	// the GPU's own device entries and the bind-mounted, cgroup-only pins that
+	// AMD compute, i2c and serial use. Which containers are refreshed is still
+	// gated on the gpu entitlement here.
+	if devErr := c.refreshGPUDeviceNumbersForStart(ctx, container, appName, containerLabels); devErr != nil {
+		// Preflight: the app declared hardware this host no longer has. Starting
+		// anyway produces a container that runs, fails inside the vendor runtime,
+		// and crash-loops with an exit code that names nothing — the failure mode
+		// this refuses to create. The monitor retries on its usual backoff, so a
+		// device that comes back (a driver finishing its load, a re-probe) still
+		// recovers with nobody involved.
+		c.recordStartFailure(ctx, appName, devErr)
+		return nil, devErr
 	}
 
 	// Resolve network policy before NewTask. A sandbox is reusable only when
@@ -4013,6 +4308,45 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 	return imgName, nil
 }
 
+// releaseSocketsAfterDelete gives back the per-app socket ownership held by the
+// containers DeleteContainer just removed.
+//
+// wholeApp means the delete addressed every container of the app, so the whole
+// socket goes: ReleaseApp drops all owners at once and removes the directory.
+//
+// When it does NOT, one service of a multi-service app was deleted by name and
+// the app's other services still hold the socket. Releasing only on wholeApp
+// left that service registered as an owner forever, which matters because the
+// socket's owner set is what an app's allowlist union is computed from: the
+// union stayed as wide as the deleted service made it until the agent
+// restarted. Release names the departing service so the owner set narrows
+// immediately, and the socket survives for the services that remain.
+//
+// Nothing is released when a delete partially failed: a container that is still
+// there is still an owner.
+func (c *Client) releaseSocketsAfterDelete(appID string, deletedServices []string, wholeApp, allDeleted bool) {
+	if !allDeleted {
+		return
+	}
+	if wholeApp {
+		if c.systemAPISocketProvider != nil {
+			c.systemAPISocketProvider.ReleaseApp(appID)
+		}
+		if c.dataSocketProvider != nil {
+			c.dataSocketProvider.ReleaseApp(appID)
+		}
+		return
+	}
+	for _, serviceName := range deletedServices {
+		if c.systemAPISocketProvider != nil {
+			c.systemAPISocketProvider.Release(appID, serviceName)
+		}
+		if c.dataSocketProvider != nil {
+			c.dataSocketProvider.Release(appID, serviceName)
+		}
+	}
+}
+
 // DeleteContainer deletes all containers belonging to appID. For multi-service
 // apps all service containers are removed. When deleteImage is true, each
 // distinct image is deleted once (services sharing an image are handled safely).
@@ -4056,7 +4390,15 @@ func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage b
 
 	seen := make(map[string]bool)
 	var errs []error
+	var deletedServices []string
 	for _, ctr := range ctrs {
+		// Read the service label before the container is gone: it is the only
+		// record of which socket owner this container was, and releaseSockets
+		// below needs it.
+		serviceName := ""
+		if labels, labelErr := ctr.Labels(ctx); labelErr == nil {
+			serviceName = labels[labelKeyServiceName]
+		}
 		imgName, delErr := c.deleteOne(ctx, ctr, deleteImage)
 		if delErr != nil {
 			c.logger.Error("Failed to delete service container",
@@ -4065,6 +4407,7 @@ func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage b
 			errs = append(errs, delErr)
 			continue
 		}
+		deletedServices = append(deletedServices, serviceName)
 		if imgName != "" && !seen[imgName] {
 			seen[imgName] = true
 			imgSvc := c.client.ImageService()
@@ -4075,10 +4418,7 @@ func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage b
 			}
 		}
 	}
-	// The system-API socket is per app: only release it once the app is gone.
-	if len(errs) == 0 && wholeApp && c.systemAPISocketProvider != nil {
-		c.systemAPISocketProvider.ReleaseApp(appID)
-	}
+	c.releaseSocketsAfterDelete(appID, deletedServices, wholeApp, len(errs) == 0)
 
 	// Recompute camera-loopback nodes/consumers from truth now that some or
 	// all of this app's containers are gone (unconditional: even a partial
@@ -4672,4 +5012,18 @@ func (c *Client) requireDBusProxy(cfg *appconfig.AppConfig, containerName string
 		return fmt.Errorf("cannot start container %q: the bluetooth entitlement requires xdg-dbus-proxy to filter D-Bus access, which is not available on this device", containerName)
 	}
 	return nil
+}
+
+func ensureDataSockets(provider AppDataSocketProvider, appID, service string, entitlements []appconfig.Entitlement) (string, error) {
+	streams := appconfig.RecordingStreams(entitlements)
+	if len(streams) == 0 {
+		return provider.Ensure(appID, service)
+	}
+	p, ok := provider.(interface {
+		EnsureStreams(string, string, map[string]appconfig.RecordingStream) (string, error)
+	})
+	if !ok {
+		return "", fmt.Errorf("agent does not support recording streams")
+	}
+	return p.EnsureStreams(appID, service, streams)
 }

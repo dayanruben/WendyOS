@@ -378,7 +378,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 
 	var progressErr error
 	if prog != nil {
-		final, runErr := prog.Run()
+		final, runErr := runBuildProgressProgram(prog)
 		if runErr != nil {
 			cancelBuild()
 			progressErr = fmt.Errorf("compose build progress TUI: %w", runErr)
@@ -1251,6 +1251,14 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		// Compose supplies service values; the companion can override those,
 		// and global CLI values are applied last to every service.
 		serviceEnvs[name] = mergeEnvEntries(expandServiceEnv(companion, nil), composeEnv(svc), expandServiceEnv(nil, serviceConfig), opts.env)
+	}
+	var appIDs []string
+	for _, cfg := range svcCfgs {
+		appIDs = append(appIDs, cfg.AppID)
+	}
+	sort.Strings(appIDs)
+	if err := registerCloudApps(ctx, conn, appIDs, opts.skipCloudRegistration); err != nil {
+		return err
 	}
 	svcLifecycleCfgs := composeServiceLifecycleConfigs(svcCfgs, companion)
 	portConfigs := []*appconfig.AppConfig{companion}

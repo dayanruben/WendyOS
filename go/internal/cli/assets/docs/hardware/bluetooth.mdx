@@ -15,9 +15,17 @@ wendy project entitlements add bluetooth
 
 If your app needs a specific Bluetooth mode, use the detailed entitlement options:
 
+`wendy project entitlements add` takes no `--mode` flag — it prompts for the
+mode interactively:
+
 ```bash
-wendy project entitlements add bluetooth --mode kernel
-wendy project entitlements add bluetooth --mode bluez
+wendy project entitlements add bluetooth
+```
+
+You can also set it directly in `wendy.json`:
+
+```json
+{ "entitlements": [{ "type": "bluetooth", "mode": "kernel" }] }
 ```
 
 Use `kernel` for low-level HCI socket access. Use `bluez` for standard Linux Bluetooth workflows through BlueZ.

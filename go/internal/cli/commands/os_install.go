@@ -214,6 +214,18 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 	}
 	defer stream.Close()
 
+	if stream.uncompressedSize == 0 && stream.sourcePath != "" {
+		if err := measureImageWithProgress(stream); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			fmt.Printf("Could not determine image size: %v\n", err)
+		}
+	}
+	if err := checkImageFitsDrive(stream.uncompressedSize, *targetDrive); err != nil {
+		return err
+	}
+
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	fmt.Println(elevationHint())
 	if err := writeImageToDisk(stream, stream.uncompressedSize, *targetDrive, nil); err != nil {
@@ -234,12 +246,36 @@ type pickerDevice struct {
 	Manifest   *deviceManifest // cached manifest for Linux devices
 }
 
-// installedFromFlashBundle reports whether a device type's manifest image is a
-// flash bundle rather than a writable disk image. Such a device must not reach
-// the generic download or tour flows, which would treat the bundle as an image
-// and could write it to a disk. (Thor's generic path is a real .img.zip.)
-func installedFromFlashBundle(deviceType string) bool {
-	return deviceType == dragonwingDeviceType
+// installedFromFlashBundle reports whether a device's manifest image is a flash
+// bundle rather than a writable disk image. Such a device must not reach the
+// generic download or tour flows, which would treat the bundle as an image and
+// could write it to a disk. (Thor's generic path is a real .img.zip.)
+//
+// The device-type prefix is a floor, not a fallback, so the manifest can only
+// widen the set: a new EDL board is excluded without a code change here.
+func installedFromFlashBundle(dev deviceInfo) bool {
+	if isFlashBundleDeviceType(dev.Key) {
+		return true
+	}
+	if dev.Manifest == nil {
+		return false
+	}
+	for _, v := range []string{dev.LatestVersion, dev.NightlyVersion} {
+		if v == "" {
+			continue
+		}
+		if ver, ok := dev.Manifest.Versions[v]; ok {
+			return !supportedInstallMode(ver.InstallMode)
+		}
+	}
+	return false
+}
+
+// isFlashBundleDeviceType reports whether a device type is flashed from a bundle
+// whatever its manifest says. The publisher does not yet write install_mode for
+// the EDL boards it already ships, so the device type has to carry the rule.
+func isFlashBundleDeviceType(deviceType string) bool {
+	return strings.HasPrefix(deviceType, dragonwingDeviceTypePrefix)
 }
 
 // pickLinuxDevice fetches available Linux devices from the manifest and presents
@@ -256,7 +292,7 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	deviceMap := make(map[string]deviceInfo)
 
 	for _, dev := range devices {
-		if dev.LatestVersion == "" || installedFromFlashBundle(dev.Key) {
+		if dev.LatestVersion == "" || installedFromFlashBundle(dev) {
 			continue
 		}
 		deviceMap[dev.Key] = dev
@@ -336,11 +372,11 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	}
 
 	// The Dragonwing flashes over EDL from a qcomflash bundle, not to a drive.
-	if flagDeviceType == dragonwingDeviceType {
-		if err := checkDragonwingFlags(rootfsOnly, flagDrive, noBmap, yesOverwriteInternal, storageOverride); err != nil {
+	if board, ok := dragonwingBoardFor(flagDeviceType); ok {
+		if err := checkDragonwingFlags(board, rootfsOnly, flagDrive, noBmap, yesOverwriteInternal, storageOverride); err != nil {
 			return err
 		}
-		return installDragonwing(ctx, flagVersion, nightly, force, prNumber, wifi, deviceName, preOpts)
+		return installDragonwing(ctx, board, flagVersion, nightly, force, prNumber, wifi, deviceName, preOpts)
 	}
 	fmt.Println("Fetching available devices...")
 
@@ -482,7 +518,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		}
 
 		fmt.Println()
-		selected, err = pickFromItems("Select a device", items)
+		selected, err = pickInstallDevice(items)
 		if err != nil {
 			return err
 		}
@@ -515,11 +551,17 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 
 	// Same for the Dragonwing: the picker reaches here with the flag empty, so
 	// route it away from the disk-image flow that would dd the bundle onto a drive.
-	if selected == dragonwingDeviceType {
-		if err := checkDragonwingFlags(rootfsOnly, flagDrive, noBmap, yesOverwriteInternal, storageOverride); err != nil {
+	if board, ok := dragonwingBoardFor(selected); ok {
+		if err := checkDragonwingFlags(board, rootfsOnly, flagDrive, noBmap, yesOverwriteInternal, storageOverride); err != nil {
 			return err
 		}
-		return installDragonwing(ctx, flagVersion, nightly, force, prNumber, wifi, deviceName, preOpts)
+		return installDragonwing(ctx, board, flagVersion, nightly, force, prNumber, wifi, deviceName, preOpts)
+	}
+	// A flash-bundle board with no registry entry has no install path here, and
+	// falling through would write its bundle to a drive. A version that declares
+	// the same through install_mode is refused by checkInstallMode below.
+	if isFlashBundleDeviceType(selected) {
+		return fmt.Errorf("%s installs from a flash bundle this version of wendy cannot write; update wendy", selected)
 	}
 
 	if selected == linuxDesktopValue {
@@ -546,6 +588,9 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	ver, ok := device.Manifest.Versions[selectedVersion]
 	if !ok {
 		return fmt.Errorf("version %q not found for %s", selectedVersion, device.Name)
+	}
+	if err := checkInstallMode(selectedVersion, ver.InstallMode); err != nil {
+		return err
 	}
 	if rootfsOnly && !isT234RecoveryDevice(selected) {
 		return fmt.Errorf("--rootfs-only is supported only for Jetson Orin recovery targets")
@@ -798,23 +843,6 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 	}
 
-	provCreds, err := resolveWiFiCredentialsList(wifi)
-	if err != nil {
-		return err
-	}
-
-	provDeviceName, err := resolveDeviceName(deviceName)
-	if err != nil {
-		return err
-	}
-
-	// Resolve pre-enrollment before provisioning — the config partition is mounted
-	// and unmounted inside provisionConfigWithRetry below.
-	provisioningJSON, err := resolveProvisioningJSON(ctx, preOpts, provDeviceName)
-	if err != nil {
-		return err
-	}
-
 	// Step 5: Resolve image metadata for the target storage. A USB-attached
 	// drive is ambiguous (SD card in a reader vs NVMe SSD in an enclosure), so
 	// the variant is chosen from what this manifest version publishes — see
@@ -850,6 +878,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
 	var imgInfo *imageInfo
+	var err error
 	if rootfsOnly && ver.InstallMode == "recovery" {
 		imgInfo, err = getRootfsOnlyImageInfo(device.Manifest, selectedVersion, storage)
 	} else {
@@ -859,12 +888,34 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		return fmt.Errorf("getting image info: %w", err)
 	}
 
+	// Refuse a too-small drive before the prompts, pre-enrollment and download.
+	if err := preflightImageFits(deviceKey, selectedVersion, storage, imgInfo, targetDrive, noBmap); err != nil {
+		return err
+	}
+
+	provCreds, err := resolveWiFiCredentialsList(wifi)
+	if err != nil {
+		return err
+	}
+
+	provDeviceName, err := resolveDeviceName(deviceName)
+	if err != nil {
+		return err
+	}
+
+	// Resolve pre-enrollment before provisioning — the config partition is mounted
+	// and unmounted inside provisionConfigWithRetry below.
+	provisioningJSON, err := resolveProvisioningJSON(ctx, preOpts, provDeviceName)
+	if err != nil {
+		return err
+	}
+
 	// Step 5a: Prefer the seekable-zstd fast path. When the manifest advertises a
 	// .zst for this storage plus a usable bmap (and --no-bmap wasn't passed), we
 	// download only the .zst + bmap and write mapped ranges, skipping holes —
 	// and crucially we do NOT download the full .zip image at all.
 	var seekableZst, seekableBmap string
-	var seekableTotal int64
+	var seekableTotal, imageSize int64
 	if !noBmap && imgInfo.ZstURL != "" && imgInfo.BmapURL != "" {
 		zstPath, zerr := resolveSeekableZst(deviceKey, selectedVersion, storage, imgInfo.ZstURL)
 		bmapCandidate, berr := osCachedBmapPath(deviceKey, selectedVersion, storage)
@@ -880,14 +931,15 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
 			} else {
 				seekableZst, seekableBmap, seekableTotal = zstPath, bmapCandidate, mappedBytes(parsed)
+				imageSize = parsed.ImageSize
 			}
 		}
 	}
 
 	// Step 5b: Fallback path — resolve the .zip/.img stream only when NOT using
 	// the seekable path (so the seekable path never downloads the .zip). For
-	// compressed images, measure the size (skipped when a bmap is present, since
-	// the bmap's ImageSize is the exact total) and prepare the legacy block map.
+	// compressed images, prepare the legacy block map and measure the size when
+	// no bmap is used (a usable bmap's ImageSize is the exact total).
 	var stream *imageStream
 	var bmapPath string
 	if seekableZst == "" {
@@ -896,15 +948,6 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			return fmt.Errorf("opening OS image: %w", err)
 		}
 		defer stream.Close()
-
-		if stream.uncompressedSize == 0 && stream.sourcePath != "" && imgInfo.BmapURL == "" {
-			if err := measureImageWithProgress(stream); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return err
-				}
-				fmt.Printf("Could not determine image size: %v\n", err)
-			}
-		}
 
 		if !noBmap && imgInfo.BmapURL != "" {
 			candidate, derr := osCachedBmapPath(deviceKey, selectedVersion, storage)
@@ -918,8 +961,27 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 				fmt.Printf("Note: block map is for a %d-byte image but this image is %d bytes; flashing the full image.\n", parsed.ImageSize, stream.uncompressedSize)
 			} else {
 				bmapPath = candidate
+				imageSize = parsed.ImageSize
 			}
 		}
+
+		// Without a usable bmap the full image is written, so its size must be known.
+		if bmapPath == "" && stream.uncompressedSize == 0 && stream.sourcePath != "" {
+			if err := measureImageWithProgress(stream); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
+				fmt.Printf("Could not determine image size: %v\n", err)
+			}
+		}
+		if stream.uncompressedSize > 0 {
+			imageSize = stream.uncompressedSize
+		}
+	}
+
+	// Step 5c: Refuse a drive too small for the image before anything is written.
+	if err := checkImageFitsDrive(imageSize, targetDrive); err != nil {
+		return err
 	}
 
 	// Step 6: Write image to drive with progress bar.
@@ -1036,6 +1098,9 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			return primary
 		}
 		defer fallbackCloser.Close()
+		if err := checkImageFitsDrive(fallbackSize, targetDrive); err != nil {
+			return fmt.Errorf("%w; full-image fallback skipped: %v", primary, err)
+		}
 		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
 		fp := tui.NewProgressProgram(fallbackProg)
 		go func() {
@@ -1508,6 +1573,22 @@ func manifestStorage(v deviceVersion, st StorageType, mediaFixed bool, override 
 	default:
 		return "sd"
 	}
+}
+
+// supportedInstallMode reports whether a version's artifact is one this build
+// can write: an unknown mode means it is not a writable disk image.
+func supportedInstallMode(mode string) bool {
+	return mode == "" || mode == "recovery"
+}
+
+// checkInstallMode rejects a version this build cannot install. It runs before
+// anything is elevated, confirmed or enrolled, so nothing is left behind.
+func checkInstallMode(version, mode string) error {
+	if supportedInstallMode(mode) {
+		return nil
+	}
+	return fmt.Errorf("version %s installs in %q mode, which this version of wendy cannot perform; update wendy",
+		version, mode)
 }
 
 // storageChoiceAmbiguous reports whether the image variant for a USB target
@@ -2009,6 +2090,9 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 			} else if isInteractiveTerminal() {
 				pw, perr := tui.PromptPassword(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
 				if perr != nil {
+					if errors.Is(perr, tui.ErrCancelled) {
+						return nil, ErrUserCancelled
+					}
 					return nil, fmt.Errorf("reading WiFi password: %w", perr)
 				}
 				c.Password = pw
@@ -2025,6 +2109,9 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 	// Interactive path: Y/N → loop until the user declines another network.
 	enable, err := tui.ConfirmDefaultYes("Set up WiFi on first boot?")
 	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return nil, ErrUserCancelled
+		}
 		return nil, err
 	}
 	if !enable {
@@ -2043,6 +2130,9 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 
 		more, err := tui.Confirm("Add another WiFi network?")
 		if err != nil {
+			if errors.Is(err, tui.ErrCancelled) {
+				return nil, ErrUserCancelled
+			}
 			return nil, err
 		}
 		if !more {
@@ -2143,53 +2233,25 @@ type wifiScanSelection struct {
 	ScanErr     error  // scan failure recorded while the picker was open
 }
 
-// selectWifiNetworkStreaming shows the WiFi picker immediately and streams
-// the scan results in: the CoreWLAN/nmcli/netsh scan can take several
-// seconds, and a visible "Scanning..." list reads better than blocking
-// before any UI appears.
+// selectWifiNetworkStreaming shows cached results while the first scan runs,
+// then refreshes the list until the user selects a network or exits.
 func selectWifiNetworkStreaming() (wifiScanSelection, error) {
-	var sel wifiScanSelection
-
-	picker := tui.NewPickerWithTitleAndColumns("Select WiFi network (or esc to type manually)", wifiPickerColumns())
-	picker.Filterable = true
-	p := tea.NewProgram(picker)
-
-	// The user can quit the picker before the scan goroutine finishes, so
-	// every access to sel is mutex-guarded.
-	var mu sync.Mutex
-	go func() {
-		defer p.Send(tui.PickerDoneMsg{})
-		// Stream the host scan: cached results paint the picker instantly, then
-		// the fresh rescan fills it in — so SSIDs trickle in rather than the
-		// picker sitting on "Scanning..." until the whole scan completes
-		// (matching the device-side picker in pickWifiNetwork).
-		hadNetworks := false
-		err := streamLocalWifiScan(func(batch []localWifiNetwork) {
-			if len(batch) > 0 {
-				hadNetworks = true
-			}
-			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(batch)})
-		})
-		mu.Lock()
-		sel.ScanErr = err
-		sel.HadNetworks = hadNetworks
-		mu.Unlock()
-	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := tea.NewProgram(newLocalWifiPickerModel(ctx))
 	fmt.Println()
 	finalModel, runErr := p.Run()
+	if errors.Is(runErr, tea.ErrInterrupted) {
+		return wifiScanSelection{}, ErrUserCancelled
+	}
 	if runErr != nil {
 		return wifiScanSelection{}, fmt.Errorf("scanning WiFi networks: %w", runErr)
 	}
-	pm, ok := finalModel.(tui.PickerModel)
+	pm, ok := finalModel.(localWifiPickerModel)
 	if !ok {
 		return wifiScanSelection{}, fmt.Errorf("scanning WiFi networks: unexpected picker model %T", finalModel)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if picked := pm.Selected(); picked != nil {
-		sel.SSID, _ = picked.Value.(string)
-	}
-	return sel, nil
+	return pm.result()
 }
 
 // promptAddOneCredential runs the local scan + picker + password prompt to
@@ -2197,8 +2259,12 @@ func selectWifiNetworkStreaming() (wifiScanSelection, error) {
 // already collected (used to suggest a descending priority). Returns
 // added=false (with nil error) when the user chooses to skip WiFi setup
 // after a failed or empty scan (WDY-1474).
-func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
-	var c wendyconf.WifiCredential
+func promptAddOneCredential(index int) (c wendyconf.WifiCredential, added bool, err error) {
+	defer func() {
+		if errors.Is(err, tui.ErrCancelled) {
+			err = ErrUserCancelled
+		}
+	}()
 
 	sel, err := selectWifiNetworkFromScan()
 	if err != nil {
@@ -2330,8 +2396,10 @@ func resolveDeviceName(flagName string) (string, error) {
 	return strings.TrimSpace(name), nil
 }
 
-// resolveProvisioningJSON runs pre-enrollment per preOpts and returns the
-// marshaled provisioning.json, or nil when enrollment is skipped or not available.
+// resolveProvisioningJSON runs EAB pre-enrollment per preOpts and returns the
+// marshaled acme-enrollment.json, or nil when enrollment is skipped or not
+// available. Full-OS images (disk/Orin/Thor) bake this; the ESP32 path uses
+// resolvePreEnrollment directly.
 func resolveProvisioningJSON(ctx context.Context, preOpts preEnrollOptions, deviceName string) ([]byte, error) {
 	if preOpts.mode == preEnrollSkip {
 		return nil, nil
@@ -2343,7 +2411,7 @@ func resolveProvisioningJSON(ctx context.Context, preOpts preEnrollOptions, devi
 		}
 		cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
 	}
-	prov, err := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), deviceName)
+	prov, err := resolveACMEPreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), deviceName)
 	if err != nil || prov == nil {
 		return nil, err
 	}
@@ -2376,6 +2444,35 @@ func confirmOverwriteInternalDrive(d drive, force bool, yesOverwriteInternal boo
 		return fmt.Errorf("internal-drive overwrite cancelled (typed value did not match %s)", d.DevicePath)
 	}
 	return nil
+}
+
+// checkImageFitsDrive refuses a write the drive cannot hold: the image's
+// partition table spans its full size, so a truncated copy never boots.
+// An unknown size on either side skips the check.
+func checkImageFitsDrive(imageSize int64, d drive) error {
+	if imageSize <= 0 || d.SizeBytes <= 0 || imageSize <= d.SizeBytes {
+		return nil
+	}
+	return fmt.Errorf("%s (%s) is too small for this image: it holds %s but the image needs %s; use a larger SD card or drive",
+		d.Name, d.DevicePath, formatBytes(d.SizeBytes), formatBytes(imageSize))
+}
+
+// preflightImageFits checks the drive against the published bmap's image size,
+// which is known before the image is downloaded. Any fetch or parse failure is
+// ignored; the check before the write still applies.
+func preflightImageFits(deviceKey, version, storage string, img *imageInfo, d drive, noBmap bool) error {
+	if noBmap || img.BmapURL == "" || d.SizeBytes <= 0 {
+		return nil
+	}
+	path, err := osCachedBmapPath(deviceKey, version, storage)
+	if err != nil || downloadBmap(img.BmapURL, path) != nil {
+		return nil
+	}
+	parsed, err := parseBmap(readFileOrNil(path))
+	if err != nil {
+		return nil
+	}
+	return checkImageFitsDrive(parsed.ImageSize, d)
 }
 
 // provisionConfigPartitionFn is the provisioning entry point used by

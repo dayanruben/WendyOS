@@ -128,6 +128,27 @@ func TestAuthStatusJSONEmitsJSON(t *testing.T) {
 	}
 }
 
+// The context name and current marker surface in the JSON so scripts can see
+// which context is active.
+func TestAuthStatusJSONIncludesContext(t *testing.T) {
+	seedConfig(t, statusConfig(t, time.Now().Add(365*24*time.Hour)))
+
+	out := runAuthStatus(t, true)
+
+	var got struct {
+		Sessions []struct {
+			Context string `json:"context"`
+			Current bool   `json:"current"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput:\n%s", err, out)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].Context != "default" || !got.Sessions[0].Current {
+		t.Fatalf("want context=default current=true, got %+v", got.Sessions)
+	}
+}
+
 // The logged-out path printed a human warning to stdout, which also broke jq.
 func TestAuthStatusJSONWhenLoggedOut(t *testing.T) {
 	seedConfig(t, &config.Config{})

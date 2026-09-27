@@ -21,7 +21,7 @@ func newTestDiscoverTabsModel(authOrg int, defaultOrg int32) discoverTabsModel {
 func TestDiscoverTabsShowsLocalAndCloud(t *testing.T) {
 	m := newTestDiscoverTabsModel(0, 0)
 	view := m.View()
-	for _, want := range []string{"Local", "Cloud", "tab switch", "Scanning for WendyOS devices"} {
+	for _, want := range []string{"Nearby", "Cloud", "tab switch", "Scanning for WendyOS devices"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("local discover view does not contain %q: %q", want, view)
 		}
@@ -77,7 +77,7 @@ func TestDiscoverTabsStartsCloudLazilyAndShowsDefaultOrg(t *testing.T) {
 	}
 	updated, _ := m.Update(discoverTabsOrgMsg{name: "Robotics"})
 	m = updated.(discoverTabsModel)
-	for _, want := range []string{"Organization: Robotics (org 7)", "default", "o switch"} {
+	for _, want := range []string{"Organization: Robotics", "default", "o switch"} {
 		if !strings.Contains(m.View(), want) {
 			t.Fatalf("cloud discover view does not contain %q: %q", want, m.View())
 		}
@@ -158,6 +158,26 @@ func TestCopySimulatorAddressExplainsWhatItCannotCopy(t *testing.T) {
 }
 
 func TestDiscoverOpensOnTheRequestedTab(t *testing.T) {
+	t.Run("cloud", func(t *testing.T) {
+		ctx := context.Background()
+		auth := discoveryV2Auth(t, 2, false)
+		m := newDiscoverTabsModel(ctx, newDiscoverModel(ctx, defaultOpts(), true), auth, 0, devicePickerCloudTab)
+		if m.active != devicePickerCloudTab || !m.cloudStarted {
+			t.Fatal("reopening the Cloud tab must start cloud discovery")
+		}
+		initial := m.Init()().(tea.BatchMsg)
+		cloud := initial[1]().(tea.BatchMsg)
+		updated, _ := m.Update(cloud[0]())
+		m = updated.(discoverTabsModel)
+		if m.cloud.err != nil || len(m.cloud.devices) != 2 || !strings.Contains(m.View(), "online-device") {
+			t.Fatalf("reopened Cloud tab did not load devices: %s", m.View())
+		}
+		m, _ = discoverTabTo(t, m, devicePickerLocalTab)
+		_, cmd := discoverTabTo(t, m, devicePickerCloudTab)
+		if cmd != nil {
+			t.Fatal("revisiting Cloud started discovery twice")
+		}
+	})
 	// Creating a VM leaves and re-enters this view. Coming back on Local drops
 	// the user somewhere they did not ask to be, with no sign the create ran.
 	ctx := context.Background()

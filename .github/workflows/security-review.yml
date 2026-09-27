@@ -49,6 +49,39 @@ jobs:
         if: env.IS_DEPENDABOT != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Bootstrap pinned batched reviewer when absent from base
+        if: env.IS_DEPENDABOT != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEWER_REVISION: 07d673b352356476ef113f7434db35881554fdac
+        run: |
+          set -euo pipefail
+          if [ -f .github/scripts/review_diff.py ]; then
+            exit 0
+          fi
+          # The introducing PR cannot use batching from a base that predates it.
+          # Fetch only the reviewed automation from this immutable revision,
+          # never application code or scripts from the event's mutable head.
+          bootstrap_dir="$(mktemp -d)"
+          for filename in security_review.py security_review_test.py review_diff.py review_diff_test.py; do
+            gh api --method GET \
+              "repos/wendylabsinc/WendyOS/contents/.github/scripts/$filename" \
+              -f ref="$REVIEWER_REVISION" --jq '.content' \
+              | base64 --decode > "$bootstrap_dir/$filename"
+            test -s "$bootstrap_dir/$filename"
+          done
+          cp "$bootstrap_dir/"*.py .github/scripts/
+
+      - name: Fetch immutable review history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: review-history
+          fetch-depth: 0
+          sparse-checkout: .github/scripts
           persist-credentials: false
 
       - name: Fetch PR metadata and diff
@@ -56,6 +89,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           metadata_tmp="$(mktemp)"
@@ -69,13 +104,13 @@ jobs:
             echo "::error::Could not fetch PR metadata; no security review was performed."
             exit 1
           fi
-          if ! gh api \
-            -H "Accept: application/vnd.github.diff" \
-            "repos/$REPO/pulls/$PR_NUMBER" > "$diff_tmp"
-          then
-            echo "::error::Could not fetch the PR diff; no security review was performed."
-            exit 1
-          fi
+          jq -e --arg head "$EXPECTED_HEAD_SHA" --arg base "$EXPECTED_BASE_SHA" \
+            '.head.sha == $head and .base.sha == $base' "$metadata_tmp" > /dev/null
+          # GitHub's diff endpoint has a 300-file limit. Use the exact reviewed
+          # commits without checking out or executing any PR application code.
+          diff_base_sha="$(git -C review-history merge-base "$EXPECTED_BASE_SHA" "$EXPECTED_HEAD_SHA")"
+          git -C review-history diff --no-ext-diff --no-textconv --find-renames \
+            "$diff_base_sha" "$EXPECTED_HEAD_SHA" -- > "$diff_tmp"
 
           jq '{title, body, number, additions, deletions, changed_files, user: {login: .user.login, id: .user.id, type: .user.type}, head: {ref: .head.ref, repo: .head.repo.full_name, sha: .head.sha}}' \
             "$metadata_tmp" > pr_meta.json
@@ -316,7 +351,9 @@ jobs:
 
       - name: Test security review automation
         if: env.IS_DEPENDABOT != 'true'
-        run: python3 .github/scripts/security_review_test.py
+        run: |
+          python3 .github/scripts/review_diff_test.py
+          python3 .github/scripts/security_review_test.py
 
       - name: Validate complete review input
         if: env.IS_DEPENDABOT != 'true'

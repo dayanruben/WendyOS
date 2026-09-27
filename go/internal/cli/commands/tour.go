@@ -1664,7 +1664,7 @@ func loadDevicesCmd() tea.Cmd {
 		// cannot apply, so offering one would guarantee a failure at the last
 		// step.
 		devices = slices.DeleteFunc(devices, func(d deviceInfo) bool {
-			return installedFromFlashBundle(d.Key)
+			return installedFromFlashBundle(d)
 		})
 		return tourDevicesLoadedMsg{devices: devices, err: err}
 	}
@@ -1681,7 +1681,7 @@ func scanLANDevicesCmd() tea.Cmd {
 
 func scanWifiCmd() tea.Cmd {
 	return func() tea.Msg {
-		networks, err := scanLocalWifiNetworks()
+		networks, err := scanLocalWifiNetworks(context.Background())
 		return tourWifiScanDoneMsg{networks: networks, err: err}
 	}
 }

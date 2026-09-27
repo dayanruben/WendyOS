@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -337,8 +338,8 @@ func TestNewDeviceCmd(t *testing.T) {
 	if versionCmd, _, err := cmd.Find([]string{"version"}); err != nil || !versionCmd.Hidden {
 		t.Errorf("device version should be hidden; cmd=%v err=%v", versionCmd, err)
 	}
-	if setDefaultCmd, _, err := cmd.Find([]string{"set-default"}); err != nil || setDefaultCmd.Hidden {
-		t.Errorf("device set-default should be visible; cmd=%v err=%v", setDefaultCmd, err)
+	if setDefaultCmd, _, err := cmd.Find([]string{"set-default"}); err != nil || !setDefaultCmd.Hidden {
+		t.Errorf("device set-default should be hidden; cmd=%v err=%v", setDefaultCmd, err)
 	}
 
 	buf := new(bytes.Buffer)
@@ -535,7 +536,7 @@ func TestPsAliasIsHiddenButRunnable(t *testing.T) {
 	}
 }
 
-func TestBluetoothBtAliasMirrorsVisibleCommand(t *testing.T) {
+func TestBluetoothBtAliasRemainsAccessibleWhenHidden(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		cmd  *cobra.Command
@@ -548,10 +549,10 @@ func TestBluetoothBtAliasMirrorsVisibleCommand(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Find(bt): %v", err)
 			}
-			if bluetoothCmd.Name() != "bluetooth" || bluetoothCmd.Hidden {
-				t.Fatalf("bt should resolve to visible bluetooth command; cmd=%v hidden=%v", bluetoothCmd.Name(), bluetoothCmd.Hidden)
+			if bluetoothCmd.Name() != "bluetooth" || !bluetoothCmd.Hidden {
+				t.Fatalf("bt should resolve to hidden compatibility bluetooth command; cmd=%v hidden=%v", bluetoothCmd.Name(), bluetoothCmd.Hidden)
 			}
-			if !containsString(bluetoothCmd.Aliases, "bt") {
+			if !slices.Contains(bluetoothCmd.Aliases, "bt") {
 				t.Fatalf("bluetooth aliases = %v; want bt", bluetoothCmd.Aliases)
 			}
 		})
@@ -595,15 +596,6 @@ func TestCameraWatchIsHiddenAliasForView(t *testing.T) {
 	if strings.Contains(buf.String(), "watch") {
 		t.Fatalf("camera help should not list the hidden watch alias: %s", buf.String())
 	}
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func TestNewAuthCmd(t *testing.T) {

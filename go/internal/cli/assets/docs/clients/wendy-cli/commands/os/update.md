@@ -176,6 +176,8 @@ Thor or ESP32 targets. `--pr` is mutually exclusive with `--nightly`,
 | `--pr` | — | Update to wendyos-builder PR #N (mutually exclusive with `--nightly`, `--artifact-url`, positional path; Linux disk-image devices only) |
 | `--artifact-url` | — | URL of an artifact (`.wendy`) to install directly. The CLI checks the artifact's format against the device's advertised backend before applying it; a `.wendy` URL on a device that predates the wendyos-update stack is refused with a reflash explanation. |
 | `--nightly` | false | Use nightly/pre-release builds for auto-selection |
+| `--drivers-dir` | — | Stage driver add-ons for the target kernel from local `.raw` files in this directory instead of the registry, for networks with no internet access. |
+| `--no-drivers` | false | Update even though driver add-ons will not be staged for the target kernel; skips both the staging and its confirmation. |
 
 A positional argument (a local `.wendy` file path, or a directory containing one) can be used instead of `--artifact-url`.
 

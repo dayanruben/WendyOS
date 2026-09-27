@@ -31,16 +31,16 @@ type discoverTabsModel struct {
 	windowWidth  int
 }
 
-// active selects the tab to open on. Creating a VM leaves and re-enters this
-// view, and coming back on Local would drop the user somewhere they did not ask
-// to be, with no sign the create happened.
+// active preserves the tab when returning from a prompt outside the TUI.
 func newDiscoverTabsModel(ctx context.Context, local discoverModel, auth *config.AuthConfig, defaultOrg int32, active devicePickerTab) discoverTabsModel {
 	m := discoverTabsModel{
-		local:      local,
-		sim:        newSimulatorListModel(ctx),
-		cloudAuth:  auth,
-		defaultOrg: defaultOrg,
-		active:     active,
+		local:        local,
+		sim:          newSimulatorListModel(ctx),
+		cloudAuth:    auth,
+		cloudOrg:     cachedCloudOrganizationName(auth),
+		defaultOrg:   defaultOrg,
+		active:       active,
+		cloudStarted: active == devicePickerCloudTab && auth != nil,
 	}
 	// The simulator list polls only once its tab is first shown; opening
 	// straight onto it has to start that here instead.
@@ -81,6 +81,9 @@ func tagDiscoverTabsCmd(cmd tea.Cmd, tab devicePickerTab) tea.Cmd {
 }
 
 func (m discoverTabsModel) Init() tea.Cmd {
+	if m.cloudStarted {
+		return tea.Batch(tagDiscoverTabsCmd(m.local.Init(), devicePickerLocalTab), m.startCloudCmd())
+	}
 	if m.simStarted {
 		return tea.Batch(tagDiscoverTabsCmd(m.local.Init(), devicePickerLocalTab), m.startSimulatorCmd())
 	}
@@ -104,20 +107,15 @@ func (m discoverTabsModel) startCloudCmd() tea.Cmd {
 
 func (m discoverTabsModel) loadOrgNameCmd() tea.Cmd {
 	ctx := m.cloud.ctx
-	auth := m.cloudAuth
-	orgID := cloudAuthOrgID(auth)
-	return func() tea.Msg {
-		orgs, err := listOrgsFromCloud(ctx, auth)
-		if err != nil {
-			return discoverTabsOrgMsg{}
-		}
-		for _, org := range orgs {
-			if org.GetId() == orgID {
-				return discoverTabsOrgMsg{name: org.GetName()}
-			}
-		}
-		return discoverTabsOrgMsg{}
+	// Snapshot before the batch starts: device scanning can refresh the live
+	// session concurrently with this display-only lookup.
+	var auth *config.AuthConfig
+	if m.cloudAuth != nil {
+		copy := *m.cloudAuth
+		copy.Certificates = append([]config.CertificateInfo(nil), m.cloudAuth.Certificates...)
+		auth = &copy
 	}
+	return func() tea.Msg { return discoverTabsOrgMsg{name: cloudOrganizationName(ctx, auth)} }
 }
 
 func (m discoverTabsModel) updateLocal(msg tea.Msg) (discoverTabsModel, tea.Cmd) {
@@ -173,7 +171,9 @@ func (m discoverTabsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateCloud(msg.msg)
 	case discoverTabsOrgMsg:
-		m.cloudOrg = msg.name
+		if msg.name != "" {
+			m.cloudOrg = msg.name
+		}
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.windowWidth = msg.Width
@@ -193,6 +193,14 @@ func (m discoverTabsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "tab", "shift+tab":
+			if cfg, err := config.Load(); err == nil {
+				m.local.refreshTable()
+				m.sim.picker.SetDefaultKey(cfg.DefaultDevice)
+				m.cloud.defaultDevice = cfg.DefaultDevice
+				if m.cloudAuth != nil {
+					m.cloud.refreshTable()
+				}
+			}
 			m.active = cycleTab(deviceTabOrder(), m.active, tabCycleDelta(msg.String()))
 			if m.active == devicePickerCloudTab && m.cloudAuth != nil && !m.cloudStarted {
 				m.cloudStarted = true
@@ -255,7 +263,7 @@ func (m discoverTabsModel) View() string {
 		body.WriteString("Discover cloud devices\n")
 		body.WriteString(devicePickerOrgStyle.Render("  ☐  Wendy Cloud login   Not logged in"))
 		body.WriteString("\n")
-		body.WriteString(devicePickerOrgStyle.Render("  enter log in, tab local, q quit"))
+		body.WriteString(devicePickerOrgStyle.Render("  enter log in, tab nearby, q quit"))
 		body.WriteString("\n")
 		return body.String()
 	}
