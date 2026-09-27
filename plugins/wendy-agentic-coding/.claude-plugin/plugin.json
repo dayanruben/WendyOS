@@ -24,9 +24,6 @@
   ],
   "skills": "./skills/",
   "commands": "./commands/",
-  "agents": [
-    "./agents/wendy-runtime-debugger.md"
-  ],
   "hooks": {
     "Setup": [
       {

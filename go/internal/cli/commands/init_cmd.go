@@ -1967,56 +1967,24 @@ func offerAIAssistant(appID, target, language string, entitlements []appconfig.E
 	return runAIAssistantChoice(choice, appID, target, language, entitlements, false, true)
 }
 
-const wendySkillsMarketplace = "wendylabsinc/claude-skills"
-const wendySkillsPluginName = "wendy@claude-skills"
-
-// installWendySkills checks if the Wendy skills plugin is installed and offers
-// to install it if missing. This gives Claude expert knowledge about Wendy
-// development.
+// installWendySkills installs the same end-user group as `wendy mcp setup`.
+// It does not depend on a marketplace or download engineering skills.
 func installWendySkills(autoInstall bool) error {
-	// Check if the plugin is already installed by looking at the plugin list output.
-	out, err := exec.Command("claude", "plugin", "list").Output()
+	home, err := os.UserHomeDir()
 	if err != nil {
+		return err
+	}
+	target := filepath.Join(home, ".claude", "skills")
+	if wendySkillsCurrent(target) {
 		return nil
 	}
-
-	if strings.Contains(string(out), "wendy@claude-skills") {
+	if !autoInstall && !confirmDefaultNoFn("Install Wendy end-user skills for Claude Code?") {
 		return nil
 	}
-
-	cliLogln("\nThe Wendy skills plugin gives Claude expert knowledge about")
-	cliLogln("building and deploying apps to WendyOS and Wendy Lite devices.")
-	fmt.Println()
-
-	if !autoInstall {
-		if !confirmDefaultNoFn("Install Wendy skills for Claude Code?") {
-			return nil
-		}
-
-		fmt.Println()
+	if err := installWendySkillDirs(target); err != nil {
+		return fmt.Errorf("installing Wendy end-user skills: %w", err)
 	}
-
-	// Add the marketplace if not already present.
-	addMarketplace := exec.Command("claude", "plugin", "marketplace", "add", wendySkillsMarketplace)
-	addMarketplace.Stdout = os.Stdout
-	addMarketplace.Stderr = os.Stderr
-	if err := addMarketplace.Run(); err != nil {
-		cliNotice("  Could not add marketplace: %v", err)
-		cliNotice("  You can install manually: claude plugin marketplace add " + wendySkillsMarketplace)
-		return nil
-	}
-
-	// Install the plugin.
-	installCmd := exec.Command("claude", "plugin", "install", wendySkillsPluginName)
-	installCmd.Stdout = os.Stdout
-	installCmd.Stderr = os.Stderr
-	if err := installCmd.Run(); err != nil {
-		cliNotice("  Could not install plugin: %v", err)
-		cliNotice("  You can install manually: claude plugin install " + wendySkillsPluginName)
-		return nil
-	}
-
-	cliSuccess("  Wendy skills installed successfully!")
+	cliSuccess("  Wendy end-user skills installed at %s", target)
 	return nil
 }
 

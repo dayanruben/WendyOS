@@ -58,9 +58,11 @@ For a host not detected by `wendy mcp setup`, configure a stdio server named `we
 Call `wendy_status` after restarting the host and inspect the actual tool list.
 The server reports its CLI version; changing the CLI on disk does not replace an
 already running MCP process. A skill mentioning a tool is not evidence that the
-connected server exposes it. Codex setup installs individual Wendy skill folders
-under `~/.agents/skills`, including their references. If both the plugin and these
-skills are installed, use one source to avoid duplicate skill selectors.
+connected server exposes it. Setup installs the same end-user skill group for
+Codex and OpenCode under `~/.agents/skills`, and Claude Code under
+`~/.claude/skills`, including references. Internal engineering skills are
+separate. If the optional plugin is also installed, choose one installation
+method to avoid duplicate skill selectors.
 
 No connected device is required for `os_install_plan` or `os_list_drives`.
 Use `wendy-device-install` for a blank board before debugging device RPCs.

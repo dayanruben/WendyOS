@@ -1,23 +1,33 @@
 ---
 name: wendy-device-debug
-description: Use when debugging live WendyOS or Wendy Lite devices, including ESP32 camera/SensorLink failures, Jetson, Raspberry Pi, USB-C host mode, containerd, GPU/audio/video entitlements, or device-specific `wendy run` issues.
+description: Diagnose an end-user's unreachable WendyOS or Wendy Lite device, failed app deployment, ESP32 camera/SensorLink failure, missing camera or GPU, or unhealthy app using CLI and MCP observations, device state, and app logs. For a never-installed board use wendy-device-install.
 ---
 
 # Wendy Device Debug Workflow
 
-Use this for live-device and cross-layer runtime bugs. Static code reading is not enough when the failure depends on device state.
+Use this for deployment and device problems in an end-user's app. Work with the
+installed CLI, live MCP tools, and app project. A Wendy source checkout is not
+required.
 
 ## Triage sequence
 
-1. Capture the exact failing command and whether it was run with installed `wendy` or source `wendy-dev`.
-2. Follow [wendy-device-ops](../wendy-device-ops/SKILL.md) for device access, selection, and inspection before tracing source code.
-3. Use those observations to separate layers:
-   - CLI behavior: command parsing, target selection, build provider, gRPC request.
-   - Agent behavior: service implementation, containerd adapter, OCI spec, logs.
-   - WendyOS behavior: image version, device type, mounts, CDI, system services.
-   - Wendy Lite behavior: reported board/target, firmware version, WASM/native app support, SensorLink manifest, app state.
-   - App behavior: Dockerfile/Containerfile, `wendy.json`, entitlements, environment, startup logs.
-4. Correlate the failure with relevant app state and bounded logs before choosing a fix.
+1. Capture the exact failing command, CLI version, MCP status and error output.
+2. Confirm the target with `device_list` or `wendy discover --json`. An empty
+   scan on new hardware routes to `wendy-device-install`.
+3. Follow [wendy-device-ops](../wendy-device-ops/SKILL.md) for device access and
+   inspection of versions, connectivity, hardware and WiFi. Keep an explicit
+   device selector throughout diagnosis. For Wendy Lite, check the reported
+   board/target, firmware version, WASM/native app support and SensorLink manifest.
+4. Validate the app's `wendy.json`. Check its Dockerfile/Containerfile,
+   dependencies, architecture, entitlements, environment and startup logs.
+5. Use `wendy-app-lifecycle` to inspect app state and logs. A successful deploy
+   or running container is not a health check. Probe the app's actual output.
+6. For robot sensor, DDS or stop behavior, follow `wendy-robot-deploy` and keep
+   physical motion stopped during diagnosis.
+
+Prefer fixes in the app container or `wendy.json`. Use documented CLI operations
+for device repair. Do not patch Wendy's agent or OS implementation as part of
+ordinary app debugging, and do not publish credentials or device-specific secrets.
 
 ## Jetson GPU checks
 
@@ -27,12 +37,20 @@ Use device info, hardware capabilities, and app logs to check:
 - The agent maps the device type to the expected Wendy platform.
 - The application handles CUDA absence gracefully and exposes enough debug state.
 
-If evidence points to GPU provisioning, inspect the image and agent code for the device's JetPack version. JetPack 6 uses `/etc/cdi/nvidia.yaml`; JetPack 5 uses the L4T CSV fallback at `/etc/nvidia-container-runtime/host-files-for-container.d/*.csv`. Keep source configuration distinct from confirmed device state.
+If evidence points to GPU provisioning, record the device's JetPack version.
+JetPack 6 uses `/etc/cdi/nvidia.yaml`; JetPack 5 uses the L4T CSV fallback at
+`/etc/nvidia-container-runtime/host-files-for-container.d/*.csv`. If CLI/MCP
+cannot confirm this state, report the missing check with the platform issue.
 
-## Repo files to inspect
+## Escalate a platform bug
 
-Use the [wendy-codebase](../wendy-codebase/SKILL.md) map to locate the CLI, agent, runtime, and app configuration code for the failing layer. Inspect WendyOS image recipes and services when evidence points to image state.
+If evidence points to the CLI, agent or OS, prepare a minimal reproduction with
+versions, board type, sanitized logs, expected behavior and observed behavior.
+Explain any documented upgrade or workaround. Leave implementation changes to
+a separate Wendy engineering task; do not require the user to clone Wendy's
+repositories to finish app setup.
 
 ## Output discipline
 
-Give the root cause by layer. Distinguish what can be fixed in the repo now from what depends on device image state or host compatibility.
+State what the evidence establishes, what remains uncertain, the app or device
+fix applied, and the verification result.

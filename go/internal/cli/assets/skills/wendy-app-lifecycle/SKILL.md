@@ -16,7 +16,7 @@ Avoid Bubble Tea pickers and dashboards unless the user explicitly wants an inte
 - `--yes` for `wendy run` when it may need to create `wendy.json` or accept prompts.
 - Explicit app names for `device apps start|stop|remove`.
 - Explicit cleanup flags for destructive commands.
-- A timeout or background process when intentionally streaming logs.
+- `device logs --no-follow --tail <N>` for a finite diagnostic sample; a timeout or background process only when intentionally following live logs.
 
 `--json` is a global flag. Prefer putting it near the root command:
 
@@ -104,22 +104,20 @@ tool, use the CLI with an explicit target or update and restart the MCP host.
 
 ## Stream logs
 
-For app logs, prefer JSON records when the next step is machine analysis:
+For a bounded, machine-readable diagnostic sample, use `--tail` with `--no-follow`:
+
+```bash
+wendy --json device logs --app <app-id> --tail 50 --no-follow --device <hostname>
+wendy --json device logs --app <app-id> --service <service-name> --level warn --tail 50 --no-follow --device <hostname>
+```
+
+Use `--level` or `--min-severity` to narrow the sample. Only omit `--no-follow` when continuous live output is needed:
 
 ```bash
 wendy --json device logs --app <app-id> --device <hostname>
-wendy --json device logs --app <app-id> --level info --device <hostname>
-wendy --json device logs --app <app-id> --service <service-name> --level warn --device <hostname>
-wendy --json device logs --app <app-id> --min-severity 9 --device <hostname>
 ```
 
-`device logs` is a stream. When an agent needs a bounded sample, run it with a timeout:
-
-```bash
-timeout 20s wendy --json device logs --app <app-id> --device <hostname>
-```
-
-On macOS where GNU `timeout` may not exist, use a shell/background pattern or the surrounding agent tool timeout instead of leaving the stream open.
+Bound intentional live streams with the surrounding tool's timeout or a background process. On macOS, GNU `timeout` may not be installed.
 
 For structured telemetry streams:
 
@@ -229,7 +227,7 @@ wendy --json device apps list --device <hostname>
 4. Stream a bounded log sample:
 
 ```bash
-timeout 20s wendy --json device logs --app <app-id> --device <hostname>
+wendy --json device logs --app <app-id> --tail 50 --no-follow --device <hostname>
 ```
 
 5. Stop or remove only when requested:

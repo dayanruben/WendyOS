@@ -89,14 +89,15 @@ wendy mcp setup
 
 Then restart or reload the target AI tool so its MCP process uses the new binary.
 
-### Plugin skills
+### End-user skills
 
-To get the latest skills and commands in Claude Code:
-```
-claude plugins update wendy-agentic-coding
-```
+`wendy mcp setup` installs the same end-user skill group for detected Codex,
+Claude Code, and OpenCode installations, including supporting references.
+Rerun it after updating the CLI. It does not install Wendy engineering skills.
 
-For Codex, reinstall from the plugin source at `https://github.com/wendylabsinc/wendy-agentic-coding`.
+If the user installed the optional `wendy-agentic-coding` plugin instead, update
+it through the assistant's plugin manager. Avoid installing both copies of the
+same skills. Do not send end-users to the internal `claude-skills` collection.
 
 ## Common follow-up
 

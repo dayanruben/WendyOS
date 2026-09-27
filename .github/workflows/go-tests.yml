@@ -9,7 +9,7 @@ on:
       - 'go.sum'
       - '.github/workflows/**'
       - '.github/scripts/**'
-      - 'plugins/wendy-agentic-coding/skills/**'
+      - 'plugins/**'
       - 'scripts/sync-agent-skills.py'
 
 concurrency:

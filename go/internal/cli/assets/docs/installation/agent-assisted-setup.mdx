@@ -3,10 +3,21 @@ title: Install a device with a coding agent
 description: Plan a WendyOS or Wendy Agent installation, flash through the CLI, and verify first boot before deploying an app.
 ---
 
-Install the [developer tools](/docs/installation/developer-machine-setup), run
+Install the [Wendy CLI](/docs/#1-install-the-wendy-cli), run
 `wendy mcp setup`, and restart your coding assistant. Call `wendy_status` and
 inspect the live tool list. A new skill or CLI download does not update an MCP
 process that is already running.
+
+Setup configures MCP and installs one Wendy end-user skill group for detected
+Codex, Claude Code, and OpenCode installations. It covers device installation,
+first-boot verification, app creation, deployment, and robot checks. Codex and
+OpenCode use `~/.agents/skills`; Claude Code uses `~/.claude/skills`. Supporting
+references are included.
+
+The same group is available as the optional `wendy-agentic-coding` plugin from
+`wendylabsinc/wendy-agentic-coding`. In Codex, it appears as `@Wendy`. Choose either
+CLI-managed skills or the plugin to avoid duplicate skill entries. Wendy's
+internal engineering skills are separate and are not installed by setup.
 
 ## Choose the installation method
 
