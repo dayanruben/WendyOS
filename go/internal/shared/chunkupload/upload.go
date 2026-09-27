@@ -40,7 +40,7 @@ const (
 	// streams against a four-core device). In the agent's build host, one
 	// process can deliver to several devices at once, and those deliveries
 	// share this same budget rather than each getting their own. A
-	// per-connection budget is deferred to PR 2.
+	// per-connection budget is deferred to a follow-up.
 	maxConcurrentStreams = 8
 )
 

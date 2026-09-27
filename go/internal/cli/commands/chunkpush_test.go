@@ -431,7 +431,7 @@ func TestPushLayerByChunksBatchesLongUploads(t *testing.T) {
 	}
 	for _, c := range fake.compressors {
 		if c != chunkupload.Gzip {
-			t.Fatalf("stream compressor = %q, want gzip until PR 2 makes it adaptive", c)
+			t.Fatalf("stream compressor = %q, want gzip: pushLayerByChunks is deliberately gzip-only", c)
 		}
 	}
 }

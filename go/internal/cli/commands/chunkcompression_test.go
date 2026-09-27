@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunkupload"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestChooseChunkUploadConfig(t *testing.T) {
@@ -57,6 +60,80 @@ func TestChooseChunkUploadConfig(t *testing.T) {
 	if gzipChunkUploadConfig.compressor != chunkupload.Gzip || gzipChunkUploadConfig.stallTimeout != 0 {
 		t.Fatalf("gzip config = %+v, want gzip with no watchdog", gzipChunkUploadConfig)
 	}
+}
+
+// TestChunkUploadConfigFor is M8: chunkUploadConfigFor is chooseChunkUploadConfig's
+// only real caller, and this covers what that function alone is responsible
+// for — deriving directLink from conn.Host, reading the version already
+// cached on conn (CacheAgentVersion) rather than issuing a fresh RPC, and
+// applying the env override — leaving chooseChunkUploadConfig's own policy
+// table to TestChooseChunkUploadConfig above.
+func TestChunkUploadConfigFor(t *testing.T) {
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { chunkStallTestDir = "" })
+
+	seeded := func(conn *grpcclient.AgentConnection, osVersion, publicKey string) *grpcclient.AgentConnection {
+		resp := &agentpb.GetAgentVersionResponse{OsVersion: strptr(osVersion)}
+		if publicKey != "" {
+			resp.PublicKey = strptr(publicKey)
+		}
+		conn.CacheAgentVersion(resp)
+		return conn
+	}
+
+	t.Run("a tunnel keeps gzip even on a link-local host", func(t *testing.T) {
+		conn := seeded(&grpcclient.AgentConnection{
+			Host:      "169.254.18.126",
+			Reconnect: func(context.Context) (*grpcclient.AgentConnection, error) { return nil, nil },
+		}, "0.19.3", "pk")
+		if cfg := chunkUploadConfigFor(context.Background(), conn); cfg.compressor != chunkupload.Gzip {
+			t.Fatalf("cfg = %+v, want gzip", cfg)
+		}
+	})
+
+	t.Run("an empty OS version keeps gzip", func(t *testing.T) {
+		conn := seeded(&grpcclient.AgentConnection{Host: "169.254.18.126"}, "", "pk")
+		if cfg := chunkUploadConfigFor(context.Background(), conn); cfg.compressor != chunkupload.Gzip {
+			t.Fatalf("cfg = %+v, want gzip", cfg)
+		}
+	})
+
+	t.Run("a routable host keeps gzip", func(t *testing.T) {
+		conn := seeded(&grpcclient.AgentConnection{Host: "192.168.1.42"}, "0.19.3", "pk")
+		if cfg := chunkUploadConfigFor(context.Background(), conn); cfg.compressor != chunkupload.Gzip {
+			t.Fatalf("cfg = %+v, want gzip", cfg)
+		}
+	})
+
+	t.Run("a link-local IPv4 host sends uncompressed", func(t *testing.T) {
+		conn := seeded(&grpcclient.AgentConnection{Host: "169.254.18.126"}, "0.19.3", "pk")
+		cfg := chunkUploadConfigFor(context.Background(), conn)
+		if cfg.compressor != "" || cfg.stallTimeout != chunkStallTimeout {
+			t.Fatalf("cfg = %+v, want uncompressed with the stall watchdog", cfg)
+		}
+	})
+
+	t.Run("a link-local IPv6 host sends uncompressed", func(t *testing.T) {
+		conn := seeded(&grpcclient.AgentConnection{Host: "fe80::1"}, "0.19.3", "pk")
+		if cfg := chunkUploadConfigFor(context.Background(), conn); cfg.compressor != "" {
+			t.Fatalf("cfg = %+v, want uncompressed", cfg)
+		}
+	})
+
+	t.Run("a keyless device gets the default stall key", func(t *testing.T) {
+		conn := seeded(&grpcclient.AgentConnection{Host: "169.254.18.126"}, "0.19.3", "")
+		if cfg := chunkUploadConfigFor(context.Background(), conn); cfg.stallKey != "default@0.19.3" {
+			t.Fatalf("stallKey = %q, want default@0.19.3", cfg.stallKey)
+		}
+	})
+
+	t.Run("the env override forces gzip even on a direct link", func(t *testing.T) {
+		t.Setenv(chunkCompressionEnv, "gzip")
+		conn := seeded(&grpcclient.AgentConnection{Host: "169.254.18.126"}, "0.19.3", "pk")
+		if cfg := chunkUploadConfigFor(context.Background(), conn); cfg.compressor != chunkupload.Gzip {
+			t.Fatalf("cfg = %+v, want gzip forced by the env override", cfg)
+		}
+	})
 }
 
 // TestChunkCompressionModeFromEnvWarnsOnceOnAnUnknownValue is M4: a typo'd
