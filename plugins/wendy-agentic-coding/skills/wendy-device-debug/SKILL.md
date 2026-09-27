@@ -1,6 +1,6 @@
 ---
 name: wendy-device-debug
-description: Use when debugging WendyOS, Jetson, Raspberry Pi, USB-C host mode, containerd, GPU/audio/video entitlements, or a `wendy run` issue that only appears on a live device.
+description: Use when debugging live WendyOS or Wendy Lite devices, including ESP32 camera/SensorLink failures, Jetson, Raspberry Pi, USB-C host mode, containerd, GPU/audio/video entitlements, or device-specific `wendy run` issues.
 ---
 
 # Wendy Device Debug Workflow
@@ -10,53 +10,28 @@ Use this for live-device and cross-layer runtime bugs. Static code reading is no
 ## Triage sequence
 
 1. Capture the exact failing command and whether it was run with installed `wendy` or source `wendy-dev`.
-2. Discover or confirm the target device with `wendy discover --json` unless the user already supplied a hostname.
-3. Separate layers:
+2. Follow [wendy-device-ops](../wendy-device-ops/SKILL.md) for device access, selection, and inspection before tracing source code.
+3. Use those observations to separate layers:
    - CLI behavior: command parsing, target selection, build provider, gRPC request.
    - Agent behavior: service implementation, containerd adapter, OCI spec, logs.
    - WendyOS behavior: image version, device type, mounts, CDI, system services.
+   - Wendy Lite behavior: reported board/target, firmware version, WASM/native app support, SensorLink manifest, app state.
    - App behavior: Dockerfile/Containerfile, `wendy.json`, entitlements, environment, startup logs.
-4. Use `wendy-device-ops` for CLI-native inspection before SSH when the agent and CLI can still answer the question.
-5. If SSH access is available from local instructions or the user, inspect the live device early. Use containerd and `nerdctl`, not Docker.
+4. Correlate the failure with relevant app state and bounded logs before choosing a fix.
 
-## Temporary root SSH
+## Jetson GPU checks
 
-For now, WendyOS devices may allow passwordless SSH as `root@<hostname>`. Treat this as break-glass diagnostic access for gathering evidence and filing issues in `wendylabsinc/wendyos`, not as the default way to mutate bare-metal settings.
+Use device info, hardware capabilities, and app logs to check:
 
-Prefer fixes in the app container, `wendy.json`, CLI flow, agent service, or image repo. If you must change device state directly, keep the change minimal, explain why CLI/container paths were insufficient, and do not publish hostnames, credentials, tokens, or device-specific secrets in reusable output.
-
-## Device facts worth checking
-
-On the device, prefer read-only checks first:
-
-```bash
-hostname
-cat /etc/wendyos/device-type 2>/dev/null || true
-cat /etc/os-release 2>/dev/null || true
-systemctl status wendy-agent --no-pager
-journalctl -u wendy-agent -n 200 --no-pager
-sudo nerdctl -n default ps -a
-sudo nerdctl -n default logs <container>
-test -f /etc/cdi/nvidia.yaml && sed -n '1,160p' /etc/cdi/nvidia.yaml
-```
-
-For Jetson GPU issues, verify all of:
-
-- `/etc/wendyos/device-type` exists and identifies a Jetson variant.
+- The reported device type identifies the expected Jetson variant.
 - The agent maps the device type to the expected Wendy platform.
-- GPU provisioning is in place: on JetPack 6 this means `/etc/cdi/nvidia.yaml` exists; on JetPack 5 (L4T r35, where nvidia-ctk predates CDI) the L4T CSV fallback (`/etc/nvidia-container-runtime/host-files-for-container.d/*.csv`) is used instead.
 - The application handles CUDA absence gracefully and exposes enough debug state.
+
+If evidence points to GPU provisioning, inspect the image and agent code for the device's JetPack version. JetPack 6 uses `/etc/cdi/nvidia.yaml`; JetPack 5 uses the L4T CSV fallback at `/etc/nvidia-container-runtime/host-files-for-container.d/*.csv`. Keep source configuration distinct from confirmed device state.
 
 ## Repo files to inspect
 
-- CLI/device connection: `wendy-agent/go/internal/cli/commands/helpers.go`.
-- Run/deploy path: `wendy-agent/go/internal/cli/commands/run.go`.
-- App config: `wendy-agent/go/internal/shared/appconfig/`.
-- Agent service entry: `wendy-agent/go/cmd/wendy-agent/main.go`.
-- Container service: `wendy-agent/go/internal/agent/services/container_service.go`.
-- Containerd runtime: `wendy-agent/go/internal/agent/containerd/`.
-- OCI and entitlements: `wendy-agent/go/internal/agent/oci/entitlements.go`.
-- WendyOS image recipes and services: `wendyos/`.
+Use the [wendy-codebase](../wendy-codebase/SKILL.md) map to locate the CLI, agent, runtime, and app configuration code for the failing layer. Inspect WendyOS image recipes and services when evidence points to image state.
 
 ## Output discipline
 
