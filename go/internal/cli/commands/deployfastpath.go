@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -303,6 +304,49 @@ func computeBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs 
 	}
 
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// errBasesNotPinned means the Dockerfile builds FROM a mutable tag, so no
+// persistent build skip is possible and its build context is never hashed.
+var errBasesNotPinned = errors.New("persistent build skip requires digest-pinned base images")
+
+// buildInputHasher is computeBuildInputHash. Tests replace it to prove that an
+// unpinned project never reads its build context.
+var buildInputHasher = computeBuildInputHash
+
+// pinnedBuildInputHash returns computeBuildInputHash's result for a Dockerfile
+// whose bases are all content-pinned (see dockerfileBasesContentPinned), and
+// pinned=false without touching the build context otherwise. Every consumer of
+// the hash (the single-service fast path and fingerprint, Compose and
+// multi-service push skips, watch preservation) already requires pinned bases,
+// so checking first changes no decision; it only stops an unpinned project
+// such as FROM python:3.12-slim from reading every context file on each run
+// (~1 s per 2 GB, WDY-3216). A pinned-check error is returned as is.
+func pinnedBuildInputHash(cwd, dockerfile, platform, backend string, buildArgs map[string]string, deployEnv []string) (hash string, pinned bool, err error) {
+	pinned, err = dockerfileBasesContentPinned(cwd, dockerfile)
+	if err != nil || !pinned {
+		return "", false, err
+	}
+	hash, err = buildInputHasher(cwd, dockerfile, platform, backend, buildArgs, deployEnv)
+	if err != nil {
+		return "", true, err
+	}
+	return hash, true, nil
+}
+
+// singleServiceDesiredHash is the fingerprint runWithAgent compares and
+// records: the build-input hash combined with the container's runtime
+// identity. It returns errBasesNotPinned, without hashing the context, for a
+// Dockerfile that builds FROM a mutable tag.
+func singleServiceDesiredHash(cwd, dockerfile, platform, backend string, buildArgs map[string]string, deployEnv []string, appCfg *appconfig.AppConfig, opts runOptions) (string, error) {
+	inputHash, pinned, err := pinnedBuildInputHash(cwd, dockerfile, platform, backend, buildArgs, deployEnv)
+	if err != nil {
+		return "", err
+	}
+	if !pinned {
+		return "", errBasesNotPinned
+	}
+	return computeDeployDesiredHash(inputHash, appCfg, opts.userArgs, deployEnv, resolveRestartPolicy(opts))
 }
 
 // dockerfileBasesContentPinned reports whether rebuilding this Dockerfile is

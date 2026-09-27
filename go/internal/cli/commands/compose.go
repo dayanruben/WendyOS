@@ -1330,17 +1330,21 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...); err != nil {
 				return fmt.Errorf("service %s: %w", name, err)
 			}
-			imageIdentity, err = computeBuildInputHash(ctxDir, dockerfile, platform, resolvedStagefileBackend(ctx), allBuildArgs, serviceEnvs[name])
+			// Only a service with digest-pinned bases can skip its build, so an
+			// unpinned one never hashes its context (WDY-3216).
+			var inputHash string
+			inputHash, contentPinned, err = pinnedBuildInputHash(ctxDir, dockerfile, platform, resolvedStagefileBackend(ctx), allBuildArgs, serviceEnvs[name])
+			if err != nil && !contentPinned {
+				return fmt.Errorf("checking service %s base images: %w", name, err)
+			}
 			if err != nil {
 				return fmt.Errorf("hashing service %s build inputs: %w", name, err)
 			}
-			// The prepared image name is part of the desired identity. A project
-			// directory rename changes the Compose repository even when its source
-			// bytes do not, so reusing the old preparation would be unsafe.
-			imageIdentity = fmt.Sprintf("localhost:%d/%s-%s:latest@%s", regPort, projectName, name, imageIdentity)
-			contentPinned, err = dockerfileBasesContentPinned(ctxDir, dockerfile)
-			if err != nil {
-				return fmt.Errorf("checking service %s base images: %w", name, err)
+			if contentPinned {
+				// The prepared image name is part of the desired identity. A project
+				// directory rename changes the Compose repository even when its source
+				// bytes do not, so reusing the old preparation would be unsafe.
+				imageIdentity = fmt.Sprintf("localhost:%d/%s-%s:latest@%s", regPort, projectName, name, inputHash)
 			}
 		}
 

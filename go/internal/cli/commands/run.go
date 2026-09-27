@@ -2154,21 +2154,20 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// just ensure the existing container is running. Best-effort — a missing or
 	// mismatched fingerprint, a missing app, or any RPC error falls through to
 	// the normal deploy below, so it can never deploy stale code.
+	//
+	// The fingerprint feeds only this fast path and the one recorded when the
+	// chunk-diff deploy below starts. Both are off for darwin agents and
+	// --deploy, and both need digest-pinned bases, so the build context is
+	// hashed only when they can use it: an unpinned FROM python:3.12-slim
+	// never reads it (WDY-3216).
 	deviceKey := deviceFingerprintKey(versionResp)
-	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, deployEnv)
-	if hashErr == nil {
-		var basesPinned bool
-		basesPinned, hashErr = dockerfileBasesContentPinned(cwd, opts.dockerfile)
-		if hashErr == nil && !basesPinned {
-			hashErr = fmt.Errorf("persistent build skip requires digest-pinned base images")
-		}
-	}
-	desiredHash := ""
-	if hashErr == nil {
-		desiredHash, hashErr = computeDeployDesiredHash(inputHash, appCfg, opts.userArgs, deployEnv, resolveRestartPolicy(opts))
+	fingerprintUsed := !isDarwinAgent && !opts.deploy
+	desiredHash, hashErr := "", errBasesNotPinned
+	if fingerprintUsed {
+		desiredHash, hashErr = singleServiceDesiredHash(cwd, opts.dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, deployEnv, appCfg, opts)
 	}
 	mark("build-input fingerprint")
-	if !isDarwinAgent && !opts.deploy && hashErr == nil {
+	if fingerprintUsed && hashErr == nil {
 		if done, err := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
 			mark("fast-path (skipped build)")
 			return err
