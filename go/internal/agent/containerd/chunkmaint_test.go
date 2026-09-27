@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	containerdclient "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/leases"
+	"github.com/containerd/errdefs"
 	digest "github.com/opencontainers/go-digest"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
@@ -87,6 +90,30 @@ func TestStagingSweepRemovesOnlyFilesOlderThanCutoff(t *testing.T) {
 	}
 }
 
+// TestStagingSweepReportsFilesItCouldNotRemove: a sweep that cannot delete
+// files says so once per pass, with a count and the first error, rather than
+// dropping the failures or logging a line per file.
+func TestStagingSweepReportsFilesItCouldNotRemove(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, directory permissions do not deny deletes")
+	}
+	s := newStaging(t.TempDir())
+	stageAged(t, s, []byte("abandoned chunk one"), 7*time.Hour)
+	stageAged(t, s, []byte("abandoned chunk two"), 7*time.Hour)
+	if err := os.Chmod(s.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(s.dir, 0o700) })
+
+	files, _, err := s.sweep(time.Now().Add(-stagingRetention))
+	if files != 0 {
+		t.Fatalf("sweep reported %d files removed from a read-only directory", files)
+	}
+	if err == nil || !strings.HasPrefix(err.Error(), "2 staged files could not be removed") || !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("sweep error = %v; want one error counting both failures and wrapping the first", err)
+	}
+}
+
 func TestStagingRetireStartsEmptyAndPurgeDeletesLeftovers(t *testing.T) {
 	s := newStaging(filepath.Join(t.TempDir(), "staging"))
 	leftover := stageAged(t, s, []byte("chunk from the previous agent run"), time.Hour)
@@ -117,7 +144,7 @@ func TestStagingRetireStartsEmptyAndPurgeDeletesLeftovers(t *testing.T) {
 // recordingLeases is a leases.Manager that records synchronous deletes.
 type recordingLeases struct {
 	leases.Manager
-	created, syncDeletes int
+	created, syncDeletes int // used by the cache-prune integration, PR 3b
 }
 
 // newMaintenanceClient builds a Client over a fake content store (holding
@@ -178,6 +205,31 @@ func TestReconcileChunkIndexDropsBlobsContainerdNoLongerHolds(t *testing.T) {
 	}
 	if _, ok := c.chunkIndex.Has([32]byte{1}); !ok {
 		t.Fatal("entry of a present blob was dropped")
+	}
+}
+
+// TestReconcileChunkIndexKeepsEntriesContainerdCannotAnswerFor: the startup
+// reconcile can run before containerd's content service answers. Unavailable
+// is not NotFound, so the pass fails and the blob's entries stay.
+func TestReconcileChunkIndexKeepsEntriesContainerdCannotAnswerFor(t *testing.T) {
+	blob := digest.FromString("layer containerd could not be asked about")
+	cs := &chunkAvailabilityContentStore{
+		errs: map[digest.Digest]error{blob: fmt.Errorf("connection refused: %w", errdefs.ErrUnavailable)},
+	}
+	c := newChunkAvailabilityClient(t, cs, newTestChunkIndex(t), filepath.Join(t.TempDir(), "staging"))
+	if err := c.chunkIndex.AddLayer(blob.String(), []chunk.Ref{{Hash: [32]byte{1}, Len: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	dropped, err := c.reconcileChunkIndex(context.Background())
+	if !errdefs.IsUnavailable(err) || dropped != 0 {
+		t.Fatalf("reconcile = %d, %v; want nothing dropped and the Unavailable error", dropped, err)
+	}
+	if _, ok := c.chunkIndex.Has([32]byte{1}); !ok {
+		t.Fatal("the entry of a blob containerd could not answer for was dropped")
+	}
+	if blobs, err := c.chunkIndex.Blobs(); err != nil || len(blobs) != 1 {
+		t.Fatalf("Blobs = %v, %v; want the blob still listed", blobs, err)
 	}
 }
 

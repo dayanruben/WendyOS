@@ -145,9 +145,15 @@ func TestStagingWriteIsDiskBackedAndIdempotent(t *testing.T) {
 type chunkAvailabilityContentStore struct {
 	content.Store
 	blobs map[digest.Digest]content.Info
+	// errs fails Info for a digest with an error other than NotFound, as
+	// containerd does while it cannot answer.
+	errs map[digest.Digest]error
 }
 
 func (s *chunkAvailabilityContentStore) Info(_ context.Context, dgst digest.Digest) (content.Info, error) {
+	if err, ok := s.errs[dgst]; ok {
+		return content.Info{}, err
+	}
 	if info, ok := s.blobs[dgst]; ok {
 		return info, nil
 	}

@@ -26,7 +26,8 @@ const (
 	// enough for the user's next attempt to resume from them (WDY-3217).
 	stagingRetention = 6 * time.Hour
 	// cachePruneStagingIdleAfter is the quiet period an explicit cache prune
-	// requires before it removes every staged chunk.
+	// requires before it removes every staged chunk (used by the cache-prune
+	// integration, PR 3b).
 	cachePruneStagingIdleAfter = time.Minute
 	// retiredStagingSuffix marks a staging directory from an earlier agent run.
 	retiredStagingSuffix = ".retired-"
@@ -72,6 +73,10 @@ func (s *staging) usage(cutoff time.Time) (files int, bytes int64, err error) {
 	return s.walk(cutoff, false)
 }
 
+// walk reports, or with remove deletes, the staged files last modified before
+// cutoff. Files it fails to delete come back as one error after the pass,
+// with a count and the first failure: staging has no logger, and a line per
+// file would repeat on every pass.
 func (s *staging) walk(cutoff time.Time, remove bool) (files int, bytes int64, err error) {
 	d, err := os.Open(s.dir)
 	if os.IsNotExist(err) {
@@ -81,6 +86,8 @@ func (s *staging) walk(cutoff time.Time, remove bool) (files int, bytes int64, e
 		return 0, 0, err
 	}
 	defer d.Close()
+	var failed int
+	var firstFailure error
 	for {
 		entries, rerr := d.ReadDir(1024)
 		for _, e := range entries {
@@ -93,19 +100,27 @@ func (s *staging) walk(cutoff time.Time, remove bool) (files int, bytes int64, e
 			}
 			if remove {
 				if err := os.Remove(filepath.Join(s.dir, e.Name())); err != nil && !os.IsNotExist(err) {
+					if failed == 0 {
+						firstFailure = err
+					}
+					failed++
 					continue
 				}
 			}
 			files++
 			bytes += info.Size()
 		}
-		if rerr == io.EOF {
-			return files, bytes, nil
-		}
 		if rerr != nil {
-			return files, bytes, rerr
+			if rerr != io.EOF {
+				err = rerr
+			}
+			break
 		}
 	}
+	if failed > 0 {
+		err = errors.Join(err, fmt.Errorf("%d staged files could not be removed, the first: %w", failed, firstFailure))
+	}
+	return files, bytes, err
 }
 
 // retire renames the staging directory aside so this agent run starts with an
@@ -142,11 +157,17 @@ func (s *staging) purgeRetired() (files int, bytes int64, err error) {
 }
 
 // StartChunkStoreMaintenance keeps the chunk store bounded (WDY-3212,
-// WDY-3217). It retires this agent's leftover staging directory before
-// returning — call it before the agent serves RPCs — then, in the background,
-// deletes the retired chunks, drops index entries for layer blobs containerd
-// no longer holds, and repeats the sweep and reconciliation every
-// chunkStoreMaintenanceInterval while no deploy is using the store.
+// WDY-3217). Call it before the agent serves RPCs.
+//
+// At start, before it returns, it retires the live staging directory, so this
+// run starts with an empty one. Then, in the background and without waiting
+// for the store to go idle, it purges the retired directories and reconciles
+// the index once, dropping the entries of layer blobs containerd no longer
+// holds.
+//
+// After that, every chunkStoreMaintenanceInterval, if no deploy has used the
+// store for chunkStoreIdleAfter, it sweeps staged chunks older than
+// stagingRetention and reconciles the index again.
 func (c *Client) StartChunkStoreMaintenance(ctx context.Context) {
 	if err := c.staging.retire(time.Now()); err != nil {
 		c.logger.Warn("Retiring leftover chunk staging failed", zap.Error(err))
