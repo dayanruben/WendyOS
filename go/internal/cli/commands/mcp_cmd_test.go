@@ -224,6 +224,27 @@ func TestMaybeRefreshMCPSetup_KeepsPinnedDevice(t *testing.T) {
 	}
 }
 
+// Skill installers can leave root-owned files behind under sudo, so
+// `sudo wendy mcp setup` says once to run it as the user instead.
+func TestMCPSetupCmd_WarnsUnderSudo(t *testing.T) {
+	for _, sudoUID := range []string{"501", ""} {
+		setupMCPRefreshTest(t)
+		t.Setenv("SUDO_UID", sudoUID)
+		cmd := newMCPSetupCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(nil)
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		n := strings.Count(out.String(), "without sudo")
+		if want := map[bool]int{true: 1, false: 0}[sudoUID != ""]; n != want {
+			t.Errorf("SUDO_UID=%q: warning printed %d times, want %d:\n%s", sudoUID, n, want, out.String())
+		}
+	}
+}
+
 // setupMCPRefreshTest isolates HOME, PATH and the CLI config directory, makes
 // ~/.codex exist so Codex counts as installed, and pretends the running CLI is
 // release 9.9.9 so maybeRefreshMCPSetup has something to refresh. It returns

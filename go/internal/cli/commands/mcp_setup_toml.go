@@ -507,7 +507,7 @@ func addMCPToTOMLConfig(path, topKey, name, command string, args []string) error
 	if fi, err := os.Stat(target); err == nil {
 		mode = fi.Mode().Perm()
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := mkdirAllLikeParent(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
 	return writeFileAtomic(target, out, mode)
@@ -516,11 +516,44 @@ func addMCPToTOMLConfig(path, topKey, name, command string, args []string) error
 // chownFile is (*os.File).Chown; a variable so tests can observe it.
 var chownFile = (*os.File).Chown
 
+// chownPath is os.Chown; a variable so tests can observe it.
+var chownPath = os.Chown
+
+// copyOwnerFromParent gives path the owner of its parent directory, best
+// effort: under `sudo wendy mcp setup`, a file or directory created in the
+// user's home would otherwise belong to root.
+func copyOwnerFromParent(path string) {
+	if fi, err := os.Stat(filepath.Dir(path)); err == nil {
+		if uid, gid, ok := fileOwner(fi); ok {
+			_ = chownPath(path, uid, gid)
+		}
+	}
+}
+
+// mkdirAllLikeParent is os.MkdirAll, except that every directory it creates
+// gets its parent's owner (see copyOwnerFromParent).
+func mkdirAllLikeParent(dir string, perm os.FileMode) error {
+	var missing []string
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if _, err := os.Stat(d); !os.IsNotExist(err) || filepath.Dir(d) == d {
+			break
+		}
+		missing = append(missing, d)
+	}
+	if err := os.MkdirAll(dir, perm); err != nil {
+		return err
+	}
+	for i := len(missing) - 1; i >= 0; i-- { // top down: each parent first
+		copyOwnerFromParent(missing[i])
+	}
+	return nil
+}
+
 // writeFileAtomic writes data to a temp file beside path and renames it into
 // place, so a crash never leaves a truncated config behind. The new file gets
-// mode and, when path already exists, its owner — best effort, since only root
-// can give a file away — so a root run does not leave the user a config file
-// they can no longer read.
+// mode and the owner of the file it replaces — or, for a new file, of its
+// directory — best effort, since only root can give a file away, so a root
+// run does not leave the user a config file they can no longer read.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
@@ -531,7 +564,11 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		tmp.Close()
 		return err
 	}
-	if fi, err := os.Stat(path); err == nil {
+	fi, err := os.Stat(path)
+	if err != nil {
+		fi, err = os.Stat(filepath.Dir(path))
+	}
+	if err == nil {
 		if uid, gid, ok := fileOwner(fi); ok {
 			_ = chownFile(tmp, uid, gid)
 		}

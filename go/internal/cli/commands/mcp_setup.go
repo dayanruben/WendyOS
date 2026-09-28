@@ -34,6 +34,11 @@ func newMCPSetupCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "Install Claude Code: npm install -g @anthropic-ai/claude-code")
 			}
 			fmt.Fprint(cmd.OutOrStdout(), mcpRestartNotice(mcpResults))
+			if os.Getenv("SUDO_UID") != "" {
+				// The config writers keep file owners, but the skill
+				// installers and the wendy settings file do not.
+				fmt.Fprintln(cmd.OutOrStdout(), "\n⚠ This ran under sudo: skill files and wendy settings it created may now be owned by root. Run `wendy mcp setup` without sudo.")
+			}
 			// Record the CLI version so the root command can auto-refresh the
 			// configuration and skills after a later upgrade.
 			recordMCPSetupVersion()
@@ -320,6 +325,7 @@ func addMCPToJSONConfig(path, topKey, name string, entry map[string]any) error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
+	isNew := os.IsNotExist(err)
 	if len(data) > 0 {
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return fmt.Errorf("parsing %s: %w", path, err)
@@ -351,10 +357,16 @@ func addMCPToJSONConfig(path, topKey, name string, entry map[string]any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := mkdirAllLikeParent(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0o644)
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return err
+	}
+	if isNew {
+		copyOwnerFromParent(path) // an existing file is written in place and keeps its owner
+	}
+	return nil
 }
 
 // codexConfigPath returns ~/.codex/config.toml if Codex is installed.
