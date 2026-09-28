@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -125,6 +126,10 @@ func directCommandTarget(conn *grpcclient.AgentConnection, address string) comma
 		// Host alone loses custom ports; a prebuilt connection with no Addr
 		// cannot safely be replayed by guessing a default endpoint.
 		address = conn.Addr
+	} else if _, _, err := net.SplitHostPort(address); err != nil {
+		// `wendy run --device NAME` resolves a bare name differently (by device
+		// ID, or as a same-named cloud device); replay the dialed host:port.
+		address = withDefaultAgentPort(address)
 	}
 	if address == "" {
 		return commandTarget{}

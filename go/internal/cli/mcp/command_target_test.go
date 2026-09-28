@@ -245,3 +245,29 @@ func TestCloudCommandTargetPinsOrganizationOrTenantAndAsset(t *testing.T) {
 		t.Fatalf("identity-less target = %+v", got)
 	}
 }
+
+// `wendy run --device NAME` resolves a bare name differently from
+// device_connect (by device ID, or a same-named cloud device after a LAN
+// failure), so a bare host is replayed as the host:port device_connect dialed.
+func TestCommandTargetReplaysBareHostsAsHostPort(t *testing.T) {
+	for _, startup := range []bool{false, true} {
+		for address, want := range map[string]string{
+			"robot":       "robot:50051",
+			"woof.local":  "woof.local:50051",
+			"192.0.2.7":   "192.0.2.7:50051",
+			"fe80::1%en0": "[fe80::1%en0]:50051",
+		} {
+			s := New(&config.Config{}, func(context.Context, string) (*grpcclient.AgentConnection, error) {
+				return &grpcclient.AgentConnection{Host: "192.0.2.7", Addr: "192.0.2.7:50052"}, nil
+			})
+			connect := s.ConnectTo
+			if startup {
+				connect = s.ConnectToOnStartup
+			}
+			if err := connect(context.Background(), address); err != nil {
+				t.Fatal(err)
+			}
+			assertCommandTarget(t, s, commandTarget{Device: want, Transport: "direct"})
+		}
+	}
+}

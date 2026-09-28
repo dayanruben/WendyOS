@@ -26,6 +26,9 @@ func (s *mcpServer) runTarget(req mcpgo.CallToolRequest) (commandTarget, error) 
 			return commandTarget{}, fmt.Errorf("device and cloud selectors cannot be whitespace")
 		}
 	}
+	if strings.Contains(device, ",") || strings.Contains(cloud, ",") {
+		return commandTarget{}, fmt.Errorf("device names one device; wendy run would deploy to every device in a comma-separated list")
+	}
 	if device != "" {
 		if cloud != "" || endpoint != "" || broker != "" {
 			return commandTarget{}, fmt.Errorf("device cannot be combined with device_name, cloud_grpc, or broker_url")
@@ -193,9 +196,7 @@ func executeRunCommand(ctx context.Context, args []string, target commandTarget,
 	}
 	cmd := exec.Command(bin, args...)
 	configureRunProcess(cmd)
-	if target.Selector != "" && target.Transport == "cloud" {
-		cmd.Env = runEnvironment(os.Environ(), target)
-	}
+	cmd.Env = runChildEnvironment(os.Environ(), target)
 	// Bound pipe cleanup if a descendant build process outlives the CLI.
 	cmd.WaitDelay = 2 * time.Second
 	tail := &runTail{limit: limit}

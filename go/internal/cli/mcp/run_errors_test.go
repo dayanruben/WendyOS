@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -227,5 +228,37 @@ func TestRunCancellationIsNotReportedAsTimeout(t *testing.T) {
 	}
 	if out := structuredMap(t, r); out["error_code"] != string(errCodeCancelled) || out["output"] != "#3 building" {
 		t.Fatalf("got %v", out)
+	}
+}
+
+// A comma makes `wendy run --device` deploy one build to several devices.
+func TestRunRejectsDeviceLists(t *testing.T) {
+	s := New(&config.Config{}, nil)
+	s.runCommandFn = func(context.Context, []string, commandTarget, int) (string, bool, error) {
+		t.Fatal("a device list must not reach the CLI")
+		return "", false, nil
+	}
+	for _, args := range []map[string]any{
+		{"project_path": runProject(t), "device": "robot-a.local:50051,robot-b.local:50051"},
+		{"project_path": runProject(t), "device_name": "robot-a,robot-b"},
+	} {
+		r, err := s.handleRun(context.Background(), callToolReq("run", args))
+		if err != nil || !r.IsError || structuredMap(t, r)["error_code"] != string(errCodeInvalidArgument) {
+			t.Fatalf("args %v: got %v %v", args, r, err)
+		}
+	}
+}
+
+// The spawned CLI must not answer a failed direct connect with a same-named
+// cloud device (commands.resolveWithCloudFallback reads this variable).
+func TestRunChildEnvironmentDisablesCloudFallback(t *testing.T) {
+	base := []string{"PATH=/bin", "WENDY_BROKER_URL=inherited:443"}
+	direct := runChildEnvironment(base, commandTarget{Device: "robot.local:50051", Transport: "direct"})
+	if !slices.Equal(direct, []string{"PATH=/bin", "WENDY_BROKER_URL=inherited:443", "WENDY_RUN_NO_CLOUD_FALLBACK=1"}) {
+		t.Fatalf("direct environment = %v", direct)
+	}
+	cloud := runChildEnvironment(base, commandTarget{Device: "robot", Transport: "cloud", Selector: "cloud://c:443/org/1/asset/2", BrokerURL: "relay:443"})
+	if !slices.Equal(cloud, []string{"PATH=/bin", "WENDY_RUN_NO_CLOUD_FALLBACK=1", "WENDY_BROKER_URL=relay:443"}) {
+		t.Fatalf("cloud environment = %v", cloud)
 	}
 }

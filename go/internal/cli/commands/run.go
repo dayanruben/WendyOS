@@ -757,7 +757,8 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 	if err == nil {
 		return target, nil
 	}
-	if errors.Is(err, ErrUserCancelled) {
+	// An MCP-spawned run deploys to the MCP session's device or fails.
+	if errors.Is(err, ErrUserCancelled) || cloudFallbackDisabled() {
 		return nil, err
 	}
 	// The user picked a local VM. Falling back to a cloud device here would
