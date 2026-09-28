@@ -44,6 +44,7 @@ func TestEnsureDockerDaemon_DarwinNonInteractiveDoesNotLaunchRuntime(t *testing.
 		return nil
 	}
 	isInteractiveTerminalFn = func() bool { return false }
+	stubHumanPresent(t, false)
 
 	start := time.Now()
 	err := ensureDockerDaemonForHostOS(context.Background(), dockerHostOSDarwin)
@@ -55,5 +56,42 @@ func TestEnsureDockerDaemon_DarwinNonInteractiveDoesNotLaunchRuntime(t *testing.
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("returned after %s; want an immediate error, not a readiness wait", elapsed)
+	}
+}
+
+// `wendy run | tee build.log` typed in a terminal: stdout is a pipe, so no
+// prompt can be drawn, but a person is there. As before this change, the
+// runtime is opened without a prompt and waited for.
+func TestEnsureDockerDaemon_DarwinPersonWithPipedOutputOpensRuntime(t *testing.T) {
+	stubDockerDaemonSeams(t, time.Second)
+	prevPoll := dockerDaemonPollInterval
+	dockerDaemonPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { dockerDaemonPollInterval = prevPoll })
+
+	appPath := filepath.Join(t.TempDir(), "Docker.app")
+	if err := os.MkdirAll(appPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	darwinDockerRuntimes = []dockerRuntime{{name: "Docker Desktop", app: appPath}}
+	dockerLookPathFn = func(string) (string, error) { return "/usr/local/bin/docker", nil }
+	opened := false
+	dockerVersionOKFn = func(context.Context) bool { return opened }
+	dockerOpenRuntimeFn = func(context.Context, string) error { opened = true; return nil }
+	dockerInstallRuntimeFn = func(context.Context) error {
+		t.Fatal("must not install anything")
+		return nil
+	}
+	isInteractiveTerminalFn = func() bool { return false }
+	stubHumanPresent(t, true)
+	stubConfirmFn(t, func(q string) bool {
+		t.Fatalf("must not prompt (%q) when stdout is not a terminal", q)
+		return false
+	})
+
+	if err := ensureDockerDaemonForHostOS(context.Background(), dockerHostOSDarwin); err != nil {
+		t.Fatalf("ensureDockerDaemonForHostOS: %v", err)
+	}
+	if !opened {
+		t.Fatal("want Docker Desktop opened for the person at the terminal")
 	}
 }

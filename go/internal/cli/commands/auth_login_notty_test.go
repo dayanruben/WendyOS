@@ -43,6 +43,7 @@ const testLoginURLPrefix = "https://cloud.example.invalid/cli-auth?redirect_uri=
 // forever for a callback nobody would deliver.
 func TestPerformLogin_NonInteractivePrintsURLAndTimesOut(t *testing.T) {
 	stubNonInteractive(t)
+	stubHumanPresent(t, false)
 	shrinkBrowserLoginTimeout(t)
 	opened := stubOpenBrowser(t)
 
@@ -71,6 +72,7 @@ func TestPerformLogin_NonInteractivePrintsURLAndTimesOut(t *testing.T) {
 // With a TTY nothing changes: the browser is opened with the login URL.
 func TestPerformLogin_InteractiveOpensBrowser(t *testing.T) {
 	stubInteractive(t)
+	stubHumanPresent(t, true)
 	shrinkBrowserLoginTimeout(t)
 	opened := stubOpenBrowser(t)
 
@@ -92,6 +94,7 @@ func TestPerformLogin_InteractiveOpensBrowser(t *testing.T) {
 // mode — not after browserLoginTimeout.
 func TestPerformLogin_CancelEndsWaitImmediately(t *testing.T) {
 	stubNonInteractive(t)
+	stubHumanPresent(t, false)
 	stubOpenBrowser(t)
 	// browserLoginTimeout stays at its 5-minute default: only the cancel can end this quickly.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -108,5 +111,21 @@ func TestPerformLogin_CancelEndsWaitImmediately(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("took %s to honour the cancel", elapsed)
+	}
+}
+
+// `wendy auth login > login.log` typed in a terminal: stdout is not a
+// terminal, but a person is there to use the browser, so it still opens.
+func TestPerformLogin_PersonWithRedirectedOutputOpensBrowser(t *testing.T) {
+	stubNonInteractive(t)
+	stubHumanPresent(t, true)
+	shrinkBrowserLoginTimeout(t)
+	opened := stubOpenBrowser(t)
+
+	_ = captureStdout(t, func() {
+		_ = performLogin(context.Background(), "https://cloud.example.invalid", "grpc.example.invalid:443")
+	})
+	if got := opened(); len(got) != 1 {
+		t.Fatalf("opened = %v, want the browser opened for the person at the terminal", got)
 	}
 }

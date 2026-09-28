@@ -1176,6 +1176,10 @@ var (
 // unresponsive. A var so tests can shrink it.
 var dockerVersionProbeTimeout = 10 * time.Second
 
+// dockerDaemonPollInterval is how often ensureDockerDaemon re-probes a daemon
+// it is waiting for. A var so tests can shrink it.
+var dockerDaemonPollInterval = 2 * time.Second
+
 // dockerDaemonReady probes the daemon once, bounded by
 // dockerVersionProbeTimeout: (true, nil) when it answers, (false, nil) when it
 // is not running (a stopped daemon refuses the connection and fails fast),
@@ -1196,11 +1200,11 @@ func dockerDaemonReady(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-// ensureDockerDaemon verifies the Docker daemon is running. On macOS, when
-// running interactively it prompts the user before launching the installed
-// Docker runtime and then waits up to 60 s for the daemon to become ready; in
-// non-interactive mode it never launches the app and returns an error asking
-// the user to start it.
+// ensureDockerDaemon verifies the Docker daemon is running. On macOS, with a
+// person at the terminal (humanPresent) it launches the installed Docker
+// runtime — after a prompt when one can be drawn — and then waits up to 60 s
+// for the daemon to become ready; with no one there (an agent, CI) it never
+// launches the app and returns an error asking the user to start it.
 func ensureDockerDaemon(ctx context.Context) error {
 	return ensureDockerDaemonForHostOS(ctx, dockerHostOS(runtime.GOOS))
 }
@@ -1252,13 +1256,17 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 			return dockerCLIMissingError(rt)
 		}
 
-		if !isInteractiveTerminalFn() {
-			// No one is there to confirm launching a GUI app, and waiting up
-			// to a minute for it would stall an agent or script. Say what to do.
+		if !humanPresent() {
+			// No one is there to see a GUI app open, and waiting up to a
+			// minute for it would stall an agent or script. Say what to do.
 			return commandErrorf(errBuilderUnavailable, "docker daemon is not running — start %s and try again (wendy does not open it without an interactive terminal)", rt.name)
 		}
-		if !confirmFn(fmt.Sprintf("Docker daemon is not running or is still starting for %s. Open it now?", rt.name)) {
-			return commandErrorf(errBuilderUnavailable, "docker daemon is not running — please start %s and try again", rt.name)
+		// Ask first when a prompt can be drawn; with output piped (e.g.
+		// `wendy run | tee`), open it without asking, as before.
+		if isInteractiveTerminalFn() {
+			if !confirmFn(fmt.Sprintf("Docker daemon is not running or is still starting for %s. Open it now?", rt.name)) {
+				return commandErrorf(errBuilderUnavailable, "docker daemon is not running — please start %s and try again", rt.name)
+			}
 		}
 
 		fmt.Fprintf(os.Stderr, "[docker] Opening %s...\n", rt.name)
@@ -1270,7 +1278,7 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(2 * time.Second):
+			case <-time.After(dockerDaemonPollInterval):
 			}
 			// A probe that times out here only means the daemon is still
 			// starting; keep polling until the deadline.

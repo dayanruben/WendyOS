@@ -182,9 +182,9 @@ type loginCallbackResult struct {
 // tests can shrink it.
 var browserLoginTimeout = 5 * time.Minute
 
-// printLoginURLForManualOpen is used instead of opening a browser when there
-// is no interactive terminal: an agent or script driving the CLI can't use a
-// browser window it didn't ask for, but can relay a URL. The URL goes alone on
+// printLoginURLForManualOpen is used instead of opening a browser when no
+// person is at the terminal (see humanPresent): an agent or script driving the
+// CLI can't use a browser window it didn't ask for, but can relay a URL. The URL goes alone on
 // its own line so it can be copied verbatim.
 func printLoginURLForManualOpen(loginURL string) {
 	fmt.Println("Open this URL in a browser on this machine to sign in:")
@@ -278,7 +278,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	// Step 2: Open browser to login URL with callback port.
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/cli-callback", port)
 	loginURL := fmt.Sprintf("%s/cli-auth?redirect_uri=%s", cloudDashboard, url.QueryEscape(redirectURI))
-	if !isInteractiveTerminal() {
+	if !humanPresent() {
 		printLoginURLForManualOpen(loginURL)
 	} else {
 		fmt.Println(tui.InfoMessage("Opening browser for authentication"))

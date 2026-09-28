@@ -607,6 +607,23 @@ var isInteractiveTerminalFn = func() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
+// humanPresentFn reports whether a person is at a terminal driving this
+// command: stdin is a terminal, so someone can see what happens and respond.
+// It gates what only makes sense with a person there — launching a GUI app
+// (Docker Desktop), opening a browser, waiting on a daemon they may be
+// starting. Unlike isInteractiveTerminal it does not need stdout to be a
+// terminal, so `wendy run | tee build.log` typed in a terminal still counts,
+// while agent shells and CI (no terminal on stdin) take the non-interactive
+// path. Prompts keep checking isInteractiveTerminal: they draw on stdout.
+var humanPresentFn = func() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// humanPresent reports whether a person can respond; see humanPresentFn.
+func humanPresent() bool {
+	return humanPresentFn()
+}
+
 var runAgentConnectionSpinner = func(ctx context.Context, label string, fn func(context.Context) (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
