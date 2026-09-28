@@ -1858,7 +1858,14 @@ dependencies = []
 
 [project.scripts]
 %s = "%s:main"
-`, appID, pkgName, pkgName)
+
+# A build system makes uv install the package, and with it the script above
+# that the Dockerfile's CMD runs. Without one, uv treats the project as
+# "virtual" and 'uv run %s' fails with "Failed to spawn".
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+`, appID, pkgName, pkgName, pkgName)
 
 		if err := os.WriteFile(pyprojectPath, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("creating pyproject.toml: %w", err)
@@ -1909,15 +1916,21 @@ if __name__ == "__main__":
 
 WORKDIR /app
 
-# Install dependencies first for better caching
+# Install dependencies first for better caching. uv.lock is optional: with a
+# committed lock the build is reproducible (--frozen); without one (a fresh
+# scaffold), uv resolves from pyproject.toml. Run 'uv lock' and commit
+# uv.lock to pin dependency versions.
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --frozen --no-install-project
+RUN if [ -f uv.lock ]; then uv sync --frozen --no-install-project; else uv sync --no-install-project; fi
 
 # Copy application code
 COPY . .
-RUN uv sync --frozen
+RUN if [ -f uv.lock ]; then uv sync --frozen; else uv sync; fi
 
-CMD ["uv", "run", "%s"]
+# --no-sync: the build above already installed the project. Without it, uv
+# re-checks the install on every container start, finds it stale (image
+# layers don't keep file ctimes) and rebuilds it, which needs network access.
+CMD ["uv", "run", "--no-sync", "%s"]
 `, pkgName)
 
 		if err := os.WriteFile(dockerPath, []byte(content), 0o644); err != nil {
