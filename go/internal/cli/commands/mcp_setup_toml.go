@@ -454,8 +454,14 @@ func addMCPToTOMLConfig(path, topKey, name, command string, args []string) error
 	return writeFileAtomic(target, out, mode)
 }
 
+// chownFile is (*os.File).Chown; a variable so tests can observe it.
+var chownFile = (*os.File).Chown
+
 // writeFileAtomic writes data to a temp file beside path and renames it into
-// place, so a crash never leaves a truncated config behind.
+// place, so a crash never leaves a truncated config behind. The new file gets
+// mode and, when path already exists, its owner — best effort, since only root
+// can give a file away — so a root run does not leave the user a config file
+// they can no longer read.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
@@ -465,6 +471,11 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err
+	}
+	if fi, err := os.Stat(path); err == nil {
+		if uid, gid, ok := fileOwner(fi); ok {
+			_ = chownFile(tmp, uid, gid)
+		}
 	}
 	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()

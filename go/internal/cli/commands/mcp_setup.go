@@ -70,13 +70,19 @@ func shouldRefreshMCPSetup(lastSetupVersion, currentVersion string) bool {
 	return lastSetupVersion != currentVersion
 }
 
+// mcpRefreshEUID is os.Geteuid; a variable so tests can pretend to be root.
+var mcpRefreshEUID = os.Geteuid
+
 // maybeRefreshMCPSetup re-applies the MCP server configuration and re-installs
 // the bundled skills when the CLI has been upgraded (or downgraded) since
 // `wendy mcp setup` last ran, so users automatically pick up the latest skills.
 // It runs silently and only touches tools that are already configured; the
-// underlying setup helpers no-op for tools they don't detect.
+// underlying setup helpers no-op for tools they don't detect. It never runs
+// as root: sudo keeps $HOME on macOS, so a `sudo wendy …` right after an
+// upgrade would otherwise leave the user root-owned AI tool configs. The next
+// run as the user refreshes instead.
 func maybeRefreshMCPSetup(cfg *config.Config) {
-	if !shouldRefreshMCPSetup(cfg.LastMCPSetupVersion, version.Version) {
+	if mcpRefreshEUID() == 0 || !shouldRefreshMCPSetup(cfg.LastMCPSetupVersion, version.Version) {
 		return
 	}
 	setupMCPForAllTools()

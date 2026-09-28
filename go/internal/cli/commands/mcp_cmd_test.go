@@ -204,7 +204,28 @@ func setupMCPRefreshTest(t *testing.T) string {
 	oldVersion := version.Version
 	version.Version = "9.9.9"
 	t.Cleanup(func() { version.Version = oldVersion })
+	oldEUID := mcpRefreshEUID
+	mcpRefreshEUID = func() int { return 1000 } // CI may run tests as root
+	t.Cleanup(func() { mcpRefreshEUID = oldEUID })
 	return home
+}
+
+// `sudo wendy …` right after an upgrade runs as root, and sudo keeps $HOME on
+// macOS: a refresh then would leave root-owned AI tool configs the user's
+// tools cannot read. The refresh waits for the next non-root run instead.
+func TestMaybeRefreshMCPSetup_SkipsAsRoot(t *testing.T) {
+	home := setupMCPRefreshTest(t)
+	mcpRefreshEUID = func() int { return 0 }
+	cfg := &config.Config{LastMCPSetupVersion: "9.9.8"}
+	maybeRefreshMCPSetup(cfg)
+	if cfg.LastMCPSetupVersion != "9.9.8" {
+		t.Errorf("LastMCPSetupVersion = %q; a root run must leave the refresh for the next user run", cfg.LastMCPSetupVersion)
+	}
+	for _, p := range []string{filepath.Join(home, ".codex", "config.toml"), filepath.Join(home, ".wendy")} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("root refresh wrote %s (err=%v)", p, err)
+		}
+	}
 }
 
 func TestCodexConfigPath_ReturnsDirBasedPath(t *testing.T) {
