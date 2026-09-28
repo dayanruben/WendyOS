@@ -91,7 +91,7 @@ wendy run --yes --chunking force --device <hostname>   # chunk-diff only, no fal
 
 Attached `wendy run` starts the container and streams output. Ctrl+C stops the container. Detached `wendy run --detach` starts the container, waits for readiness when configured, fires post-start hooks, and exits.
 
-`--deploy` creates the container but does not start it. To start that existing app later, use `wendy device apps start <app-id>`, knowing that the current agent-backed start path attaches to the app stream. There is no `wendy device apps start --detach` flag.
+`--deploy` creates the container but does not start it. To start that existing app later without attaching to its output, use `wendy device apps start <app-id> --detach --device <hostname>` (see Manage apps).
 
 `--user-args` is repeatable and also accepts comma-separated values. Prefer repeated flags when values could contain commas. The values are appended to the image's own entrypoint/`CMD`, not substituted for it, so `--user-args --port,8080` runs `<image entrypoint> --port 8080`.
 
@@ -106,13 +106,15 @@ wendy --json device logs --app <app-id> --service <service-name> --level warn --
 wendy --json device logs --app <app-id> --min-severity 9 --device <hostname>
 ```
 
-`device logs` is a stream. When an agent needs a bounded sample, run it with a timeout:
+`device logs` follows the stream until it is interrupted; it has no flag that stops on its own. `--tail N` first replays up to N recent log batches. GNU `timeout` is not installed on macOS by default, so take a bounded sample with one of these instead:
+
+- In an agent harness, run the command as a background task (for example the Bash tool's `run_in_background` in Claude Code), read its output, then stop the task. Some harnesses block a foreground `sleep`, so prefer this form there.
+- In a plain POSIX shell (macOS and Linux):
 
 ```bash
-timeout 20s wendy --json device logs --app <app-id> --device <hostname>
+wendy --json device logs --app <app-id> --tail 50 --device <hostname> > wendy-logs.jsonl &
+pid=$!; sleep 20; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; cat wendy-logs.jsonl
 ```
-
-On macOS where GNU `timeout` may not exist, use a shell/background pattern or the surrounding agent tool timeout instead of leaving the stream open.
 
 For structured telemetry streams:
 
@@ -132,13 +134,13 @@ List apps without opening the interactive dashboard:
 wendy --json device apps list --device <hostname>
 ```
 
-Start an existing app by name:
+Start an existing app by name and return as soon as the agent confirms it started:
 
 ```bash
-wendy device apps start <app-id> --device <hostname>
+wendy device apps start <app-id> --detach --device <hostname>
 ```
 
-Current behavior: `device apps start` attaches to the app output stream. For a long-running app where the agent must regain control, prefer `wendy run --detach` for a fresh deploy/start, or start the app in a bounded/background shell and then inspect logs.
+`--detach` (`-d`) does not stream the app's output, and it starts the app with the `unless-stopped` restart policy: the agent restarts it whenever it exits until you run `wendy device apps stop`. Without `--detach`, `device apps start` attaches to the app's output until the container exits (a multi-service app returns right away), so run it only as a bounded or background task.
 
 Stop an app:
 
@@ -219,10 +221,10 @@ wendy run --yes --detach --device <hostname>
 wendy --json device apps list --device <hostname>
 ```
 
-4. Stream a bounded log sample:
+4. Take a bounded log sample: start this as a background task, read its output after about 20 seconds, then stop the task (Stream logs has a plain-shell version):
 
 ```bash
-timeout 20s wendy --json device logs --app <app-id> --device <hostname>
+wendy --json device logs --app <app-id> --tail 50 --device <hostname>
 ```
 
 5. Stop or remove only when requested:
