@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -58,8 +59,24 @@ func (p *DockerProvider) CheckRequirements(ctx context.Context) error {
 	return nil
 }
 
+// discoverProbeTimeout bounds each container-runtime probe a DiscoverDevices
+// call shells out to. `docker version` round-trips to the daemon, and a wedged
+// daemon (Docker Desktop mid-update, a dead socket forward) otherwise stalled
+// `wendy discover` for 65-540 s. A runtime that can't answer in time is
+// reported like one that isn't running: no devices. A var so tests can
+// shrink it.
+var discoverProbeTimeout = 3 * time.Second
+
+// discoverProbeWaitDelay caps how long a killed probe may keep its output
+// pipe open (a child it spawned can inherit it), so Output() returns promptly
+// after the timeout instead of waiting for that child to exit.
+const discoverProbeWaitDelay = time.Second
+
 func (p *DockerProvider) DiscoverDevices(ctx context.Context) ([]models.ExternalDevice, error) {
+	ctx, cancel := context.WithTimeout(ctx, discoverProbeTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}")
+	cmd.WaitDelay = discoverProbeWaitDelay
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, nil // docker not running, no devices
