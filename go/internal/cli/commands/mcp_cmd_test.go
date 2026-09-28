@@ -2,8 +2,10 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -29,8 +31,7 @@ func TestWindsurfConfigPath_ReturnsDirBasedPath(t *testing.T) {
 func TestAddMCPToTOMLConfig_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	entry := map[string]any{"command": "wendy", "args": []string{"mcp", "serve"}}
-	if err := addMCPToTOMLConfig(path, "mcp_servers", "wendy", entry); err != nil {
+	if err := addMCPToTOMLConfig(path, "mcp_servers", "wendy", "wendy", []string{"mcp", "serve"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -61,8 +62,7 @@ func TestAddMCPToTOMLConfig_PreservesExisting(t *testing.T) {
 	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	entry := map[string]any{"command": "wendy", "args": []string{"mcp", "serve"}}
-	if err := addMCPToTOMLConfig(path, "mcp_servers", "wendy", entry); err != nil {
+	if err := addMCPToTOMLConfig(path, "mcp_servers", "wendy", "wendy", []string{"mcp", "serve"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -82,6 +82,40 @@ func TestAddMCPToTOMLConfig_PreservesExisting(t *testing.T) {
 	}
 	if _, ok := servers["wendy"]; !ok {
 		t.Error("expected 'wendy' entry to be present")
+	}
+}
+
+// Setup owns only type, command and args of the wendy entry; anything the user
+// added to it (env, timeouts) must survive setup and the upgrade refresh.
+func TestAddMCPToJSONConfig_KeepsUserKeysInWendyEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	in := `{"numStartups": 3, "mcpServers": {
+  "github": {"command": "npx"},
+  "wendy": {"type": "stdio", "command": "/old/wendy", "args": ["mcp", "serve", "--old"], "env": {"WENDY_DEVICE": "pi.local"}}
+}}`
+	if err := os.WriteFile(path, []byte(in), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := map[string]any{"type": "stdio", "command": "/new/wendy", "args": []string{"mcp", "serve"}}
+	if err := addMCPToJSONConfig(path, "mcpServers", "wendy", entry); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{"numStartups": 3, "mcpServers": {
+  "github": {"command": "npx"},
+  "wendy": {"type": "stdio", "command": "/new/wendy", "args": ["mcp", "serve"], "env": {"WENDY_DEVICE": "pi.local"}}
+}}`), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got:\n%s", data)
 	}
 }
 

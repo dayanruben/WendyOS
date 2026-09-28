@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 
-	toml "github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -138,11 +137,7 @@ func setupMCPForAllTools() []mcpSetupResult {
 
 	// Codex (~/.codex/config.toml)
 	if codexPath := codexConfigPath(); codexPath != "" {
-		codexEntry := map[string]any{
-			"command": wendyBin,
-			"args":    []string{"mcp", "serve"},
-		}
-		if err := addMCPToTOMLConfig(codexPath, "mcp_servers", "wendy", codexEntry); err != nil {
+		if err := addMCPToTOMLConfig(codexPath, "mcp_servers", "wendy", wendyBin, []string{"mcp", "serve"}); err != nil {
 			results = append(results, mcpSetupResult{tool: "Codex", path: codexPath, err: err})
 		} else {
 			results = append(results, mcpSetupResult{tool: "Codex", path: codexPath})
@@ -241,7 +236,10 @@ func windsurfConfigPath() string {
 	return ""
 }
 
-func addMCPToJSONConfig(path, topKey, name string, entry any) error {
+// addMCPToJSONConfig sets the keys in entry on cfg[topKey][name] in the JSON
+// file at path. Keys the user added to an existing entry (env, timeouts) are
+// kept; only the keys setup writes are replaced.
+func addMCPToJSONConfig(path, topKey, name string, entry map[string]any) error {
 	var cfg map[string]any
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -259,7 +257,16 @@ func addMCPToJSONConfig(path, topKey, name string, entry any) error {
 	if top == nil {
 		top = map[string]any{}
 	}
-	top[name] = entry
+	merged := make(map[string]any, len(entry))
+	if old, ok := top[name].(map[string]any); ok {
+		for k, v := range old {
+			merged[k] = v
+		}
+	}
+	for k, v := range entry {
+		merged[k] = v
+	}
+	top[name] = merged
 	cfg[topKey] = top
 
 	out, err := json.MarshalIndent(cfg, "", "  ")
@@ -270,37 +277,6 @@ func addMCPToJSONConfig(path, topKey, name string, entry any) error {
 		return err
 	}
 	return os.WriteFile(path, out, 0o644)
-}
-
-func addMCPToTOMLConfig(path, topKey, name string, entry any) error {
-	var cfg map[string]any
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("reading %s: %w", path, err)
-	}
-	if len(data) > 0 {
-		if _, err := toml.Decode(string(data), &cfg); err != nil {
-			return fmt.Errorf("parsing %s: %w", path, err)
-		}
-	}
-	if cfg == nil {
-		cfg = map[string]any{}
-	}
-	top, _ := cfg[topKey].(map[string]any)
-	if top == nil {
-		top = map[string]any{}
-	}
-	top[name] = entry
-	cfg[topKey] = top
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return toml.NewEncoder(f).Encode(cfg)
 }
 
 // codexConfigPath returns ~/.codex/config.toml if Codex is installed.
