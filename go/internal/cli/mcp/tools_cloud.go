@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -596,12 +597,28 @@ func cloudCommandTarget(auth *config.AuthConfig, asset interface{ GetName() stri
 	if auth == nil || auth.CloudGRPC == "" || asset.GetName() == "" {
 		return commandTarget{}
 	}
-	return commandTarget{
+	target := commandTarget{
 		Device:    asset.GetName(),
 		Transport: "cloud",
 		CloudGRPC: auth.CloudGRPC,
 		BrokerURL: brokerURL,
 	}
+	// A subprocess reloads credentials from disk. Pin the org/tenant and asset
+	// as well as the endpoint so a concurrent context switch cannot redirect it
+	// to a same-named robot in another organization.
+	if device, ok := asset.(mcpCloudDevice); ok && len(auth.Certificates) > 0 {
+		cert := auth.Certificates[0]
+		var path string
+		if device.isV2 && cert.TenantUUID() != "" && device.key != "" {
+			path = fmt.Sprintf("/tenant/%s/asset/%s", cert.TenantUUID(), device.key)
+		} else if !device.isV2 && cert.OrganizationID > 0 && device.legacyID > 0 {
+			path = fmt.Sprintf("/org/%d/asset/%d", cert.OrganizationID, device.legacyID)
+		}
+		if path != "" {
+			target.Selector = (&url.URL{Scheme: "cloud", Host: auth.CloudGRPC, Path: path}).String()
+		}
+	}
+	return target
 }
 
 func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, mcpCloudDevice, commandTarget, error) {
