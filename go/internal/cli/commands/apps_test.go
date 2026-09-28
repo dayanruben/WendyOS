@@ -206,3 +206,23 @@ func TestAppLifecycleSkill_NoStaleClaims(t *testing.T) {
 		t.Fatal("no copy of the wendy-app-lifecycle skill found")
 	}
 }
+
+// The /wendy-apps plugin command once said `apps start` always attaches and
+// sent agents to `wendy run --detach` instead; it must point at
+// `apps start --detach` and say what that restart policy means.
+func TestWendyAppsCommand_MentionsStartDetach(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "..", "plugins", "wendy-agentic-coding", "commands", "wendy-apps.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, "currently attaches to the app stream") {
+		t.Errorf("%s still says apps start always attaches", path)
+	}
+	for _, want := range []string{"wendy device apps start <app-id> --detach", "unless-stopped"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%s should mention %q", path, want)
+		}
+	}
+}
