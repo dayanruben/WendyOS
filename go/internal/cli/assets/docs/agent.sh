@@ -141,9 +141,12 @@ download() {
 # have_tty reports whether a controlling terminal can actually be opened.
 # `[[ -r /dev/tty ]]` is not enough: in agent shells and CI the node exists and
 # passes the permission check, but open(2) fails with ENXIO ("Device not
-# configured"), which aborts a `read </dev/tty` under `set -e`.
+# configured"), which aborts a `read </dev/tty` under `set -e`. The probe runs
+# in a subshell: where sh is bash (Fedora, macOS), `curl … | sh` runs this in
+# POSIX mode, and there a failed redirection on a special builtin such as `:`
+# or `exec` exits the shell. Only the subshell exits.
 have_tty() {
-  { : </dev/tty; } 2>/dev/null
+  (exec </dev/tty) 2>/dev/null
 }
 # <<< wendy-install-shared
 

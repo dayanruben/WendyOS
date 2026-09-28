@@ -158,9 +158,11 @@ serve_cli_release() {
 
 # run_no_tty OUT SCRIPT ARGS...: SCRIPT with no terminal, stdin from
 # /dev/null, the stub PATH and a throwaway HOME. Returns the script's exit code.
+# SH (default bash) is the shell command that runs it, e.g. SH="bash --posix".
 run_no_tty() {
   local out="$1" script="$2"; shift 2
-  no_tty env PATH="$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" bash "$script" "$@" </dev/null >"$out" 2>&1
+  # shellcheck disable=SC2086 # SH is a command plus its options
+  no_tty env PATH="$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" ${SH:-bash} "$script" "$@" </dev/null >"$out" 2>&1
 }
 
 # cli_with_default_dir DIR prints the path of a copy of cli.sh whose built-in
@@ -303,5 +305,48 @@ if [ "$(/usr/bin/id -u)" -ne 0 ]; then
   contains "notty.nohome.says_why" "$(cat "$OUT")" "HOME is unset. Re-run with -d <writable dir>."
   absent "notty.nohome.no_unbound" "$(cat "$OUT")" "unbound variable"
 fi
+
+# --- Test P: the same no-TTY installs under POSIX-mode shells ---
+# `curl … | sh` runs the installer with whatever sh is: dash on Debian/Ubuntu
+# (the script then re-execs itself under bash), but bash itself on Fedora/RHEL
+# and macOS, where it runs in POSIX mode. In POSIX mode a failed redirection on
+# a special builtin (`: </dev/tty`) exits the whole script, so every terminal
+# probe (confirm, can_elevate, the tour check) must survive there. The POSIX
+# case uses the bash running this suite: macOS's /bin/bash 3.2 predates the rule.
+for sh in "sh" "$BASH --posix"; do
+  tag="$(basename "${sh%% *}")${sh#"${sh%% *}"}"; tag="${tag// /_}"
+  # macOS without Homebrew, no -y: confirm() and the tour check probe the terminal.
+  make_stubs Darwin arm64
+  D="$(mktemp -d)"; setup_net "$D"; serve_cli_release "$D" darwin arm64
+  FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; DEST="$(mktemp -d)"
+  rc=0; SH="$sh" run_no_tty "$OUT" "$CLI" -d "$DEST" || rc=$?
+  check "posix.${tag}.prompt.exit" "0" "$rc"
+  check "posix.${tag}.prompt.binary" "yes" "$([ -x "$DEST/wendy" ] && echo yes || echo no)"
+  contains "posix.${tag}.prompt.autoyes" "$(cat "$OUT")" "continuing as if -y was passed"
+
+  # -y: only the tour check probes the terminal.
+  make_stubs Darwin arm64
+  D="$(mktemp -d)"; setup_net "$D"; serve_cli_release "$D" darwin arm64
+  FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; DEST="$(mktemp -d)"
+  rc=0; SH="$sh" run_no_tty "$OUT" "$CLI" -y -d "$DEST" || rc=$?
+  check "posix.${tag}.yes.exit" "0" "$rc"
+  contains "posix.${tag}.yes.summary" "$(cat "$OUT")" "Installed to $DEST/wendy"
+
+  # Linux, -y: can_elevate probes the terminal before trying sudo -n.
+  make_stubs Linux x86_64
+  D="$(mktemp -d)"; setup_net "$D"; serve_cli_release "$D" linux amd64
+  FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; DEST="$(mktemp -d)"
+  rc=0; SH="$sh" run_no_tty "$OUT" "$CLI" -y -d "$DEST" || rc=$?
+  check "posix.${tag}.linux.exit" "0" "$rc"
+  check "posix.${tag}.linux.binary" "yes" "$([ -x "$DEST/wendy" ] && echo yes || echo no)"
+done
+
+# Piped, the way `curl … | sh -s -- -y` runs it where sh is bash.
+make_stubs Darwin arm64
+D="$(mktemp -d)"; setup_net "$D"; serve_cli_release "$D" darwin arm64
+FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; DEST="$(mktemp -d)"
+rc=0; no_tty env PATH="$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" "$BASH" --posix -s -- -y -d "$DEST" <"$CLI" >"$OUT" 2>&1 || rc=$?
+check "posix.piped.exit" "0" "$rc"
+check "posix.piped.binary" "yes" "$([ -x "$DEST/wendy" ] && echo yes || echo no)"
 
 exit $fail
