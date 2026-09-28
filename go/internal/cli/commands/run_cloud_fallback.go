@@ -9,4 +9,13 @@ import "os"
 // merely has the same name.
 const runNoCloudFallbackEnv = "WENDY_RUN_NO_CLOUD_FALLBACK"
 
-func cloudFallbackDisabled() bool { return os.Getenv(runNoCloudFallbackEnv) == "1" }
+// cloudFallbackDisabled reports whether resolveWithCloudFallback must not
+// tunnel for cloudName. Only the deploy target (cloudName == "") is pinned: a
+// build host or fleet member is named explicitly and may be cloud-only.
+func cloudFallbackDisabled(cloudName string) bool {
+	return cloudName == "" && os.Getenv(runNoCloudFallbackEnv) == "1"
+}
+
+// cloudFallbackConnectFn is the tunnel resolveWithCloudFallback falls back
+// to; a variable so tests can observe whether the fallback was attempted.
+var cloudFallbackConnectFn = connectToCloudAgent
