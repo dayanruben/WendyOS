@@ -25,7 +25,7 @@ debugging and deployment capabilities.
 Usage: install-agent.sh [OPTIONS]
 
 Options:
-  -y            Skip confirmation prompt
+  -y            Skip confirmation prompt (assumed when no terminal is attached)
   -d DIR        Install directory (default: /usr/local/bin, only for binary fallback)
   -h, --help    Show this help message
 
@@ -137,6 +137,14 @@ download() {
     wget -qO "$dest" "$url"
   fi
 }
+
+# have_tty reports whether a controlling terminal can actually be opened.
+# `[[ -r /dev/tty ]]` is not enough: in agent shells and CI the node exists and
+# passes the permission check, but open(2) fails with ENXIO ("Device not
+# configured"), which aborts a `read </dev/tty` under `set -e`.
+have_tty() {
+  { : </dev/tty; } 2>/dev/null
+}
 # <<< wendy-install-shared
 
 # --- Homebrew helpers (macOS) ---
@@ -216,6 +224,11 @@ yum_install_or_upgrade() {
 # --- Prompt for confirmation ---
 confirm() {
   if [[ "$YES" == true ]]; then return 0; fi
+  if ! have_tty; then
+    echo "No interactive terminal; continuing as if -y was passed."
+    YES=true
+    return 0
+  fi
   printf "%s [y/N] " "$1"
   read -r answer </dev/tty
   case "$answer" in

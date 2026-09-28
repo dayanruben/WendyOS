@@ -13,6 +13,7 @@ BINARY_NAME="wendy"
 HOMEBREW_TAP="wendylabsinc/tap"
 HOMEBREW_FORMULA="wendylabsinc/tap/wendy"
 YES=false
+INSTALL_DIR_EXPLICIT=false
 
 usage() {
   cat <<EOF
@@ -21,8 +22,9 @@ Install the Wendy CLI.
 Usage: install-cli.sh [OPTIONS]
 
 Options:
-  -y            Skip confirmation prompt
-  -d DIR        Install directory (default: /usr/local/bin)
+  -y            Skip confirmation prompt (assumed when no terminal is attached)
+  -d DIR        Install directory (default: /usr/local/bin, or ~/.local/bin
+                when that needs a sudo password and no terminal is attached)
   -h, --help    Show this help message
 
 Environment:
@@ -34,7 +36,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -y) YES=true; shift ;;
-    -d) INSTALL_DIR="$2"; shift 2 ;;
+    -d) INSTALL_DIR="$2"; INSTALL_DIR_EXPLICIT=true; shift 2 ;;
     -h|--help) usage ;;
     *) echo "Unknown option: $1"; usage ;;
   esac
@@ -125,6 +127,14 @@ download() {
     wget -qO "$dest" "$url"
   fi
 }
+
+# have_tty reports whether a controlling terminal can actually be opened.
+# `[[ -r /dev/tty ]]` is not enough: in agent shells and CI the node exists and
+# passes the permission check, but open(2) fails with ENXIO ("Device not
+# configured"), which aborts a `read </dev/tty` under `set -e`.
+have_tty() {
+  { : </dev/tty; } 2>/dev/null
+}
 # <<< wendy-install-shared
 
 # --- Homebrew helper ---
@@ -171,12 +181,55 @@ trust_homebrew_formula() {
 # --- Prompt for confirmation ---
 confirm() {
   if [[ "$YES" == true ]]; then return 0; fi
+  if ! have_tty; then
+    echo "No interactive terminal; continuing as if -y was passed."
+    YES=true
+    return 0
+  fi
   printf "%s [y/N] " "$1"
   read -r answer </dev/tty
   case "$answer" in
     [yY]|[yY][eE][sS]) return 0 ;;
     *) echo "Aborted."; exit 1 ;;
   esac
+}
+
+# can_elevate reports whether root-level steps can run without failing on a
+# password prompt nobody can answer: already root, a terminal sudo can prompt
+# on, or sudo that needs no password (cached credentials or NOPASSWD).
+can_elevate() {
+  [[ "$(id -u)" -eq 0 ]] && return 0
+  command -v sudo &>/dev/null || return 1
+  have_tty && return 0
+  sudo -n true 2>/dev/null
+}
+
+# install_binary SRC installs SRC as ${INSTALL_DIR}/${BINARY_NAME}, using sudo
+# only when INSTALL_DIR isn't writable. When sudo can't be used here (no
+# terminal to type its password into, or no sudo at all), the default install
+# dir falls back to ~/.local/bin, updating INSTALL_DIR so the summary below
+# points at the real location; a dir the user chose with -d never moves, so
+# that fails with one line instead.
+install_binary() {
+  local src="$1" no_sudo="sudo is unavailable or needs a password that can't be entered here"
+  if mkdir -p "$INSTALL_DIR" 2>/dev/null && [[ -w "$INSTALL_DIR" ]]; then
+    install -m 755 "$src" "${INSTALL_DIR}/${BINARY_NAME}"
+  elif can_elevate; then
+    sudo mkdir -p "$INSTALL_DIR"
+    sudo install -m 755 "$src" "${INSTALL_DIR}/${BINARY_NAME}"
+  elif [[ "$INSTALL_DIR_EXPLICIT" == true ]]; then
+    echo "Error: ${INSTALL_DIR} is not writable, and ${no_sudo}. Re-run with -d <writable dir>." >&2
+    exit 1
+  elif [[ -z "${HOME:-}" ]]; then
+    echo "Error: ${INSTALL_DIR} is not writable, ${no_sudo}, and HOME is unset. Re-run with -d <writable dir>." >&2
+    exit 1
+  else
+    local fallback="${HOME}/.local/bin"
+    echo "${INSTALL_DIR} is not writable and ${no_sudo}; installing to ${fallback} instead."
+    INSTALL_DIR="$fallback"
+    mkdir -p "$INSTALL_DIR"
+    install -m 755 "$src" "${INSTALL_DIR}/${BINARY_NAME}"
+  fi
 }
 
 OS=$(detect_os)
@@ -251,15 +304,19 @@ if [[ "$OS" == "darwin" ]]; then
     echo "Downloading ${URL}..."
     download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
     tar -xzf "${TMPDIR_DL}/${ARTIFACT}" -C "$TMPDIR_DL"
-    if [[ ! -d "$INSTALL_DIR" ]]; then
-      mkdir -p "$INSTALL_DIR" 2>/dev/null || sudo mkdir -p "$INSTALL_DIR"
-    fi
-    sudo install -m 755 "${TMPDIR_DL}/wendy-cli-darwin-${ARCH}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+    install_binary "${TMPDIR_DL}/wendy-cli-darwin-${ARCH}/${BINARY_NAME}"
   fi
 
 # ===== Linux =====
 elif [[ "$OS" == "linux" ]]; then
-  if command -v apt-get &>/dev/null; then
+  # Package-manager installs need root. With no way to elevate (no terminal to
+  # type a sudo password into, e.g. an agent shell or CI without NOPASSWD),
+  # skip them and fall through to the standalone binary below.
+  PKG_OK=true
+  can_elevate || PKG_OK=false
+  pkg_manager() { [[ "$PKG_OK" == true ]] && command -v "$1" &>/dev/null; }
+
+  if pkg_manager apt-get; then
     echo "APT detected. Will add the Wendy repository and install wendy."
     confirm "Proceed?"
 
@@ -276,7 +333,7 @@ elif [[ "$OS" == "linux" ]]; then
     $SUDO apt-get update
     $SUDO apt-get install -y wendy
 
-  elif command -v dnf &>/dev/null; then
+  elif pkg_manager dnf; then
     echo "DNF detected. Will add the Wendy repository and install wendy."
     confirm "Proceed?"
 
@@ -291,7 +348,7 @@ REPO
     $SUDO dnf makecache
     $SUDO dnf install -y wendy
 
-  elif command -v yum &>/dev/null; then
+  elif pkg_manager yum; then
     echo "YUM detected. Will add the Wendy repository and install wendy."
     confirm "Proceed?"
 
@@ -306,7 +363,7 @@ REPO
     $SUDO yum makecache
     $SUDO yum install -y wendy
 
-  elif command -v pacman &>/dev/null; then
+  elif pkg_manager pacman; then
     echo "Pacman detected. Will install wendy from the AUR."
     confirm "Proceed?"
 
@@ -339,6 +396,9 @@ REPO
     fi
 
   else
+    if [[ "$PKG_OK" != true ]]; then
+      echo "sudo is unavailable or needs a password that can't be entered here; installing the standalone binary instead of using a system package manager."
+    fi
     TMPDIR_DL=$(mktemp -d)
     trap 'rm -rf "$TMPDIR_DL"' EXIT
 
@@ -352,7 +412,7 @@ REPO
     echo "Downloading ${URL}..."
     download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
     tar -xzf "${TMPDIR_DL}/${ARTIFACT}" -C "$TMPDIR_DL"
-    $SUDO install -m 755 "${TMPDIR_DL}/wendy-cli-linux-${ARCH}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+    install_binary "${TMPDIR_DL}/wendy-cli-linux-${ARCH}/${BINARY_NAME}"
   fi
 
 # ===== Windows (Git Bash / MSYS2) =====
@@ -390,11 +450,11 @@ if command -v "$BINARY_NAME" &>/dev/null; then
   "$BINARY_NAME" --version
 else
   echo "Installed to ${INSTALL_DIR}/${BINARY_NAME}."
-  echo "Make sure ${INSTALL_DIR} is in your PATH."
+  echo "Add it to your PATH: export PATH=\"${INSTALL_DIR}:\$PATH\""
 fi
 
 # --- Offer tour ---
-if [[ "$YES" != true ]] && command -v "$BINARY_NAME" &>/dev/null && [[ -t 1 ]] && [[ -r /dev/tty ]] && [[ -w /dev/tty ]]; then
+if [[ "$YES" != true ]] && command -v "$BINARY_NAME" &>/dev/null && [[ -t 1 ]] && have_tty; then
   printf "\nWould you like a quick guided tour of the Wendy CLI? [Y/n] "
   read -r tour_answer </dev/tty
   case "$tour_answer" in
@@ -403,7 +463,8 @@ if [[ "$YES" != true ]] && command -v "$BINARY_NAME" &>/dev/null && [[ -t 1 ]] &
     # terminal so Bubble Tea sees an interactive stdin and stdout.
     ""|[yY]|[yY][eE][sS]) "$BINARY_NAME" tour </dev/tty >/dev/tty ;;
   esac
-else
+elif have_tty; then
+  # Only suggest the tour where it can run: it needs an interactive terminal.
   echo ""
   echo "Run '${INSTALL_DIR}/${BINARY_NAME} tour' at any time for a guided walkthrough."
 fi
