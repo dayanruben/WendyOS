@@ -9,8 +9,6 @@ import (
 	"io"
 	"net"
 	"net/url"
-	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -162,41 +160,16 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("cloud_ping", pingOpts...), s.handleCloudPing)
 
 	runOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Build and deploy a local project to a cloud-enrolled device. Runs 'wendy cloud run' with your configured cloud credentials. The project's wendy.json entitlements (e.g. gpu, network, persistence) apply on the device; if a required entitlement is denied, the run fails with error_code ENTITLEMENT_DENIED."),
-		mcpgo.WithString("project_path",
-			mcpgo.Required(),
-			mcpgo.Description("Project directory containing wendy.json"),
-		),
-		mcpgo.WithString("device_name",
-			mcpgo.Description("Cloud device name"),
-		),
-		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
-		),
-		mcpgo.WithString("broker_url",
-			mcpgo.Description("Tunnel broker host:port; omit to use the default derived from cloud_grpc (port 443 when cloud_grpc ends in :443, otherwise port 50052)"),
-		),
-		mcpgo.WithString("build_type",
-			mcpgo.Description("Build type: docker, swift, or python"),
-		),
-		mcpgo.WithString("product",
-			mcpgo.Description("Swift Package Manager product to build and run"),
-		),
-		mcpgo.WithBoolean("debug",
-			mcpgo.Description("Enable debug logging"),
-		),
-		mcpgo.WithBoolean("deploy",
-			mcpgo.Description("Create container but do not start it"),
-		),
-		mcpgo.WithBoolean("detach",
-			mcpgo.Description("Start container but do not stream logs (default true for MCP)"),
-		),
-		mcpgo.WithNumber("timeout_seconds",
-			mcpgo.Description("Maximum command runtime in seconds (default 300)"),
-		),
-		mcpgo.WithNumber("max_bytes",
-			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
-		),
+		mcpgo.WithDescription("Build and deploy a local project to device or the connected target. Returns status and build-log tail. Check container_list and telemetry_logs for application readiness."),
+		mcpgo.WithString("project_path", mcpgo.Required(), mcpgo.Description("Directory containing wendy.json")),
+		mcpgo.WithString("device", mcpgo.Description("device from device_list, host:port, or vm:name; omit to reuse the connection")),
+		mcpgo.WithString("build_type", mcpgo.Enum("docker", "compose", "swift", "python"), mcpgo.Description("Build system; omit for automatic detection")),
+		mcpgo.WithString("product", mcpgo.Description("Swift package product")),
+		mcpgo.WithBoolean("debug", mcpgo.Description("Start under a debugger")),
+		mcpgo.WithBoolean("start", mcpgo.DefaultBool(true), mcpgo.Description("Start after deployment; false only creates the container")),
+		mcpgo.WithBoolean("detach", mcpgo.DefaultBool(true), mcpgo.Description("Return without streaming application logs")),
+		mcpgo.WithInteger("timeout_seconds", mcpgo.Min(1), mcpgo.Max(3600), mcpgo.DefaultNumber(300), mcpgo.Description("Command timeout")),
+		mcpgo.WithInteger("max_bytes", mcpgo.Min(1), mcpgo.Max(1000000), mcpgo.DefaultNumber(16384), mcpgo.Description("Build-log tail byte limit")),
 	}
 	runOpts = append(runOpts, mutating()...)
 	runOpts = append(runOpts, openWorld()...)
@@ -492,73 +465,6 @@ func mcpPingResult(stats mcpPingStats, name string) *mcpgo.CallToolResult {
 		"max_rtt_ms": stats.Max.Seconds() * 1000,
 	}
 	return okResult(out)
-}
-
-func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	projectPath := stringParam(req, "project_path")
-	if projectPath == "" {
-		return errResult(errCodeInvalidArgument, "project_path is required"), nil
-	}
-	timeout := time.Duration(intParam(req, "timeout_seconds", 300)) * time.Second
-	if timeout <= 0 {
-		timeout = 300 * time.Second
-	}
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	bin, err := os.Executable()
-	if err != nil || bin == "" {
-		bin = "wendy"
-	}
-	args := []string{"cloud", "run", "--prefix", projectPath, "--yes"}
-	if v := stringParam(req, "cloud_grpc"); v != "" {
-		args = append(args, "--cloud-grpc", v)
-	}
-	if v := stringParam(req, "device_name"); v != "" {
-		args = append(args, "--device", v)
-	}
-	if v := stringParam(req, "broker_url"); v != "" {
-		args = append(args, "--broker-url", v)
-	}
-	if v := stringParam(req, "build_type"); v != "" {
-		args = append(args, "--build-type", v)
-	}
-	if v := stringParam(req, "product"); v != "" {
-		args = append(args, "--product", v)
-	}
-	if req.GetBool("debug", false) {
-		args = append(args, "--debug")
-	}
-	if req.GetBool("deploy", false) {
-		args = append(args, "--deploy")
-	}
-	if req.GetBool("detach", true) {
-		args = append(args, "--detach")
-	}
-
-	tok := progressToken(req)
-	cmd := exec.CommandContext(runCtx, bin, args...)
-	reportProgress(ctx, tok, 0, 0, "running wendy…")
-	out, err := cmd.CombinedOutput()
-	s.refreshContainerMCPTools()
-	reportProgress(ctx, tok, 1, 1, "done")
-	text := strings.TrimSpace(string(out))
-	if runCtx.Err() != nil {
-		if text == "" {
-			text = runCtx.Err().Error()
-		}
-		return errResultf(errCodeTimeout, "%s", text), nil
-	}
-	if err != nil {
-		if text == "" {
-			text = err.Error()
-		}
-		return errResultf(errCodeInternal, "%s", text), nil
-	}
-	if text == "" {
-		text = "cloud run completed"
-	}
-	return okTextBounded(text, "reduce timeout_seconds, redirect the app's own output, or raise max_bytes", intParam(req, "max_bytes", 100000)), nil
 }
 
 // cloudResolveErr is returned by the cloud auth/asset-resolution helpers

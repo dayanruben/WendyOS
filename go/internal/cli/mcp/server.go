@@ -47,6 +47,7 @@ type mcpServer struct {
 	mu               sync.RWMutex
 	proxyDiag        []proxyDiagEntry
 	containerMCP     *containerMCPManager
+	runCommandFn     func(context.Context, []string, commandTarget, int) (string, bool, error)
 }
 
 // SetStartupConnect configures the optional device connection attempted after
