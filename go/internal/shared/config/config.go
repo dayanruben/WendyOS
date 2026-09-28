@@ -309,8 +309,10 @@ func writeConfigFile(path string, data []byte) error {
 	return atomicfile.WritePreservingOwner(path, data, 0o600)
 }
 
-// maxSymlinkHops bounds the manual symlink-chain walk below, matching the
-// cap filepath.EvalSymlinks uses internally.
+// maxSymlinkHops bounds the manual symlink-chain walk below. It is Linux's
+// own limit for one path lookup (MAXSYMLINKS, 40), not filepath.EvalSymlinks'
+// (255): a config.json behind a dotfiles link needs one or two hops, and a
+// loop should fail fast.
 const maxSymlinkHops = 40
 
 // resolveConfigPath follows path through any symlinks to its final target,

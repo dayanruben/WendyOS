@@ -39,7 +39,7 @@ wendy device info                             # my-pi.local
 wendy --device my-mac.local:50051 device info # --device still wins
 ```
 
-Commands that connect to a device this way print `Using device <name> from WENDY_DEVICE.` (not in `--json` mode).
+Commands that connect to a device this way print `Using device <name> from WENDY_DEVICE.` The notice is not printed in `--json` mode, which the CLI also switches to on its own when it runs without an interactive terminal: from an AI tool's MCP server, a script, or a pipe.
 
 ## Automatic update notifications
 

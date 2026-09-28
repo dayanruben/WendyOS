@@ -17,6 +17,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -244,7 +245,16 @@ func TestSetDefaultClearsPinForHostPortDevice(t *testing.T) {
 	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
 		return nil, nil, errors.New("device offline in test")
 	}
-	t.Cleanup(func() { osLookupHostFn, lanBrowseFn, dialAgentLadderFn = origLookup, origBrowse, origLadder })
+	// The failed connect also reaches the provisioned-mTLS hint's LAN browse
+	// and the USB-direct fallback, whose real probes outlive this test and
+	// land on later tests' fake dialers.
+	origDiscover, origUSB := discoverLANDevices, usbDirectCandidatesFn
+	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	usbDirectCandidatesFn = func() []discovery.USBDirectCandidate { return nil }
+	t.Cleanup(func() {
+		osLookupHostFn, lanBrowseFn, dialAgentLadderFn = origLookup, origBrowse, origLadder
+		discoverLANDevices, usbDirectCandidatesFn = origDiscover, origUSB
+	})
 
 	cmd := newDeviceSetDefaultCmd()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
