@@ -3376,13 +3376,20 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 const explicitProviderProbeTimeout = 10 * time.Second
 
 // explicitProviderDevice selects the first device of p, the provider the user
-// named with --device.
+// named with --device. A runtime that doesn't answer within
+// explicitProviderProbeTimeout may be starting; with a person at the
+// terminal it gets as long as ensureDockerDaemon's wait (dockerDaemonReadyWait)
+// before it is reported, as device_unreachable: the named target didn't answer.
 func explicitProviderDevice(ctx context.Context, p providers.DeviceProvider) (*SelectedDevice, error) {
 	devices, err := p.DiscoverDevices(providers.WithProbeTimeout(ctx, explicitProviderProbeTimeout))
+	var slow *providers.ProbeTimeoutError
+	if errors.As(err, &slow) && humanPresent() {
+		fmt.Fprintf(os.Stderr, "%s is not responding yet; waiting up to %s for it...\n", p.DisplayName(), dockerDaemonReadyWait)
+		devices, err = p.DiscoverDevices(providers.WithProbeTimeout(ctx, dockerDaemonReadyWait))
+	}
 	if err != nil {
-		var slow *providers.ProbeTimeoutError
 		if errors.As(err, &slow) {
-			return nil, fmt.Errorf("%w — check that %s is running and responsive, then try again", err, p.DisplayName())
+			return nil, commandErrorf(errDeviceUnreachable, "%w — check that %s is running and responsive, then try again", err, p.DisplayName())
 		}
 		return nil, fmt.Errorf("discovering %s devices: %w", p.DisplayName(), err)
 	}

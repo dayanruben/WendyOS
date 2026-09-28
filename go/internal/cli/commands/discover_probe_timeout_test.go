@@ -29,35 +29,68 @@ func TestDiscoverExternalDevicesReporting_ReportsRuntimesThatDidNotAnswer(t *tes
 	}
 }
 
-// probeRecordingProvider records the probe bound DiscoverDevices was given.
+// probeRecordingProvider records the probe bound of each DiscoverDevices call
+// and answers from its script: a ProbeTimeoutError for that bound, or devices.
 type probeRecordingProvider struct {
 	*fakeProvider
-	gotTimeout time.Duration
+	timeouts []time.Duration
+	answerOn int // the call (1-based) that answers with devices; 0 = never
 }
 
 func (p *probeRecordingProvider) DiscoverDevices(ctx context.Context) ([]models.ExternalDevice, error) {
-	p.gotTimeout = providers.ProbeTimeout(ctx)
-	return p.fakeProvider.DiscoverDevices(ctx)
+	d := providers.ProbeTimeout(ctx)
+	p.timeouts = append(p.timeouts, d)
+	if len(p.timeouts) == p.answerOn {
+		return []models.ExternalDevice{extDevice("docker")}, nil
+	}
+	return nil, &providers.ProbeTimeoutError{Runtime: "Docker", After: d}
+}
+
+func newProbeRecordingProvider(answerOn int) *probeRecordingProvider {
+	return &probeRecordingProvider{fakeProvider: &fakeProvider{key: providers.ProviderKeyDocker}, answerOn: answerOn}
 }
 
 // `--device docker` against a slow-but-healthy daemon used to fail with "no
-// Docker devices found" after the 3 s discovery bound.
-func TestExplicitProviderDevice_LongerBoundAndDistinctTimeoutError(t *testing.T) {
-	p := &probeRecordingProvider{fakeProvider: &fakeProvider{key: providers.ProviderKeyDocker,
-		discoverErr: &providers.ProbeTimeoutError{Runtime: "Docker", After: explicitProviderProbeTimeout}}}
+// Docker devices found" after the 3 s discovery bound. With no one at the
+// terminal it waits 10 s, then fails as device_unreachable naming the timeout.
+func TestExplicitProviderDevice_NoPersonLongerBoundAndDistinctError(t *testing.T) {
+	stubHumanPresent(t, false)
+	p := newProbeRecordingProvider(0)
 
 	_, err := explicitProviderDevice(context.Background(), p)
-	if p.gotTimeout != explicitProviderProbeTimeout || explicitProviderProbeTimeout < 10*time.Second {
-		t.Fatalf("probe bound = %s, want explicitProviderProbeTimeout (>= 10s)", p.gotTimeout)
+	if len(p.timeouts) != 1 || p.timeouts[0] != 10*time.Second {
+		t.Fatalf("probe bounds = %v, want one 10s probe", p.timeouts)
 	}
 	if err == nil || !strings.Contains(err.Error(), "did not answer within 10s") || strings.Contains(err.Error(), "no Docker devices") {
 		t.Fatalf("err = %v, want the timeout named, not \"no devices found\"", err)
 	}
+	if !errors.Is(err, errDeviceUnreachable) || ErrorClass(err) != "device_unreachable" {
+		t.Fatalf("err class = %q, want device_unreachable", ErrorClass(err))
+	}
+}
 
-	p.discoverErr = nil
-	p.devices = []models.ExternalDevice{extDevice("docker")}
-	sel, err := explicitProviderDevice(context.Background(), p)
-	if err != nil || sel == nil || sel.External == nil || sel.Provider != p {
-		t.Fatalf("explicitProviderDevice = %+v, %v; want the provider's device selected", sel, err)
+// With a person at the terminal the runtime may be starting, so — like
+// ensureDockerDaemon — it is given up to dockerDaemonReadyWait.
+func TestExplicitProviderDevice_PersonPresentWaitsLikeEnsureDockerDaemon(t *testing.T) {
+	stubHumanPresent(t, true)
+
+	slow := newProbeRecordingProvider(2) // answers on the longer, second probe
+	sel, err := explicitProviderDevice(context.Background(), slow)
+	if err != nil || sel == nil || sel.External == nil || sel.Provider != slow {
+		t.Fatalf("explicitProviderDevice = %+v, %v; want the slow runtime selected", sel, err)
+	}
+	if want := []time.Duration{10 * time.Second, dockerDaemonReadyWait}; len(slow.timeouts) != 2 || slow.timeouts[0] != want[0] || slow.timeouts[1] != want[1] {
+		t.Fatalf("probe bounds = %v, want %v", slow.timeouts, want)
+	}
+
+	hung := newProbeRecordingProvider(0)
+	_, err = explicitProviderDevice(context.Background(), hung)
+	if err == nil || !strings.Contains(err.Error(), "did not answer within 1m0s") || !errors.Is(err, errDeviceUnreachable) {
+		t.Fatalf("err = %v, want a device_unreachable error naming the 60s wait", err)
+	}
+
+	quick := newProbeRecordingProvider(1)
+	if _, err := explicitProviderDevice(context.Background(), quick); err != nil || len(quick.timeouts) != 1 {
+		t.Fatalf("a runtime that answers at once: err = %v, probes = %v; want one probe", err, quick.timeouts)
 	}
 }
