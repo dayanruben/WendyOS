@@ -219,12 +219,14 @@ func executeRunCommand(ctx context.Context, args []string, target commandTarget,
 	if err = cmd.Start(); err != nil {
 		return "", false, err
 	}
+	unpin := pinRunProcess(cmd)
 	release := stopRunOnCancel(ctx, cmd)
 	err = cmd.Wait()
 	release()
+	unpin()
 	if ctx.Err() != nil {
 		// Reap build descendants (docker, buildx, swift) the CLI left behind.
-		_ = signalRunProcess(cmd, len(runStopGrace))
+		reapRunGroup(cmd)
 	} else if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
 		// The CLI succeeded; a descendant merely kept the output pipe open.
 		err = nil

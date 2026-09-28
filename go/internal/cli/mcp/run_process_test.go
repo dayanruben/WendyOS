@@ -119,7 +119,7 @@ func TestExecuteRunCommandInterruptsProcessGroupAndReapsDescendants(t *testing.T
 // Review: a CLI that exits 0 while a descendant still holds its stdout is a
 // successful deploy, not ErrWaitDelay/INTERNAL.
 func TestExecuteRunCommandSucceedsWhenDescendantHoldsOutput(t *testing.T) {
-	done, _ := startRunProcessHelper(t, context.Background(), "orphan")
+	done, descendant := startRunProcessHelper(t, context.Background(), "orphan")
 	select {
 	case result := <-done:
 		if result.err != nil || !strings.Contains(result.output, "deployed") {
@@ -127,5 +127,9 @@ func TestExecuteRunCommandSucceedsWhenDescendantHoldsOutput(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("run did not return after the CLI exited")
+	}
+	// Only a cancelled run is reaped; a successful CLI's descendants are its own.
+	if !runProcessAlive(descendant) {
+		t.Fatal("a successful run's descendant was killed")
 	}
 }

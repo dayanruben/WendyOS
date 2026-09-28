@@ -18,6 +18,13 @@ func configureRunProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+// pinRunProcess is a no-op: signals address the process group, not a PID.
+func pinRunProcess(*exec.Cmd) func() { return func() {} }
+
+// reapRunGroup kills what is left of a cancelled run's process group after
+// the CLI has exited.
+func reapRunGroup(cmd *exec.Cmd) { _ = signalRunProcess(cmd, len(runStopSignals)-1) }
+
 // signalRunProcess sends stage's stop signal (the last one for any later
 // stage) to the run's process group.
 func signalRunProcess(cmd *exec.Cmd, stage int) error {
