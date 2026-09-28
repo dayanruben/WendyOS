@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -53,10 +54,45 @@ func (s *mcpServer) runNextStep(target commandTarget) string {
 	switch connected := runTargetIdentity(session); {
 	case connected == "":
 		return fmt.Sprintf("This session is not connected to %s. Call %s%s", deployed, connect, verify)
-	case connected != deployed:
+	case !sameRunTarget(session, target):
 		return fmt.Sprintf("run deployed to %s, but this session is connected to %s. Call %s%s", deployed, connected, connect, verify)
 	}
 	return ""
+}
+
+// sameRunTarget reports whether two targets replay to the same device,
+// whatever their spelling: a bare host is its host:50051 and host names
+// ignore case, and a cloud session matches its pinned selector or, within the
+// same cloud endpoint, its device name.
+func sameRunTarget(a, b commandTarget) bool {
+	for _, x := range runTargetKeys(a) {
+		for _, y := range runTargetKeys(b) {
+			if x == y {
+				return !strings.HasPrefix(x, "name:") || a.CloudGRPC == "" || b.CloudGRPC == "" || a.CloudGRPC == b.CloudGRPC
+			}
+		}
+	}
+	return false
+}
+
+func runTargetKeys(target commandTarget) []string {
+	var keys []string
+	if target.Selector != "" {
+		keys = append(keys, target.Selector)
+	}
+	switch device := target.Device; {
+	case device == "":
+	case strings.HasPrefix(strings.ToLower(device), "cloud:"), strings.HasPrefix(device, "vm:"):
+		keys = append(keys, device)
+	case target.Transport == "cloud":
+		keys = append(keys, "name:"+device)
+	default:
+		if _, _, err := net.SplitHostPort(device); err != nil {
+			device = withDefaultAgentPort(device)
+		}
+		keys = append(keys, "addr:"+strings.ToLower(device))
+	}
+	return keys
 }
 
 // runTargetIdentity is the device a target replays to.

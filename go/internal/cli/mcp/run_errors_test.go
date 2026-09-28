@@ -353,3 +353,46 @@ func TestRunPointsCloudDeviceNamesAtCloudConnect(t *testing.T) {
 		t.Errorf("auth failure got a cloud_connect hint: %s", next)
 	}
 }
+
+// runNextStep compares replay identities, not spellings: a bare host is its
+// host:50051, host names ignore case, and a cloud_connect session is the same
+// device as its name or its pinned selector.
+func TestRunNextStepComparesNormalizedTargets(t *testing.T) {
+	cloud := commandTarget{Device: "robot", Transport: "cloud", CloudGRPC: "c.example:443", Selector: "cloud://c.example:443/org/1/asset/2"}
+	lan := commandTarget{Device: "robot-b.local:50051", Transport: "direct"}
+	for _, tc := range []struct {
+		name      string
+		session   commandTarget
+		args      map[string]any
+		reconnect bool
+	}{
+		{"bare host is host:50051", lan, map[string]any{"device": "robot-b.local"}, false},
+		{"host names ignore case", lan, map[string]any{"device": "Robot-B.local:50051"}, false},
+		{"other LAN device", lan, map[string]any{"device": "robot-a.local"}, true},
+		{"other port", lan, map[string]any{"device": "robot-b.local:50061"}, true},
+		{"cloud name of the session", cloud, map[string]any{"device_name": "robot"}, false},
+		{"cloud selector of the session", cloud, map[string]any{"device": "cloud://c.example:443/org/1/asset/2"}, false},
+		{"same name in another cloud", cloud, map[string]any{"device_name": "robot", "cloud_grpc": "other.example:443"}, true},
+		{"other cloud asset", cloud, map[string]any{"device": "cloud://c.example:443/org/1/asset/3"}, true},
+		{"LAN name is not the cloud name", cloud, map[string]any{"device": "robot"}, true},
+		{"simulator", commandTarget{Device: "vm:go2", Transport: "direct"}, map[string]any{"device": "vm:go2"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(&config.Config{}, nil)
+			s.commandTarget = tc.session
+			s.runCommandFn = func(context.Context, []string, commandTarget, int) (string, bool, error) { return "ok", false, nil }
+			args := map[string]any{"project_path": runProject(t)}
+			for k, v := range tc.args {
+				args[k] = v
+			}
+			r, err := s.handleRun(context.Background(), callToolReq("run", args))
+			if err != nil || r.IsError {
+				t.Fatalf("run: %v %v", r, err)
+			}
+			next := structuredMap(t, r)["suggested_next_step"].(string)
+			if got := strings.Contains(next, "_connect("); got != tc.reconnect {
+				t.Fatalf("reconnect = %v, want %v: %s", got, tc.reconnect, next)
+			}
+		})
+	}
+}
