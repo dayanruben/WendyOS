@@ -42,22 +42,59 @@ var (
 	noFollowIdleGap        = 1500 * time.Millisecond
 )
 
+// logReplayEnd says why a --no-follow read stopped.
+type logReplayEnd int
+
+const (
+	replayEndedStream    logReplayEnd = iota // the agent closed the stream
+	replayEndedCancelled                     // ctx was cancelled (Ctrl-C)
+	replayEndedLive                          // a frame without IsHistory: the replay is definitely over
+	replayEndedIdle                          // no frame for the idle gap after a replayed one
+	replayEndedNoFrames                      // nothing at all within noFollowFirstFrameWait
+)
+
+// logReplayResult describes how a --no-follow read ended.
+type logReplayResult struct {
+	end     logReplayEnd
+	history int // replayed frames passed to handle
+}
+
+// noFollowHint explains a --no-follow run that printed nothing, or returns ""
+// when there is nothing to explain. Without it an empty result, exit 0, reads
+// as "this app has no logs" when the agent may simply not have replayed any.
+func noFollowHint(res logReplayResult, tail int32) string {
+	if res.history > 0 || res.end == replayEndedCancelled {
+		return ""
+	}
+	if tail <= 0 {
+		return "No log history received. Pass --tail N to replay the last N stored log batches; " +
+			"device agents released before 2026-08-19 replay history only with --tail."
+	}
+	msg := "No log history received"
+	if res.end == replayEndedNoFrames {
+		msg += fmt.Sprintf(" within %s", noFollowFirstFrameWait)
+	}
+	return msg + ": the app may have no stored logs matching the filters, the device may still be reading them, " +
+		"or its agent predates log replay (released before 2026-05-22)."
+}
+
 // consumeLogStream reads StreamLogs frames and passes each one to handle.
 //
 // With follow it runs until the stream ends. Without follow it returns once
 // the history replay is over (see noFollowIdleGap) and only hands replayed
-// frames to handle. In both modes a cancelled ctx — Ctrl-C — is a clean exit
-// rather than a "receiving logs: ... Canceled" error.
+// frames to handle; the result says how the replay ended. In both modes a
+// cancelled ctx — Ctrl-C — is a clean exit rather than a "receiving logs:
+// ... Canceled" error.
 //
 // ctx must be the context the stream was opened with, and the caller must
 // cancel it after consumeLogStream returns: that is what unblocks the
 // background Recv on the !follow path.
-func consumeLogStream(ctx context.Context, stream logStreamReceiver, follow bool, handle func(*agentpb.StreamLogsResponse)) error {
+func consumeLogStream(ctx context.Context, stream logStreamReceiver, follow bool, handle func(*agentpb.StreamLogsResponse)) (logReplayResult, error) {
 	if follow {
 		for {
 			resp, err := stream.Recv()
 			if err != nil {
-				return logStreamEndErr(ctx, err)
+				return logReplayResult{}, logStreamEndErr(ctx, err)
 			}
 			handle(resp)
 		}
@@ -82,22 +119,34 @@ func consumeLogStream(ctx context.Context, stream logStreamReceiver, follow bool
 		}
 	}()
 
+	var res logReplayResult
 	idle := time.NewTimer(noFollowFirstFrameWait)
 	defer idle.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			res.end = replayEndedCancelled
+			return res, nil
 		case <-idle.C:
-			return nil
+			res.end = replayEndedIdle
+			if res.history == 0 {
+				res.end = replayEndedNoFrames
+			}
+			return res, nil
 		case f := <-frames:
 			if f.err != nil {
-				return logStreamEndErr(ctx, f.err)
+				res.end = replayEndedStream
+				if ctx.Err() != nil {
+					res.end = replayEndedCancelled
+				}
+				return res, logStreamEndErr(ctx, f.err)
 			}
 			if !f.resp.GetIsHistory() {
-				return nil
+				res.end = replayEndedLive
+				return res, nil
 			}
 			handle(f.resp)
+			res.history++
 			idle.Reset(noFollowIdleGap)
 		}
 	}

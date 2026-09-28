@@ -1438,7 +1438,7 @@ func newDeviceLogsCmd() *cobra.Command {
 			liveSeparatorPrinted := tail == 0 || noFollow
 			seenHistory := false
 
-			return consumeLogStream(streamCtx, stream, !noFollow, func(resp *agentpb.StreamLogsResponse) {
+			res, err := consumeLogStream(streamCtx, stream, !noFollow, func(resp *agentpb.StreamLogsResponse) {
 				logs := resp.GetLogs()
 				if logs == nil {
 					return
@@ -1470,6 +1470,16 @@ func newDeviceLogsCmd() *cobra.Command {
 					}
 				}
 			})
+			if err != nil {
+				return err
+			}
+			if noFollow {
+				// On stderr in every mode: stdout stays pure log lines.
+				if hint := noFollowHint(res, tail); hint != "" {
+					cliLogln("%s", hint)
+				}
+			}
+			return nil
 		},
 	}
 
@@ -1478,7 +1488,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
 	cmd.Flags().Int32Var(&tail, "tail", 0, "Request the last N stored log batches matching the filters before following new output (default 0)")
-	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Print the logs the device replays (see --tail) and exit instead of following new output")
+	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Print the logs the device replays (see --tail) and exit instead of following new output; device agents released before 2026-08-19 replay history only with --tail")
 
 	return cmd
 }

@@ -102,12 +102,19 @@ func setNoFollowTimings(t *testing.T, firstFrame, idleGap time.Duration) {
 // context afterwards, as the command does.
 func runNoFollow(t *testing.T, frames ...*agentpb.StreamLogsResponse) (string, time.Duration, error) {
 	t.Helper()
+	got, elapsed, _, err := runNoFollowResult(t, frames...)
+	return got, elapsed, err
+}
+
+// runNoFollowResult is runNoFollow that also returns how the replay ended.
+func runNoFollowResult(t *testing.T, frames ...*agentpb.StreamLogsResponse) (string, time.Duration, logReplayResult, error) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var rec frameRecorder
 	start := time.Now()
-	err := consumeLogStream(ctx, newFakeLogStream(ctx, frames...), false, rec.handle)
-	return rec.got(), time.Since(start), err
+	res, err := consumeLogStream(ctx, newFakeLogStream(ctx, frames...), false, rec.handle)
+	return rec.got(), time.Since(start), res, err
 }
 
 func TestConsumeLogStream_NoFollowStopsAtFirstLiveFrame(t *testing.T) {
@@ -164,7 +171,7 @@ func TestConsumeLogStream_NoFollowReportsStreamErrors(t *testing.T) {
 	stream.endErr = status.Error(codes.Unavailable, "agent went away")
 	close(stream.frames)
 	var rec frameRecorder
-	err := consumeLogStream(ctx, stream, false, rec.handle)
+	_, err := consumeLogStream(ctx, stream, false, rec.handle)
 	if err == nil || !strings.Contains(err.Error(), "receiving logs") {
 		t.Fatalf("err = %v, want the stream failure reported", err)
 	}
@@ -177,7 +184,7 @@ func TestConsumeLogStream_FollowCancelIsCleanExit(t *testing.T) {
 	defer cancel()
 	var rec frameRecorder
 	handled := 0
-	err := consumeLogStream(ctx, newFakeLogStream(ctx, historyFrame("h1"), liveFrame("l1")), true, func(resp *agentpb.StreamLogsResponse) {
+	_, err := consumeLogStream(ctx, newFakeLogStream(ctx, historyFrame("h1"), liveFrame("l1")), true, func(resp *agentpb.StreamLogsResponse) {
 		rec.handle(resp)
 		if handled++; handled == 2 {
 			cancel() // the user presses Ctrl-C while following
@@ -196,14 +203,14 @@ func TestConsumeLogStream_FollowReportsStreamErrorsAndEOF(t *testing.T) {
 
 	eof := newFakeLogStream(ctx, liveFrame("l1"))
 	close(eof.frames)
-	if err := consumeLogStream(ctx, eof, true, func(*agentpb.StreamLogsResponse) {}); err != nil {
+	if _, err := consumeLogStream(ctx, eof, true, func(*agentpb.StreamLogsResponse) {}); err != nil {
 		t.Fatalf("EOF: err = %v, want nil", err)
 	}
 
 	broken := newFakeLogStream(ctx)
 	broken.endErr = status.Error(codes.Unavailable, "agent went away")
 	close(broken.frames)
-	err := consumeLogStream(ctx, broken, true, func(*agentpb.StreamLogsResponse) {})
+	_, err := consumeLogStream(ctx, broken, true, func(*agentpb.StreamLogsResponse) {})
 	if err == nil || !strings.Contains(err.Error(), "receiving logs") || !strings.Contains(err.Error(), "agent went away") {
 		t.Fatalf("err = %v, want the stream failure reported", err)
 	}
@@ -216,5 +223,63 @@ func TestDeviceLogsHasNoFollowFlag(t *testing.T) {
 	}
 	if f.DefValue != "false" {
 		t.Fatalf("--no-follow default = %q, want false (following stays the default)", f.DefValue)
+	}
+}
+
+// --no-follow can end with nothing printed: agents released before
+// 2026-08-19 flag only the --tail disk replay as history, older ones none of
+// it, and a slow disk scan can outlast noFollowFirstFrameWait. The command
+// must be able to tell that apart from a replay that printed logs.
+func TestConsumeLogStream_NoFollowReportsHowItEnded(t *testing.T) {
+	cases := []struct {
+		name        string
+		firstFrame  time.Duration
+		frames      []*agentpb.StreamLogsResponse
+		wantEnd     logReplayEnd
+		wantHistory int
+	}{
+		{"replay then live frame", time.Minute, []*agentpb.StreamLogsResponse{historyFrame("h1"), historyFrame("h2"), liveFrame("l")}, replayEndedLive, 2},
+		{"old agent: only unflagged frames", time.Minute, []*agentpb.StreamLogsResponse{liveFrame("cached"), liveFrame("cached2")}, replayEndedLive, 0},
+		{"nothing within the first-frame wait", 50 * time.Millisecond, nil, replayEndedNoFrames, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setNoFollowTimings(t, tc.firstFrame, time.Minute)
+			_, _, res, err := runNoFollowResult(t, tc.frames...)
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if res.end != tc.wantEnd || res.history != tc.wantHistory {
+				t.Fatalf("result = %+v, want end %v with %d replayed frames", res, tc.wantEnd, tc.wantHistory)
+			}
+		})
+	}
+}
+
+func TestNoFollowHint(t *testing.T) {
+	if hint := noFollowHint(logReplayResult{end: replayEndedLive, history: 3}, 20); hint != "" {
+		t.Fatalf("a replay that printed logs needs no hint, got %q", hint)
+	}
+	if hint := noFollowHint(logReplayResult{end: replayEndedCancelled}, 0); hint != "" {
+		t.Fatalf("Ctrl-C needs no hint, got %q", hint)
+	}
+	noTail := noFollowHint(logReplayResult{end: replayEndedLive}, 0)
+	for _, want := range []string{"No log history received", "--tail", "2026-08-19"} {
+		if !strings.Contains(noTail, want) {
+			t.Errorf("hint without --tail %q does not mention %q", noTail, want)
+		}
+	}
+	withTail := noFollowHint(logReplayResult{end: replayEndedNoFrames}, 20)
+	for _, want := range []string{"No log history received", "10s", "2026-05-22"} {
+		if !strings.Contains(withTail, want) {
+			t.Errorf("hint with --tail %q does not mention %q", withTail, want)
+		}
+	}
+}
+
+func TestDeviceLogsNoFollowHelpMentionsAgentCaveat(t *testing.T) {
+	f := newDeviceLogsCmd().Flags().Lookup("no-follow")
+	if f == nil || !strings.Contains(f.Usage, "2026-08-19") {
+		t.Fatalf("--no-follow help should say older agents replay history only with --tail; got %q", f.Usage)
 	}
 }
