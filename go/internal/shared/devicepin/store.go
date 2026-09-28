@@ -78,28 +78,35 @@ type Store struct {
 // Open loads the pin store from dir/known_devices.json, creating it if absent.
 func Open(dir string) (*Store, error) {
 	path := filepath.Join(dir, pinFileName)
-	devices, err := readPinFile(path)
+	devices, _, err := readPinFile(path)
 	if err != nil {
 		return nil, err
+	}
+	// A corrupt file opens as empty (readPinFile's nil map): start fresh
+	// rather than block all connections.
+	if devices == nil {
+		devices = make(map[string]PinnedDevice)
 	}
 	return &Store{path: path, devices: devices, dirty: make(map[string]bool)}, nil
 }
 
-// readPinFile returns the pins stored at path. A missing file is empty; so is
-// a corrupt one — start fresh rather than block all connections.
-func readPinFile(path string) (map[string]PinnedDevice, error) {
-	devices := make(map[string]PinnedDevice)
+// readPinFile returns the pins stored at path. A missing file is empty
+// (parsed, no pins). A file that does not parse — torn by a writer that
+// predates atomic writes, or truncated — returns a nil map and parsed false,
+// so each caller chooses what stands in for it: Open starts fresh, and flush
+// keeps this Store's own view rather than every pin being dropped.
+func readPinFile(path string) (devices map[string]PinnedDevice, parsed bool, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return devices, nil
+			return make(map[string]PinnedDevice), true, nil
 		}
-		return nil, fmt.Errorf("reading pin store: %w", err)
+		return nil, false, fmt.Errorf("reading pin store: %w", err)
 	}
 	if err := json.Unmarshal(data, &devices); err != nil || devices == nil {
-		return make(map[string]PinnedDevice), nil
+		return nil, false, nil
 	}
-	return devices, nil
+	return devices, true, nil
 }
 
 // CheckAndUpdate checks the stored pin for the device identified by leaf's
@@ -208,7 +215,9 @@ func (s *Store) Remove(key string) error {
 // not change keep whatever is on disk now, so another process's new pin or
 // unpin is never reverted by a snapshot this Store loaded earlier; the merged
 // result becomes this Store's view. LastSeen refreshes of unchanged entries
-// are in-memory only and may be dropped here — nothing reads them.
+// are in-memory only and may be dropped here — nothing reads them. A file that
+// does not parse contributes nothing to merge, so the merge then starts from
+// this Store's own view instead (see readPinFile).
 //
 // Before writing, it probes the file for write permission (like
 // config.writeConfigFile) and fails without touching it if that probe fails.
@@ -231,9 +240,19 @@ func (s *Store) flush() error {
 		_ = f.Close()
 	}
 
-	merged, err := readPinFile(s.path)
+	merged, parsed, err := readPinFile(s.path)
 	if err != nil {
 		return err
+	}
+	if !parsed {
+		// Nothing on disk can be merged, so this Store's view is the best
+		// record left of everyone's pins — what flush wrote before it
+		// merged. Starting from empty would drop every pin but this Store's
+		// changes.
+		merged = make(map[string]PinnedDevice, len(s.devices))
+		for key, d := range s.devices {
+			merged[key] = d
+		}
 	}
 	for key := range s.dirty {
 		if d, ok := s.devices[key]; ok {

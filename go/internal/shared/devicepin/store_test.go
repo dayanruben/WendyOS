@@ -486,3 +486,71 @@ func TestStore_FlushDoesNotReplaceAReadOnlyPinFile(t *testing.T) {
 		t.Errorf("known_devices.json mode changed: before %v, after %v", beforeInfo.Mode().Perm(), afterInfo.Mode().Perm())
 	}
 }
+
+// R26: a flush that finds known_devices.json unparseable — torn by a
+// non-atomic writer (an older wendy still running), or truncated — must not
+// start the merge from an empty map. This Store's own view is the best record
+// left of every other pin, exactly what the pre-merge flush wrote.
+func TestStore_FlushOverACorruptFileKeepsThisStoresPins(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"truncated", ""},
+		{"torn", `{"urn:wendy:org:7:asset:42": {"spkiFingerpr`},
+		{"null", "null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := devicepin.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.CheckAndUpdate(assetCert(t, 7, "42", time.Now().Add(24*time.Hour)), "thor"); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "known_devices.json")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.CheckAndUpdate(assetCert(t, 7, "43", time.Now().Add(24*time.Hour)), "orin"); err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := devicepin.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"urn:wendy:org:7:asset:42", "urn:wendy:org:7:asset:43"} {
+				if !fresh.Has(key) {
+					t.Errorf("pin %s lost when flushing over a %s known_devices.json", key, tc.name)
+				}
+			}
+		})
+	}
+}
+
+// Open still starts fresh over a corrupt file rather than blocking every
+// connection on it.
+func TestStore_OpenTreatsACorruptFileAsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "known_devices.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := devicepin.Open(dir)
+	if err != nil {
+		t.Fatalf("Open over a corrupt pin file: %v", err)
+	}
+	if s.Has("urn:wendy:org:7:asset:42") {
+		t.Fatal("a corrupt pin file produced a pin")
+	}
+	if err := s.CheckAndUpdate(assetCert(t, 7, "42", time.Now().Add(24*time.Hour)), "thor"); err != nil {
+		t.Fatalf("first pin over a corrupt file: %v", err)
+	}
+	fresh, err := devicepin.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh.Has("urn:wendy:org:7:asset:42") {
+		t.Fatal("the pin written over a corrupt file was not persisted")
+	}
+}
