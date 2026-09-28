@@ -17,8 +17,8 @@ import (
 )
 
 // TestRunProcessHelper is the `wendy run` stand-in for the process tests
-// below. It starts a descendant in its own process group, the way docker or
-// swift builds are started, and records the descendant's PID.
+// below. Like the CLI starting docker or swift, it starts a descendant that
+// stays in the run's process group, and records the descendant's PID.
 func TestRunProcessHelper(t *testing.T) {
 	mode := os.Getenv("WENDY_MCP_RUN_PROCESS_HELPER")
 	if mode == "" {
@@ -26,15 +26,20 @@ func TestRunProcessHelper(t *testing.T) {
 	}
 	// "interrupt": the descendant ignores SIGINT and keeps no pipe, like a
 	// build that outlives the CLI. "orphan": the descendant holds stdout open
-	// after the CLI succeeds.
+	// after the CLI succeeds. "stubborn": the CLI and its descendant survive
+	// SIGINT and SIGTERM, so only SIGKILL stops them.
 	script := "trap '' INT; exec sleep 60"
+	switch mode {
+	case "stubborn":
+		script = "trap '' INT TERM; exec sleep 60"
+	}
 	child := exec.Command("/bin/sh", "-c", script)
 	if mode == "orphan" {
 		child = exec.Command("/bin/sh", "-c", "exec sleep 60")
 		child.Stdout = os.Stdout
 	}
-	interrupted := make(chan os.Signal, 1)
-	signal.Notify(interrupted, os.Interrupt)
+	interrupted := make(chan os.Signal, 2)
+	signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM)
 	if err := child.Start(); err != nil {
 		fmt.Println("helper:", err)
 		os.Exit(2)
@@ -47,6 +52,11 @@ func TestRunProcessHelper(t *testing.T) {
 		os.Exit(0)
 	}
 	fmt.Println("building")
+	if mode == "stubborn" {
+		for sig := range interrupted {
+			fmt.Println("ignored", sig)
+		}
+	}
 	<-interrupted
 	fmt.Println("interrupted: stopping application")
 	os.Exit(3)
@@ -131,5 +141,38 @@ func TestExecuteRunCommandSucceedsWhenDescendantHoldsOutput(t *testing.T) {
 	// Only a cancelled run is reaped; a successful CLI's descendants are its own.
 	if !runProcessAlive(descendant) {
 		t.Fatal("a successful run's descendant was killed")
+	}
+}
+
+// A CLI that survives SIGINT gets SIGTERM after the first grace period and
+// SIGKILL after the second, and its descendants go with it.
+func TestExecuteRunCommandEscalatesToSIGTERMThenSIGKILL(t *testing.T) {
+	old := runStopGrace
+	t.Cleanup(func() { runStopGrace = old })
+	runStopGrace = [...]time.Duration{300 * time.Millisecond, 300 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done, descendant := startRunProcessHelper(t, ctx, "stubborn")
+	start := time.Now()
+	cancel()
+	var result runProcessResult
+	select {
+	case result = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stubborn run was never killed")
+	}
+	interrupt, terminate := strings.Index(result.output, "ignored interrupt"), strings.Index(result.output, "ignored terminated")
+	if interrupt < 0 || terminate < interrupt || result.err == nil || result.err.Error() != "signal: killed" {
+		t.Fatalf("want SIGINT, then SIGTERM, then SIGKILL: output=%q err=%v", result.output, result.err)
+	}
+	if elapsed := time.Since(start); elapsed < 600*time.Millisecond {
+		t.Fatalf("killed after %v, before both grace periods passed", elapsed)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for runProcessAlive(descendant) {
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant %d survived the kill", descendant)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
