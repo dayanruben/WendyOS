@@ -1241,7 +1241,10 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 		// This runs BEFORE the update check on purpose: that check can offer to
 		// upload an agent binary, which must never happen against a device whose
 		// identity we are about to reject.
-		if pinErr := enforceDevicePin(pinKey, conn); pinErr != nil {
+		//
+		// addr goes with it: when 127.0.0.1:PORT is a running VM's forward, its
+		// endpoint is pinned beside vm:<name> (see vmEndpointPinKey).
+		if pinErr := enforceDevicePinAt(pinKey, addr, conn); pinErr != nil {
 			conn.Close()
 			return nil, pinErr
 		}
@@ -1380,6 +1383,9 @@ func enforceSelectedDevicePin(target *SelectedDevice) error {
 	if target == nil || target.Agent == nil || target.PinKey == "" {
 		return nil
 	}
+	// No dialled endpoint: a picked LAN device is keyed by hostname, never
+	// vm:<name>, and a picked VM was already checked at its forwarded endpoint
+	// by connectSimulatorAgent.
 	if err := enforceDevicePin(target.PinKey, target.Agent); err != nil {
 		target.Agent.Close()
 		target.Agent = nil
@@ -3355,7 +3361,8 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		// Same pin key as connectToAgent's: the host of the address dialled, via
 		// the same pinKeyForAddr the ladder uses. resolveTarget reaches devices
 		// connectToAgent never sees, and an unchecked path is the whole attack.
-		if pinErr := enforceDevicePin(pinKeyForAddr(addr), conn); pinErr != nil {
+		// Same dialled endpoint too, for a VM's forward (see vmEndpointPinKey).
+		if pinErr := enforceDevicePinAt(pinKeyForAddr(addr), addr, conn); pinErr != nil {
 			conn.Close()
 			return nil, pinErr
 		}
