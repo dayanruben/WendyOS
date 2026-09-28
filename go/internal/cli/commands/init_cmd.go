@@ -1273,6 +1273,10 @@ func pickInitLanguage(target string) (string, error) {
 				Value:       l.key,
 			})
 		}
+		if !isInteractiveTerminal() {
+			printPickerItemsPlainText("Available languages", items)
+			return "", fmt.Errorf("--language is required when running non-interactively (valid: %s, %s)", langSwift, langPython)
+		}
 		return pickFromItems("What language will you use?", items)
 	}
 }
@@ -1302,6 +1306,15 @@ var askEntitlementQuestions = func(target, language string) ([]appconfig.Entitle
 			Description: q.description,
 			Value:       q.entitlement,
 		}
+	}
+
+	// The checklist needs a terminal; without one, say which flags answer it.
+	if !isInteractiveTerminal() {
+		names := make([]string, len(wendyOSEntitlementQuestions))
+		for i, q := range wendyOSEntitlementQuestions {
+			names[i] = q.entitlement
+		}
+		return nil, fmt.Errorf("--entitlement is required when running non-interactively: repeat it (or comma-separate) for each one the app needs (%s), or pass --no-extra-entitlements for network access only", strings.Join(names, ", "))
 	}
 
 	selected, err := tui.RunChecklist("What does your app need access to?", items)

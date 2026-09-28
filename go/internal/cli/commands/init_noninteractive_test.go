@@ -179,3 +179,37 @@ func TestInitPythonUVProject_PyprojectIsAPackagedProject(t *testing.T) {
 		t.Errorf("Dockerfile CMD should run the demo_app entry point without re-syncing at start:\n%s", dockerfile)
 	}
 }
+
+// Without a TTY, each question `wendy init` would ask with a picker or
+// checklist must instead fail — before anything is scaffolded — naming the
+// flag that answers it. They used to fail with "could not open a new TTY".
+func TestInitCommand_NonInteractiveMissingAnswersNameTheFlag(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantFlag string
+	}{
+		{"entitlements", []string{"--app-id", "demo-app", "--target", "wendyos", "--language", "python"}, "--entitlement"},
+		{"language", []string{"--app-id", "demo-app", "--target", "wendyos", "--no-extra-entitlements"}, "--language"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := chdirTemp(t)
+			stubNonInteractive(t)
+
+			cmd := newInitCmd()
+			cmd.SetArgs(tc.args)
+			var execErr error
+			stderr := captureStderr(t, func() { execErr = cmd.Execute() })
+			if execErr == nil || !strings.Contains(execErr.Error(), tc.wantFlag) {
+				t.Fatalf("err = %v, want one naming %s\nstderr:\n%s", execErr, tc.wantFlag, stderr)
+			}
+			if strings.Contains(execErr.Error(), "TTY") {
+				t.Fatalf("err = %v, want a usage error, not a TTY failure", execErr)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "wendy.json")); err == nil {
+				t.Fatal("wendy.json was written; the error must come before scaffolding")
+			}
+		})
+	}
+}
