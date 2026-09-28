@@ -65,6 +65,11 @@ func scanTOMLLines(src []byte) []tomlLine {
 			end += start + 1
 		}
 		text := strings.TrimRight(string(src[start:end]), "\r\n")
+		if start == 0 {
+			// A UTF-8 byte order mark is not part of the first line's
+			// content; its bytes are still copied with the line.
+			text = strings.TrimPrefix(text, "\ufeff")
+		}
 		trimmed := strings.TrimLeft(text, " \t")
 		clean := !inMLBasic && !inMLLit && depth == 0
 		ln := tomlLine{start: start, end: end, cont: !clean, inString: inMLBasic || inMLLit}

@@ -236,6 +236,20 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 			want: wendyTable,
 		},
 		{
+			// Some Windows editors save UTF-8 with a byte order mark.
+			name: "UTF-8 BOM before the wendy header is kept and the header recognised",
+			in: "\ufeff[mcp_servers.wendy]\n" +
+				"command = \"/old/wendy\"\n",
+			want: "\ufeff[mcp_servers.wendy]\n" +
+				wendyCommandLine +
+				wendyArgsLine,
+		},
+		{
+			name: "UTF-8 BOM before a comment is kept on append",
+			in:   "\ufeff# mine\nmodel = \"o3\"\n",
+			want: "\ufeff# mine\nmodel = \"o3\"\n\n" + wendyTable,
+		},
+		{
 			name: "args that are not an array are replaced",
 			in: "[mcp_servers.wendy]\n" +
 				"command = \"/opt/wendy/bin/wendy\"\n" +
@@ -524,6 +538,7 @@ func FuzzUpsertCodexMCPServer(f *testing.F) {
 		"# c\r\n[mcp_servers.wendy]\r\ncommand = \"x\"\r\n",
 		"[mcp_servers.wendy]\nargs = [\"\"\"mcp\"\"\"\", \"serve\"]\n# keep me\n",
 		"[mcp_servers.wendy]\nargs = [\n  \"x\",\n  # c\n]\n",
+		"\ufeff[mcp_servers.wendy]\ncommand = \"x\"\n",
 	} {
 		f.Add(seed)
 	}
@@ -569,7 +584,7 @@ func tomlCommentLines(src string) []string {
 	var comments []string
 	for i, l := range lines {
 		text := strings.TrimRight(l, "\r\n")
-		if !strings.HasPrefix(strings.TrimLeft(text, " \t"), "#") {
+		if !strings.HasPrefix(strings.TrimLeft(strings.TrimPrefix(text, "\ufeff"), " \t"), "#") {
 			continue
 		}
 		changed := strings.Join(lines[:i], "") + text + "x" + l[len(text):] + strings.Join(lines[i+1:], "")
