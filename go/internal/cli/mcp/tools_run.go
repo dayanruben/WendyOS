@@ -161,6 +161,9 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 		result["status"] = "created"
 	}
 	result["suggested_next_step"] = "Connect to the returned target, check container_list and telemetry_logs, then test the app's health endpoint or ROS interface. Deployment alone does not verify behavior."
+	if next := s.runNextStep(target); next != "" {
+		result["suggested_next_step"] = next
+	}
 	reportProgress(ctx, tok, 1, 1, "deployment command completed")
 	return okResult(result), nil
 }

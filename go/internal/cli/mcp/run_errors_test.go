@@ -122,8 +122,24 @@ func TestRunExplicitDeviceOverridesSessionAndSaysToConnect(t *testing.T) {
 	if target, ok := out["target"].(commandTarget); !ok || target.Device != "robot-b.local:50051" {
 		t.Fatalf("result target = %v", out["target"])
 	}
-	if !strings.Contains(out["suggested_next_step"].(string), "Connect to the returned target") {
-		t.Fatalf("suggested_next_step = %v", out["suggested_next_step"])
+	next := out["suggested_next_step"].(string)
+	for _, want := range []string{"robot-a.local:50051", `device_connect(address="robot-b.local:50051")`, "before container_list"} {
+		if !strings.Contains(next, want) {
+			t.Fatalf("suggested_next_step does not name %q: %s", want, next)
+		}
+	}
+	// Deploying to the connected target itself needs no reconnect, and a
+	// deploy with no session names the connect call for the deployed device.
+	s.runCommandFn = func(context.Context, []string, commandTarget, int) (string, bool, error) { return "ok", false, nil }
+	same, _ := s.handleRun(context.Background(), callToolReq("run", map[string]any{"project_path": runProject(t)}))
+	if next := structuredMap(t, same)["suggested_next_step"].(string); strings.Contains(next, "device_connect") {
+		t.Fatalf("session target run asks to reconnect: %s", next)
+	}
+	fresh := New(&config.Config{}, nil)
+	fresh.runCommandFn = s.runCommandFn
+	cloud, _ := fresh.handleRun(context.Background(), callToolReq("run", map[string]any{"project_path": runProject(t), "device_name": "robot-c"}))
+	if next := structuredMap(t, cloud)["suggested_next_step"].(string); !strings.Contains(next, `cloud_connect(device_name="robot-c")`) {
+		t.Fatalf("cloud deploy without a session: %s", next)
 	}
 }
 
