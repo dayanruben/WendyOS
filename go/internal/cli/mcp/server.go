@@ -238,6 +238,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, false),
 		server.WithPromptCapabilities(false),
+		server.WithInstructions(serverInstructions),
 	)
 	s.registerStatusTools(srv)
 	s.registerGuideResource(srv)
