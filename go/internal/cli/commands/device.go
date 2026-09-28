@@ -562,6 +562,11 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			if selectorErr != nil {
 				return selectorErr
 			}
+			if !isCloud {
+				if err := rejectNumericDeviceName(device); err != nil {
+					return err
+				}
+			}
 
 			if err := saveDefaultDevice(device); err != nil {
 				return err

@@ -10,6 +10,8 @@ wendy run
 
 Use `wendy device get-default` to see the current default, or `wendy device unset-default` to clear it.
 
+A device name made only of digits is rejected. To make a cloud asset the default, pass its cloud selector, `cloud://<cloud-grpc-host:port>/org/<org-id>/asset/<asset-id>`; the error for a numeric name prints the exact selector when you are logged in.
+
 ## Certificate pinning
 
 When you set a default device (and again on the first successful connection if the device was offline at set-default time), the CLI **pins** the device's identity — the organisation and cloud host its TLS certificate belongs to. On every later connection to the default device, the CLI checks that the device still presents that same organisation and cloud host.

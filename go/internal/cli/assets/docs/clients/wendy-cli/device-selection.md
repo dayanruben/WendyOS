@@ -14,6 +14,8 @@ wendy run --device my-mac.local:50051
 
 Failing to connect to an explicit device results in a failure.
 
+A value made only of digits, such as `283`, is rejected: it is not a hostname or IP address, and the system resolver would turn it into an unrelated address. If it is a Wendy Cloud asset ID, use its cloud selector (`--device cloud://<cloud-grpc-host:port>/org/<org-id>/asset/283`) or `wendy cloud device <command> --device 283`. The error prints the exact selector when you are logged in.
+
 > **TODO (test)**: If the target device is outdated, and `--json` is not specified, a warning will be printed to indicate an update is available.
 
 ## 2. `WENDY_DEVICE`

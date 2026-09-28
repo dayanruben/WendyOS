@@ -1,7 +1,11 @@
 package commands
 
 import (
+	"errors"
+	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -102,4 +106,74 @@ func mcpStartupDevice(flag string, cfg *config.Config) string {
 		return cfg.DefaultDevice
 	}
 	return ""
+}
+
+// errInvalidDeviceName marks a device name the direct path cannot dial.
+var errInvalidDeviceName = errors.New("invalid device name")
+
+// allDigitDeviceHost returns device's host part (the port stripped) and
+// whether it is made only of ASCII digits.
+func allDigitDeviceHost(device string) (host string, numeric bool) {
+	host = strings.TrimSpace(device)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if host == "" {
+		return "", false
+	}
+	for _, r := range host {
+		if r < '0' || r > '9' {
+			return host, false
+		}
+	}
+	return host, true
+}
+
+// rejectNumericDeviceName refuses an all-digit device on the direct path
+// (WDY-3126). Such a value is almost always a cloud asset ID — the cloud path
+// accepts one — but a direct connection would dial "283:50051", and the macOS
+// resolver answers "283" with 0.0.1.27: a connection attempt to an unrelated
+// address instead of an error. Callers run it only after the cloud-context
+// branch, so `wendy cloud device … --device 283` is unaffected.
+func rejectNumericDeviceName(device string) error {
+	host, numeric := allDigitDeviceHost(device)
+	if !numeric {
+		return nil
+	}
+	return commandErrorf(errInvalidDeviceName, "%s", numericDeviceMessage(strings.TrimSpace(device), host, numericCloudSelector(host)))
+}
+
+// numericCloudSelector is the cloud selector for asset id under the current
+// login, or "" when no single login can name it.
+func numericCloudSelector(id string) string {
+	assetID, err := strconv.ParseInt(id, 10, 32)
+	if err != nil || assetID <= 0 {
+		return ""
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return ""
+	}
+	auth, err := config.ResolveAuth(cfg, "", nil)
+	if err != nil || auth.CloudGRPC == "" || cloudAuthOrgID(auth) <= 0 {
+		return ""
+	}
+	return cloudDeviceSelector{Endpoint: auth.CloudGRPC, OrgID: cloudAuthOrgID(auth), AssetID: int32(assetID)}.String()
+}
+
+func numericDeviceMessage(device, host, selector string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "device %q is only digits, so it is not a hostname or IP address: a direct connection would dial %s, which the system resolver can turn into an unrelated address.\n",
+		device, hostPort(host, defaultAgentPort))
+	if selector != "" {
+		fmt.Fprintf(&b, "If %s is a Wendy Cloud asset ID, name it by its cloud selector:\n", host)
+		fmt.Fprintf(&b, "  wendy --device %s <command>\n", selector)
+		fmt.Fprintf(&b, "  wendy device set-default %s\n", selector)
+	} else {
+		fmt.Fprintf(&b, "If %s is a Wendy Cloud asset ID, name it by its cloud selector (log in with 'wendy cloud login' to see yours):\n", host)
+		fmt.Fprintf(&b, "  wendy --device cloud://<cloud-grpc-host:port>/org/<org-id>/asset/%s <command>\n", host)
+	}
+	fmt.Fprintf(&b, "or reach it through the cloud for one command:\n  wendy cloud device <command> --device %s\n", host)
+	b.WriteString("For a device on your network, use its hostname (for example wendyos-name.local) or IP address.")
+	return b.String()
 }

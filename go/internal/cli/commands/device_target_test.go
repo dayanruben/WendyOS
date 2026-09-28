@@ -192,3 +192,130 @@ func TestSetDefaultConfirmsTheSavedDeviceNotTheOverride(t *testing.T) {
 		t.Fatalf("override not restored: deviceFlag=%q fromEnv=%q", deviceFlag, deviceFlagFromEnv)
 	}
 }
+
+// Review Focus 4: only a host made purely of digits is refused.
+func TestRejectNumericDeviceName(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	for _, bad := range []string{"283", "283:50051", " 283 "} {
+		if err := rejectNumericDeviceName(bad); !errors.Is(err, errInvalidDeviceName) {
+			t.Errorf("rejectNumericDeviceName(%q) = %v, want errInvalidDeviceName", bad, err)
+		}
+	}
+	for _, ok := range []string{
+		"", "10.0.0.5", "10.0.0.5:50051", "283.local", "vm:283", "[::1]:50051",
+		"wendyos-283", "0x1f", "cloud://grpc.a.sh:443/org/7/asset/283", "docker",
+	} {
+		if err := rejectNumericDeviceName(ok); err != nil {
+			t.Errorf("rejectNumericDeviceName(%q) = %v, want nil", ok, err)
+		}
+	}
+}
+
+func TestNumericDeviceErrorNamesTheExactCloudSelector(t *testing.T) {
+	setTempConfig(t, &config.Config{Auth: []config.AuthConfig{
+		{CloudGRPC: "grpc.a.sh:443", Certificates: []config.CertificateInfo{{OrganizationID: 7}}},
+	}})
+	msg := rejectNumericDeviceName("283").Error()
+	for _, want := range []string{
+		"283:50051",
+		"wendy --device cloud://grpc.a.sh:443/org/7/asset/283 <command>",
+		"wendy device set-default cloud://grpc.a.sh:443/org/7/asset/283",
+		"wendy cloud device <command> --device 283",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error does not contain %q:\n%s", want, msg)
+		}
+	}
+	// The selector it prints must be one the direct path accepts.
+	if _, matched, err := parseCloudDeviceSelector("cloud://grpc.a.sh:443/org/7/asset/283"); !matched || err != nil {
+		t.Fatalf("printed selector is not accepted by parseCloudDeviceSelector: matched=%v err=%v", matched, err)
+	}
+
+	setTempConfig(t, &config.Config{})
+	msg = rejectNumericDeviceName("283").Error()
+	for _, want := range []string{"cloud://<cloud-grpc-host:port>/org/<org-id>/asset/283", "wendy cloud login", "wendy cloud device <command> --device 283"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("logged-out error does not contain %q:\n%s", want, msg)
+		}
+	}
+}
+
+func TestResolveDeviceAddressRejectsNumericDevice(t *testing.T) {
+	restoreDeviceGlobals(t)
+	setTempConfig(t, &config.Config{})
+	deviceFlag = "283"
+	if _, _, _, err := resolveDeviceAddress(); !errors.Is(err, errInvalidDeviceName) {
+		t.Fatalf("err = %v, want errInvalidDeviceName", err)
+	}
+	deviceFlag = ""
+	setTempConfig(t, &config.Config{DefaultDevice: "283"}) // a numeric default saved by an older CLI
+	if _, _, _, err := resolveDeviceAddress(); !errors.Is(err, errInvalidDeviceName) {
+		t.Fatalf("numeric saved default: err = %v, want errInvalidDeviceName", err)
+	}
+}
+
+// Never dial "283:50051" (the macOS resolver turns it into 0.0.1.27), and do
+// not swallow the error into the interactive picker either.
+func TestConnectToAgentRejectsNumericDeviceBeforeDialling(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	setTempConfig(t, &config.Config{})
+	deviceFlag, jsonOutput = "283", false
+	origLadder := dialAgentLadderFn
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+		t.Error("dialled a numeric device name; it must be rejected before any connection attempt")
+		return nil, nil, errors.New("unreachable in test")
+	}
+	t.Cleanup(func() { dialAgentLadderFn = origLadder })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := connectToAgent(ctx, NonInteractive()); !errors.Is(err, errInvalidDeviceName) {
+		t.Fatalf("err = %v, want errInvalidDeviceName", err)
+	}
+}
+
+func TestResolveTargetRejectsNumericDeviceBeforeDiscovery(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	setTempConfig(t, &config.Config{})
+	deviceFlag = "283"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, err := resolveTargetInner(ctx, NonInteractive()); !errors.Is(err, errInvalidDeviceName) {
+		t.Fatalf("err = %v, want errInvalidDeviceName", err)
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("took %s: provider discovery ran before the name was rejected", waited)
+	}
+}
+
+// The cloud path treats a bare number as an asset ID; the direct-path check
+// must not intercept it.
+func TestNumericDeviceIsLeftToTheCloudPath(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	setTempConfig(t, &config.Config{}) // not logged in: the cloud path fails for that reason instead
+	ctx := context.WithValue(context.Background(), cloudDeviceContextKey{}, cloudDeviceConfig{DeviceName: "283"})
+	if _, err := resolveTargetInner(ctx, NonInteractive()); errors.Is(err, errInvalidDeviceName) {
+		t.Fatalf("the cloud path rejected asset ID 283 as a device name: %v", err)
+	}
+}
+
+func TestSetDefaultRejectsNumericDevice(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	setTempConfig(t, &config.Config{DefaultDevice: "kept.local"})
+	cmd := newDeviceSetDefaultCmd()
+	cmd.SetContext(context.Background())
+	if err := cmd.RunE(cmd, []string{"283"}); !errors.Is(err, errInvalidDeviceName) {
+		t.Fatalf("err = %v, want errInvalidDeviceName", err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultDevice != "kept.local" {
+		t.Fatalf("a rejected numeric default was saved: %q", cfg.DefaultDevice)
+	}
+}

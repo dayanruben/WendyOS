@@ -902,6 +902,9 @@ func resolveDeviceAddress() (addr string, pinKey string, isDefault bool, err err
 	if hostname == "" {
 		return "", "", false, commandErrorf(errNoDevice, "%s", noDeviceMessage)
 	}
+	if err := rejectNumericDeviceName(hostname); err != nil {
+		return "", "", false, err
+	}
 	// If the hostname already contains a port, use it as-is.
 	addr = hostname
 	if _, _, splitErr := net.SplitHostPort(hostname); splitErr != nil {
@@ -1183,6 +1186,11 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 			return nil, err
 		}
 		device = loaded.DefaultDevice
+	}
+	// Before resolveDeviceAddress, whose error would otherwise fall through to
+	// the interactive picker below.
+	if err := rejectNumericDeviceName(device); err != nil {
+		return nil, err
 	}
 	if picked, matched, err := connectNamedDeviceSelector(ctx, device, cfg.suppressUpdateCheck); matched {
 		if err != nil {
@@ -3236,6 +3244,12 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		}
 		device = loadedCfg.DefaultDevice
 		isDefault = device != ""
+	}
+
+	// Before provider discovery: a dotless name would otherwise spin up every
+	// provider (findDeviceByID) before being dialled as 283:50051.
+	if err := rejectNumericDeviceName(device); err != nil {
+		return nil, err
 	}
 
 	rt := phaseTimer()
