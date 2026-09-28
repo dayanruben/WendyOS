@@ -116,7 +116,7 @@ func (s *mcpServer) handleDeviceList(ctx context.Context, req mcpgo.CallToolRequ
 }
 
 func (s *mcpServer) listCloudDevices(ctx context.Context, cloudGRPC string) ([]map[string]any, error) {
-	if len(s.cfg.Auth) == 0 && cloudGRPC == "" {
+	if len(s.currentConfig().Auth) == 0 && cloudGRPC == "" {
 		return nil, nil // Local-only installations do not require cloud login.
 	}
 	auth, err := s.cloudAuthEntry(cloudGRPC)
@@ -255,9 +255,15 @@ func (s *mcpServer) handleDeviceSetDefault(_ context.Context, req mcpgo.CallTool
 	if address == "" {
 		return errResult(errCodeInvalidArgument, "address is required"), nil
 	}
-	s.cfg.DefaultDevice = address
-	if err := config.Save(s.cfg); err != nil {
+	// Change only this field of the config as it is on disk now. Saving the
+	// startup snapshot would undo any login, pin or default another wendy
+	// process wrote since this server started.
+	if err := config.Update(func(cfg *config.Config) (bool, error) {
+		cfg.DefaultDevice = address
+		return true, nil
+	}); err != nil {
 		return errResultf(errCodeInternal, "saving config: %s", err.Error()), nil
 	}
+	s.cfg.DefaultDevice = address
 	return okText(fmt.Sprintf("default device set to %s", address)), nil
 }

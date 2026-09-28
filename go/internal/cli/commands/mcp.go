@@ -31,6 +31,9 @@ func newMCPServeCmd() *cobra.Command {
 		Short: "Start the MCP server on stdio",
 		Long:  "Start a Model Context Protocol server that exposes wendy device tools over stdio.\nConfigure your AI tool to run: wendy mcp serve\nOr run 'wendy mcp setup' to configure automatically.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Long-lived: read credentials fresh rather than from the snapshot
+			// loaded below (see wendymcp.EnableConfigReload).
+			wendymcp.EnableConfigReload(config.Load)
 			ctx := cmd.Context()
 			cfg, err := config.Load()
 			if err != nil {
