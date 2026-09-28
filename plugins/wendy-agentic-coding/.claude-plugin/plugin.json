@@ -26,10 +26,16 @@
   "commands": "./commands/",
   "agents": ["./agents/wendy-runtime-debugger.md"],
   "hooks": {
-    "Setup": [
+    "SessionStart": [
       {
-        "type": "command",
-        "command": "command -v wendy >/dev/null 2>&1 && printf 'Wendy CLI ready: %s\\n' \"$(wendy --version)\" || printf 'Wendy CLI not found. Ask the assistant to run /wendy-install or say \"install wendy\" to set it up.\\n'"
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"${CLAUDE_PROJECT_DIR:-.}/wendy.json\" ] || exit 0; if command -v wendy >/dev/null 2>&1; then printf 'Wendy project. Wendy CLI: %s\\n' \"$(WENDY_ANALYTICS=false wendy --version 2>/dev/null)\"; else printf 'Wendy project, but the Wendy CLI is not installed. Offer /wendy-install to set it up.\\n'; fi",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }
