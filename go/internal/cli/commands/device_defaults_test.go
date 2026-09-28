@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -424,5 +425,61 @@ func TestSetDefaultInJSONModeDoesNotOpenThePicker(t *testing.T) {
 	cmd.SetContext(context.Background())
 	if err := cmd.RunE(cmd, nil); !errors.Is(err, errNoDevice) {
 		t.Fatalf("err = %v, want errNoDevice", err)
+	}
+}
+
+// R11 fix: the error text promises devices "seen recently", so
+// setDefaultCandidates must bound the discovery-cache portion of its list by
+// TTL like every other display surface (Cache.Entries is reserved for the
+// connect fast path; Cache.Fresh is what the picker and discovery use).
+//
+// Cache.Flush prunes entries older than TTL when it writes, so a stale entry
+// cannot be seeded through the normal Upsert+Flush path used elsewhere in
+// this file — Flush would drop it again on write. This test instead writes
+// devices.json directly in the cache's on-disk schema (version 1, a
+// "devices" array of discoverycache.Entry), which is exactly what a real
+// devices.json accumulated over time could contain: entries newer than one
+// scan's Flush call but older than the cache's own TTL.
+func TestSetDefaultCandidatesOnlyListsFreshCacheEntries(t *testing.T) {
+	restoreDeviceGlobals(t)
+	setTempConfig(t, &config.Config{})
+	dir, err := config.ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	onDisk := struct {
+		Version int                    `json:"version"`
+		Devices []discoverycache.Entry `json:"devices"`
+	}{
+		Version: 1,
+		Devices: []discoverycache.Entry{
+			{ID: "fresh", DisplayName: "Fresh Heron", Hostname: "wendyos-fresh-heron.local", LastSeen: now},
+			{ID: "stale", DisplayName: "Stale Heron", Hostname: "wendyos-stale-heron.local", LastSeen: now.Add(-2 * discoverycache.TTL)},
+		},
+	}
+	data, err := json.Marshal(onDisk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "devices.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	names := setDefaultCandidates()
+	var foundFresh, foundStale bool
+	for _, n := range names {
+		switch n {
+		case "wendyos-fresh-heron.local":
+			foundFresh = true
+		case "wendyos-stale-heron.local":
+			foundStale = true
+		}
+	}
+	if !foundFresh {
+		t.Errorf("missing fresh cache entry in %v", names)
+	}
+	if foundStale {
+		t.Errorf("stale cache entry (older than discoverycache.TTL) listed: %v", names)
 	}
 }

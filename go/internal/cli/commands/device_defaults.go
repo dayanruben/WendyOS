@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -278,6 +279,11 @@ func setDefaultNeedsDeviceError() error {
 // setDefaultCandidates lists names set-default accepts, from local state only —
 // the discovery cache and the VM store. It runs on an error path, so it never
 // touches the network and treats any unreadable source as empty.
+//
+// Fresh, not Entries: the error text calls these "devices this CLI has seen
+// recently", and Entries returns every cached entry regardless of age. Fresh
+// bounds the list to the same TTL the picker and discovery use for display
+// (Entries is reserved for the connect fast path, per its own doc comment).
 func setDefaultCandidates() []string {
 	seen := map[string]bool{}
 	var names []string
@@ -291,7 +297,7 @@ func setDefaultCandidates() []string {
 		names = append(names, name)
 	}
 	if cache, err := discoverycache.Load(); err == nil {
-		for _, e := range cache.Entries() {
+		for _, e := range cache.Fresh(time.Now()) {
 			if e.Hostname != "" {
 				add(e.Hostname)
 			} else {
