@@ -14,9 +14,15 @@ import (
 const deviceEnvVar = "WENDY_DEVICE"
 
 // noDeviceMessage is the error for a command that needs a device and has none.
-// It keeps the "no device specified; use --device" prefix scripts and E2E tests
-// match on.
-const noDeviceMessage = "no device specified; use --device, set WENDY_DEVICE, or save a default with 'wendy device set-default <device>'"
+//
+// It must keep the exact prefix "no device specified; use --device flag or set
+// a default" verbatim: two enabled Swift E2E tests match on that substring —
+// swift/WendyE2ETests/Tests/WendyE2ETests/WendyDeviceVersionTests.swift:59 and
+// swift/WendyE2ETests/Tests/WendyE2ETests/WendyDeviceInfoTests.swift:266-268 —
+// reached through the JSON-mode branches at helpers.go's resolveDeviceAddress,
+// connectToAgentInner and resolveTargetInner. Do not shorten or reword that
+// prefix; extend the message after it instead.
+const noDeviceMessage = "no device specified; use --device flag or set a default with 'wendy device set-default <device>', or set WENDY_DEVICE for this shell"
 
 // deviceFlagFromEnv is the value applyDeviceEnv copied from WENDY_DEVICE into
 // deviceFlag, or "" when --device was given or the variable is unset.

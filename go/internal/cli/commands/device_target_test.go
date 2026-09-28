@@ -84,7 +84,13 @@ func TestNoDeviceErrorMentionsWENDY_DEVICE(t *testing.T) {
 	if !errors.Is(err, errNoDevice) {
 		t.Fatalf("err = %v, want errNoDevice", err)
 	}
-	for _, want := range []string{"no device specified; use --device", "WENDY_DEVICE", "wendy device set-default <device>"} {
+	for _, want := range []string{
+		// The exact prefix two enabled Swift E2E tests match on (see
+		// noDeviceMessage's doc comment) — must never be shortened or reworded.
+		"no device specified; use --device flag or set a default",
+		"WENDY_DEVICE",
+		"wendy device set-default <device>",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
