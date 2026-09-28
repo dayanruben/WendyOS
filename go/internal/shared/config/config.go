@@ -279,7 +279,11 @@ func Save(cfg *Config) error {
 // file: a crash or a concurrent reader sees the old config or the new one,
 // never the truncated file os.WriteFile leaves mid-write. The file is always
 // 0600 — it holds credentials. A symlinked config.json (a dotfiles repo) is
-// written through to its target so the link survives the rename.
+// written through to its target — including a dangling target that does not
+// exist yet — so the link survives the rename. The write preserves the
+// existing owner (or, for a fresh config.json, its directory's owner)
+// instead of leaving it root-owned, since `wendy` re-execs itself under sudo
+// with the invoking user's HOME for some operations.
 //
 // Before writing, it probes the target for write permission and fails
 // without touching the file if that probe fails. A rename replaces a file
@@ -290,9 +294,11 @@ func Save(cfg *Config) error {
 // os.WriteFile respected that mode by construction; this preserves the same
 // behavior under the new rename-based write path.
 func writeConfigFile(path string, data []byte) error {
-	if target, err := filepath.EvalSymlinks(path); err == nil {
-		path = target
+	resolved, err := resolveConfigPath(path)
+	if err != nil {
+		return err
 	}
+	path = resolved
 	if f, err := os.OpenFile(path, os.O_WRONLY, 0); err != nil {
 		if !os.IsNotExist(err) {
 			return err
@@ -300,7 +306,54 @@ func writeConfigFile(path string, data []byte) error {
 	} else {
 		_ = f.Close()
 	}
-	return atomicfile.Write(path, data, 0o600)
+	return atomicfile.WritePreservingOwner(path, data, 0o600)
+}
+
+// maxSymlinkHops bounds the manual symlink-chain walk below, matching the
+// cap filepath.EvalSymlinks uses internally.
+const maxSymlinkHops = 40
+
+// resolveConfigPath follows path through any symlinks to its final target,
+// including a dangling chain whose target does not exist yet.
+// filepath.EvalSymlinks requires the fully resolved path to exist, so it
+// fails outright on a dangling symlink — e.g. a freshly cloned dotfiles repo
+// whose config.json target hasn't been created. Falling back to path itself
+// in that case (as a naive "try EvalSymlinks, else use path unchanged"
+// would) makes writeConfigFile rename over the symlink itself, replacing it
+// with a regular file instead of creating its target — unlike the old
+// os.WriteFile, which follows a symlink to a missing target and creates it
+// there. Walking the chain by hand here reproduces that behavior.
+func resolveConfigPath(path string) (string, error) {
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		return target, nil
+	}
+	current := path
+	for i := 0; i < maxSymlinkHops; i++ {
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// current does not exist, not even as a symlink: this is the
+				// final target (a fresh config.json, dangling or not).
+				return current, nil
+			}
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			// Not a symlink: this is the final target. EvalSymlinks would
+			// already have succeeded above in the common case; this only
+			// matters if it failed for an unrelated, transient reason.
+			return current, nil
+		}
+		target, err := os.Readlink(current)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(current), target)
+		}
+		current = target
+	}
+	return "", fmt.Errorf("too many levels of symbolic links resolving %s", path)
 }
 
 // authEntryOrgID returns the organization ID from the first certificate in an

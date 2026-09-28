@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -81,6 +83,42 @@ func TestSaveWritesThroughASymlinkedConfig(t *testing.T) {
 	}
 }
 
+// A dangling symlink — its target does not exist yet, e.g. a freshly cloned
+// dotfiles repo whose submodule hasn't been checked out — must still be
+// written through, exactly like TestSaveWritesThroughASymlinkedConfig, and
+// exactly like the old os.WriteFile (which follows a symlink to a missing
+// target and creates it). filepath.EvalSymlinks fails outright on a dangling
+// link, so writeConfigFile cannot just fall back to EvalSymlinks failing:
+// falling back to the link path itself would replace the link with a
+// regular file via rename instead of creating the target.
+func TestSaveWritesThroughADanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WENDY_CONFIG_DIR", dir)
+	target := filepath.Join(t.TempDir(), "dotfiles-wendy-config.json")
+	// target intentionally does not exist: the symlink is dangling.
+	link := filepath.Join(dir, "config.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+	if err := Save(&Config{DefaultDevice: "dangling-link.local"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("Save replaced the dangling config.json symlink with a regular file")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("target was not created: %v", err)
+	}
+	if !strings.Contains(string(data), "dangling-link.local") {
+		t.Fatalf("symlink target was not written with the new content: %s", data)
+	}
+}
+
 // Human decision F3: a read-only config.json (e.g. chmod 444) is the user's
 // deliberate choice. A plain rename would silently replace it regardless of
 // its permissions, so Save must fail exactly as the old os.WriteFile did, and
@@ -98,8 +136,8 @@ func TestSaveRefusesToReplaceAReadOnlyConfig(t *testing.T) {
 	}
 
 	err := Save(&Config{DefaultDevice: "new.local"})
-	if err == nil {
-		t.Fatal("Save succeeded against a read-only config.json, want an error")
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("Save = %v, want an error wrapping fs.ErrPermission", err)
 	}
 
 	data, readErr := os.ReadFile(path)

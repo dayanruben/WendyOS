@@ -23,6 +23,13 @@ var (
 	hostOS   = runtime.GOOS
 )
 
+// geteuid and chown are seams so tests can exercise WritePreservingOwner's
+// root-only chown below without actually running as root.
+var (
+	geteuid = os.Geteuid
+	chown   = os.Chown
+)
+
 // Write atomically writes data to path: write to a temp file in the same
 // directory, fsync it, rename it over the target, then fsync the directory so
 // the rename itself is durable.
@@ -30,7 +37,36 @@ var (
 // perm is applied to the temp file before the rename, so the target never
 // exists with a wider mode than asked for — which is why a 0o600 key file is
 // never briefly world-readable.
+//
+// Write never changes the file's owner (see WritePreservingOwner for that):
+// the device agent runs as root by design when it writes device keys and
+// certificates, and a key file it creates should stay root-owned.
 func Write(path string, data []byte, perm os.FileMode) error {
+	return write(path, data, perm, nil)
+}
+
+// WritePreservingOwner is Write, except that when the caller is running as
+// root it keeps path's existing owner (or, for a path that does not exist
+// yet, its directory's owner) on the replacement file instead of leaving it
+// root-owned.
+//
+// wendy re-execs itself under `sudo --preserve-env=HOME` for privileged
+// operations (see commands.thorSudoPreserveEnv), so it keeps writing to the
+// invoking user's ~/.wendy while running as root. A plain rename-based write
+// there would leave config.json (or a lock file) root-owned, and every later
+// unprivileged `wendy` command would then fail to read or lock its own
+// config. This is the write path config.Save and flock.Acquire's lock file
+// need; Write itself must stay owner-agnostic (see above).
+func WritePreservingOwner(path string, data []byte, perm os.FileMode) error {
+	return write(path, data, perm, preserveOwnerHook)
+}
+
+// preRenameHook runs against the temp file, just before it is renamed over
+// path. A hook failure aborts the write and removes the temp file, same as
+// any other failure in write.
+type preRenameHook func(tmpName, path string) error
+
+func write(path string, data []byte, perm os.FileMode, hook preRenameHook) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".pem-tmp-*")
 	if err != nil {
@@ -61,6 +97,13 @@ func Write(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	tmpClosed = true
+
+	if hook != nil {
+		if err := hook(tmpName, path); err != nil {
+			return err
+		}
+	}
+
 	if err := replaceFile(tmpName, path); err != nil {
 		return err
 	}
@@ -89,6 +132,27 @@ func Write(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("close dir after fsync: %w", closeErr)
 	}
 	return nil
+}
+
+// preserveOwnerHook chowns tmpName to path's current owner, or — when path
+// does not exist yet — to the owner of its directory, so the rename below
+// leaves the replacement file with the same owner the old file (or a fresh
+// file in that directory) would have had. It is a no-op off root, on
+// Windows (lookupOwner always reports ok=false there — ownership isn't
+// chown-based), or when the owner it found is already root: nothing to fix
+// up in either case.
+func preserveOwnerHook(tmpName, path string) error {
+	if geteuid() != 0 {
+		return nil
+	}
+	uid, gid, ok := lookupOwner(path)
+	if !ok {
+		uid, gid, ok = lookupOwner(filepath.Dir(path))
+	}
+	if !ok || uid == 0 {
+		return nil
+	}
+	return chown(tmpName, uid, gid)
 }
 
 // replaceFile renames tmp over path. On Windows the rename is refused while
