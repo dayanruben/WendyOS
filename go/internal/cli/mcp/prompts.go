@@ -71,7 +71,7 @@ func (s *mcpServer) handleDeployAppPrompt(_ context.Context, req mcpgo.GetPrompt
 
 1. Confirm the intended target with wendy_status. If it is not connected, use device_connect with an address from device_list (host:port), vm:NAME or a cloud:// selector, or cloud_connect for a cloud device name. Reuse a connection only if it is the intended target.
 2. Deploy with the run tool: run(project_path=%q%s). This builds the project and starts it on that target. With no connection and no device, run returns NOT_CONNECTED.
-3. Check the returned target; if it is not the connected device, device_connect to it first. Detached run does not wait for readiness: check container_list for the app's running_state and termination_reason, telemetry_logs for startup errors, and the app's actual health endpoint or output.
+3. Check the returned target; if it is not the connected device, device_connect to it first. run always detaches and does not wait for readiness: check container_list for the app's running_state and termination_reason, telemetry_logs for startup errors, and the app's actual health endpoint or output.
 `, projectPath, deviceClause, projectPath, argument)
 
 	return mcpgo.NewGetPromptResult(

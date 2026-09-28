@@ -262,3 +262,44 @@ func TestRunChildEnvironmentDisablesCloudFallback(t *testing.T) {
 		t.Fatalf("cloud environment = %v", cloud)
 	}
 }
+
+// An attached run waits for readiness, opens a browser on this host, runs
+// postStart hooks and streams logs until stopped, so through MCP it could only
+// time out. run always detaches and no longer advertises detach.
+func TestRunAlwaysDetaches(t *testing.T) {
+	if _, ok := startedProtocolServer(t).ListTools()["run"].Tool.InputSchema.Properties["detach"]; ok {
+		t.Fatal("run still advertises detach")
+	}
+	project := runProject(t)
+	for _, tc := range []struct {
+		args    map[string]any
+		invalid bool
+	}{
+		{map[string]any{}, false},
+		{map[string]any{"detach": true}, false},
+		{map[string]any{"detach": false}, true},
+		{map[string]any{"detach": "no"}, true},
+	} {
+		s := New(&config.Config{}, nil)
+		var got []string
+		s.runCommandFn = func(_ context.Context, a []string, _ commandTarget, _ int) (string, bool, error) {
+			got = a
+			return "ok", false, nil
+		}
+		args := map[string]any{"project_path": project, "device": "vm:test"}
+		for k, v := range tc.args {
+			args[k] = v
+		}
+		r, err := s.handleRun(context.Background(), callToolReq("run", args))
+		if err != nil || r.IsError != tc.invalid {
+			t.Fatalf("args %v: %v %v", tc.args, r, err)
+		}
+		if tc.invalid {
+			if got != nil || structuredMap(t, r)["error_code"] != string(errCodeInvalidArgument) {
+				t.Fatalf("args %v: %v", tc.args, r)
+			}
+		} else if !slices.Contains(got, "--detach") {
+			t.Fatalf("args %v: CLI not detached: %v", tc.args, got)
+		}
+	}
+}

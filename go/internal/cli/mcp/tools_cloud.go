@@ -167,7 +167,6 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithString("product", mcpgo.Description("Swift package product")),
 		mcpgo.WithBoolean("debug", mcpgo.Description("Start under a debugger")),
 		mcpgo.WithBoolean("start", mcpgo.DefaultBool(true), mcpgo.Description("Start after deployment; false only creates the container")),
-		mcpgo.WithBoolean("detach", mcpgo.DefaultBool(true), mcpgo.Description("Return without streaming application logs")),
 		mcpgo.WithInteger("timeout_seconds", mcpgo.Min(1), mcpgo.Max(3600), mcpgo.DefaultNumber(300), mcpgo.Description("Command timeout")),
 		mcpgo.WithInteger("max_bytes", mcpgo.Min(1), mcpgo.Max(1000000), mcpgo.DefaultNumber(16384), mcpgo.Description("Build-log tail byte limit")),
 	}

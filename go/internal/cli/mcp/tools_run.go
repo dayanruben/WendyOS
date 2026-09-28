@@ -90,6 +90,12 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	} else {
 		start = !req.GetBool("deploy", false)
 	}
+	// An attached run waits for readiness, opens a browser on this host, runs
+	// postStart hooks and streams logs until stopped, so it could only time
+	// out here. run always detaches; telemetry_logs reads the app's output.
+	if value, present := req.GetArguments()["detach"]; present && value != true {
+		return errResult(errCodeInvalidArgument, "run always detaches; read application logs with telemetry_logs"), nil
+	}
 	selector := target.Device
 	if target.Selector != "" {
 		selector = target.Selector
@@ -112,11 +118,10 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	if !start {
 		args = append(args, "--deploy")
 	}
-	for _, name := range []string{"debug", "detach"} {
-		if req.GetBool(name, name == "detach") {
-			args = append(args, "--"+name)
-		}
+	if req.GetBool("debug", false) {
+		args = append(args, "--debug")
 	}
+	args = append(args, "--detach")
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 	runner := s.runCommandFn
