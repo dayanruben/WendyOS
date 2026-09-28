@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
@@ -235,4 +238,75 @@ func connectMCPDevice(ctx context.Context, device string) (*grpcclient.AgentConn
 		}
 	}
 	return connectWithAutoTLS(ctx, device)
+}
+
+// pickDeviceForDefaultFn is a seam so tests can prove the picker is never
+// opened where it cannot work.
+var pickDeviceForDefaultFn = pickDeviceForDefault
+
+// maxSetDefaultCandidates bounds the device list a non-interactive
+// set-default prints.
+const maxSetDefaultCandidates = 10
+
+// vmNamesFn lists the local VMs by name. A seam so tests describe the store.
+var vmNamesFn = func() ([]string, error) {
+	store, err := vm.NewStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.List()
+}
+
+// setDefaultNeedsDeviceError is what `wendy device set-default` returns with no
+// device where the picker cannot run: no terminal (a script, CI, an AI agent's
+// shell) or --json. Bubbletea used to fail there with "could not open a new
+// TTY", which says nothing about what to type instead.
+func setDefaultNeedsDeviceError() error {
+	var b strings.Builder
+	b.WriteString("no device given, and the device picker needs an interactive terminal.\n")
+	b.WriteString("Name the device to save as the default:\n  wendy device set-default <device>\n")
+	if names := setDefaultCandidates(); len(names) > 0 {
+		b.WriteString("Devices this CLI has seen recently:\n")
+		for _, name := range names {
+			fmt.Fprintf(&b, "  %s\n", name)
+		}
+	}
+	b.WriteString("List everything reachable with 'wendy device list' ('wendy cloud discover' for cloud devices).")
+	return commandErrorf(errNoDevice, "%s", b.String())
+}
+
+// setDefaultCandidates lists names set-default accepts, from local state only —
+// the discovery cache and the VM store. It runs on an error path, so it never
+// touches the network and treats any unreadable source as empty.
+func setDefaultCandidates() []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		key := strings.ToLower(name)
+		if name == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		names = append(names, name)
+	}
+	if cache, err := discoverycache.Load(); err == nil {
+		for _, e := range cache.Entries() {
+			if e.Hostname != "" {
+				add(e.Hostname)
+			} else {
+				add(e.IP)
+			}
+		}
+	}
+	if vms, err := vmNamesFn(); err == nil {
+		for _, name := range vms {
+			add(vmDeviceIDPrefix + name)
+		}
+	}
+	sort.Strings(names)
+	if len(names) > maxSetDefaultCandidates {
+		names = names[:maxSetDefaultCandidates]
+	}
+	return names
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 )
@@ -318,5 +321,108 @@ func TestSaveDefaultDeviceKeepsConcurrentConfigWrites(t *testing.T) {
 	}
 	if !strings.HasPrefix(cfg.DefaultDevice, "dev-") {
 		t.Fatalf("DefaultDevice = %q, want one of the saved defaults", cfg.DefaultDevice)
+	}
+}
+
+// stubDefaultPicker makes the set-default picker fail the test if reached.
+// Without this, a failing run of these tests in a developer's terminal would
+// open a real TUI on /dev/tty and hang.
+func stubDefaultPicker(t *testing.T) {
+	t.Helper()
+	orig := pickDeviceForDefaultFn
+	pickDeviceForDefaultFn = func(context.Context) (string, error) {
+		t.Error("set-default opened the device picker without a usable terminal")
+		return "", errors.New("picker not allowed in this test")
+	}
+	t.Cleanup(func() { pickDeviceForDefaultFn = orig })
+}
+
+func TestSetDefaultWithoutATerminalNamesTheCommandAndKnownDevices(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	stubDefaultPicker(t)
+	setTempConfig(t, &config.Config{DefaultDevice: "kept.local"})
+
+	cache, err := discoverycache.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	cache.Upsert(discoverycache.Entry{ID: "a", DisplayName: "Hopeful Glider", Hostname: "wendyos-hopeful-glider.local"}, now)
+	if err := cache.Flush(now); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := config.ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "vms", "dev"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newDeviceSetDefaultCmd()
+	cmd.SetContext(context.Background())
+	err = cmd.RunE(cmd, nil)
+	if !errors.Is(err, errNoDevice) {
+		t.Fatalf("err = %v, want errNoDevice", err)
+	}
+	for _, want := range []string{"wendy device set-default <device>", "wendyos-hopeful-glider.local", "vm:dev"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not contain %q:\n%s", want, err)
+		}
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "tty") {
+		t.Errorf("error still talks about a TTY:\n%s", err)
+	}
+	if cfg, _ := config.Load(); cfg.DefaultDevice != "kept.local" {
+		t.Fatalf("the default changed to %q", cfg.DefaultDevice)
+	}
+}
+
+// Review Focus 5: a brand-new machine, a corrupt cache, and a blank argument
+// all still get the usage error — no panic, no picker, no network.
+func TestSetDefaultWithoutATerminalOnAFreshMachine(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	stubDefaultPicker(t)
+	setTempConfig(t, &config.Config{DefaultDevice: "kept.local"})
+	dir, err := config.ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "devices.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{nil, {"   "}} {
+		cmd := newDeviceSetDefaultCmd()
+		cmd.SetContext(context.Background())
+		err := cmd.RunE(cmd, args)
+		if !errors.Is(err, errNoDevice) {
+			t.Fatalf("args %q: err = %v, want errNoDevice", args, err)
+		}
+		for _, want := range []string{"wendy device set-default <device>", "wendy device list"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("args %q: error does not contain %q:\n%s", args, want, err)
+			}
+		}
+	}
+	if cfg, _ := config.Load(); cfg.DefaultDevice != "kept.local" {
+		t.Fatalf("a blank argument changed the default to %q", cfg.DefaultDevice)
+	}
+}
+
+// --json promises machine-readable output; a full-screen picker is never that.
+func TestSetDefaultInJSONModeDoesNotOpenThePicker(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubDefaultPicker(t)
+	orig := isInteractiveTerminalFn
+	isInteractiveTerminalFn = func() bool { return true }
+	t.Cleanup(func() { isInteractiveTerminalFn = orig })
+	jsonOutput = true
+	setTempConfig(t, &config.Config{})
+	cmd := newDeviceSetDefaultCmd()
+	cmd.SetContext(context.Background())
+	if err := cmd.RunE(cmd, nil); !errors.Is(err, errNoDevice) {
+		t.Fatalf("err = %v, want errNoDevice", err)
 	}
 }

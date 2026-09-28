@@ -548,11 +548,18 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 		Short:  "Set a local, cloud or simulator device as the default",
 		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var device string
+			device := ""
 			if len(args) > 0 {
-				device = args[0]
-			} else {
-				sel, err := pickDeviceForDefault(cmd.Context())
+				device = strings.TrimSpace(args[0])
+			}
+			if device == "" {
+				// The picker needs a terminal. Without one it fails with "could
+				// not open a new TTY"; say what to run instead. A blank argument
+				// lands here too rather than silently clearing the default.
+				if jsonOutput || !isInteractiveTerminal() {
+					return setDefaultNeedsDeviceError()
+				}
+				sel, err := pickDeviceForDefaultFn(cmd.Context())
 				if err != nil {
 					return err
 				}
