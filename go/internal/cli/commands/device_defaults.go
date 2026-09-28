@@ -215,7 +215,12 @@ func connectNamedDeviceSelector(ctx context.Context, device string, suppressUpda
 }
 
 // Used by the MCP connection adapter, which receives the selected identity as
-// an argument rather than through the command's --device flag.
+// an argument rather than through the command's --device flag. Like the CLI's
+// direct path, it refuses an all-digit device (WDY-3126) before the TLS dial —
+// but, like connectToAgentInner's own numeric check, only when
+// WENDY_AGENT_SOCKET is unset: that variable already routes connectWithAutoTLS
+// straight to the local unix socket regardless of device, so device is
+// vestigial in that mode and must not be validated as a hostname.
 func connectMCPDevice(ctx context.Context, device string) (*grpcclient.AgentConnection, error) {
 	if os.Getenv("WENDY_AGENT_SOCKET") == "" {
 		selected, matched, err := connectNamedDeviceSelector(robotRuntimePromptContext(ctx, true), device, true)
@@ -224,6 +229,9 @@ func connectMCPDevice(ctx context.Context, device string) (*grpcclient.AgentConn
 		}
 		if matched {
 			return selected.Agent, nil
+		}
+		if err := rejectNumericDeviceName(device); err != nil {
+			return nil, err
 		}
 	}
 	return connectWithAutoTLS(ctx, device)

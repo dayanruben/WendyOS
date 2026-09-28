@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -169,6 +170,41 @@ func TestCloudDefaultsReachBothConnectionPathsAndMCP(t *testing.T) {
 	}
 	if _, err := resolveTargetInner(context.Background(), NonInteractive()); !errors.Is(err, failure) {
 		t.Fatal(err)
+	}
+}
+
+// I1 fix: the MCP connect path (wendy mcp serve --device 283 /
+// WENDY_DEVICE=283 wendy mcp serve, and the device_connect tool) reaches the
+// agent through connectMCPDevice, not connectToAgent/resolveTarget, so it
+// needs its own numeric-name guard before the direct TLS dial.
+func TestConnectMCPDeviceRejectsNumericDeviceBeforeDialling(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	t.Setenv("WENDY_AGENT_SOCKET", "")
+	origLadder := dialAgentLadderFn
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+		t.Error("dialled a numeric device name; it must be rejected before any connection attempt")
+		return nil, nil, errors.New("unreachable in test")
+	}
+	t.Cleanup(func() { dialAgentLadderFn = origLadder })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, bad := range []string{"283", "283:50051"} {
+		if _, err := connectMCPDevice(ctx, bad); !errors.Is(err, errInvalidDeviceName) {
+			t.Errorf("connectMCPDevice(ctx, %q) err = %v, want errInvalidDeviceName", bad, err)
+		}
+	}
+}
+
+// The cloud path treats a bare number as an asset ID; connectMCPDevice's
+// numeric guard must not intercept an actual cloud selector. It is fine for
+// this to fail for another reason (not logged in, here).
+func TestConnectMCPDeviceLeavesCloudSelectorToTheCloudPath(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	t.Setenv("WENDY_AGENT_SOCKET", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := connectMCPDevice(ctx, "cloud://grpc.a.sh:443/org/7/asset/283"); errors.Is(err, errInvalidDeviceName) {
+		t.Fatalf("the cloud selector was rejected as a numeric device name: %v", err)
 	}
 }
 
