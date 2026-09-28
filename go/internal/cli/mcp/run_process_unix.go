@@ -15,7 +15,7 @@ var runStopSignals = [...]syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscal
 // configureRunProcess starts the CLI in its own process group so a stop
 // signal also reaches the docker, buildx or swift processes it spawns.
 func configureRunProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = runSysProcAttr()
 }
 
 // pinRunProcess is a no-op: signals address the process group, not a PID.

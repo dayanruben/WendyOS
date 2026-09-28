@@ -274,7 +274,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 // serveStdio is replaceable in tests so startup ordering can be verified
 // without taking over the test process's stdin and stdout.
 var serveStdio = func(srv *server.MCPServer) error {
-	return server.ServeStdio(srv)
+	return serveStdioProcess(srv)
 }
 
 func (s *mcpServer) runStartupConnect(ctx context.Context) {
