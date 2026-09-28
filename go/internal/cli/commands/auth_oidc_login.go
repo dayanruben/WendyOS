@@ -166,7 +166,7 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(browserLoginTimeout):
-		return fmt.Errorf("timed out waiting for the browser callback")
+		return browserLoginTimeoutError()
 	}
 	if result.Err != nil {
 		return result.Err

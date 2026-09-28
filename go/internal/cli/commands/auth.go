@@ -182,6 +182,12 @@ type loginCallbackResult struct {
 // tests can shrink it.
 var browserLoginTimeout = 5 * time.Minute
 
+// browserLoginTimeoutError is what both login flows return when no browser
+// finished the sign-in within browserLoginTimeout.
+func browserLoginTimeoutError() error {
+	return fmt.Errorf("timed out after %s: no browser finished the sign-in; run the same `wendy auth login` command again and complete it in the browser", browserLoginTimeout)
+}
+
 // printLoginURLForManualOpen is used instead of opening a browser when no
 // person is at the terminal (see humanPresent): an agent or script driving the
 // CLI can't use a browser window it didn't ask for, but can relay a URL. The URL goes alone on
@@ -290,12 +296,16 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 		}
 	}
 
-	// Show a QR code the user can scan with the Wendy iOS app to log in on their phone.
-	mobileRedirect := url.QueryEscape("wendy://cloud-login")
-	mobileLoginURL := fmt.Sprintf("%s/cli-auth?redirect_uri=%s", cloudDashboard, mobileRedirect)
-	if qr, qrErr := qrcode.New(mobileLoginURL, qrcode.Medium); qrErr == nil {
-		fmt.Println(tui.InfoMessage("Or scan with the Wendy iOS app:"))
-		fmt.Println(qr.ToSmallString(false))
+	// Show a QR code the user can scan with the Wendy iOS app to log in on
+	// their phone — only for a person at the terminal; for an agent it is
+	// noise around the one line it needs.
+	if humanPresent() {
+		mobileRedirect := url.QueryEscape("wendy://cloud-login")
+		mobileLoginURL := fmt.Sprintf("%s/cli-auth?redirect_uri=%s", cloudDashboard, mobileRedirect)
+		if qr, qrErr := qrcode.New(mobileLoginURL, qrcode.Medium); qrErr == nil {
+			fmt.Println(tui.InfoMessage("Or scan with the Wendy iOS app:"))
+			fmt.Println(qr.ToSmallString(false))
+		}
 	}
 
 	fmt.Println(tui.InfoMessage("Waiting for authentication..."))
@@ -310,7 +320,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(browserLoginTimeout):
-		return fmt.Errorf("timed out after %s waiting for the browser sign-in to finish; run `wendy auth login` again", browserLoginTimeout)
+		return browserLoginTimeoutError()
 	}
 
 	// Step 3: Generate a key pair and CSR.
