@@ -161,7 +161,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 
 	runOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Build and deploy a local project to device or the connected target. Returns status and build-log tail. Check container_list and telemetry_logs for application readiness."),
-		mcpgo.WithString("project_path", mcpgo.Required(), mcpgo.Description("Directory containing wendy.json")),
+		mcpgo.WithString("project_path", mcpgo.Required(), mcpgo.Description("Project directory to build and deploy")),
 		mcpgo.WithString("device", mcpgo.Description("device from device_list, host:port, or vm:name; omit to reuse the connection")),
 		mcpgo.WithString("build_type", mcpgo.Enum("docker", "compose", "swift", "python"), mcpgo.Description("Build system; omit for automatic detection")),
 		mcpgo.WithString("product", mcpgo.Description("Swift package product")),

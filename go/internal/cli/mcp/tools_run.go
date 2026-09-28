@@ -57,8 +57,10 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	if err != nil {
 		return errResult(errCodeInvalidArgument, err.Error()), nil
 	}
-	if info, err := os.Stat(filepath.Join(projectPath, "wendy.json")); err != nil || info.IsDir() {
-		return errResult(errCodeInvalidArgument, "project_path must contain a wendy.json file"), nil
+	// The CLI validates the project itself: compose projects have no
+	// wendy.json, and `wendy run --yes` sets up a first deploy.
+	if info, err := os.Stat(projectPath); err != nil || !info.IsDir() {
+		return errResult(errCodeInvalidArgument, "project_path must be an existing project directory"), nil
 	}
 	target, err := s.runTarget(req)
 	if err != nil {

@@ -147,10 +147,33 @@ func TestRunResolvesRelativeProjectPath(t *testing.T) {
 	if !strings.Contains(strings.Join(args, " "), "--prefix "+want+" ") {
 		t.Fatalf("relative project_path not made absolute: %v", args)
 	}
-	t.Chdir(t.TempDir())
-	r, _ := s.handleRun(context.Background(), callToolReq("run", map[string]any{"project_path": ".", "device": "vm:test"}))
-	if !r.IsError || !strings.Contains(structuredMap(t, r)["message"].(string), "wendy.json") {
-		t.Fatalf("directory without wendy.json must be rejected: %v", r)
+}
+
+// The CLI validates the project: compose projects have no wendy.json, and
+// `wendy run --yes` sets up a first deploy itself. Only a path that is not an
+// existing directory is rejected up front.
+func TestRunLeavesProjectValidationToTheCLI(t *testing.T) {
+	compose := t.TempDir()
+	if err := os.WriteFile(filepath.Join(compose, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(&config.Config{}, nil)
+	var args []string
+	s.runCommandFn = func(_ context.Context, a []string, _ commandTarget, _ int) (string, bool, error) {
+		args = a
+		return "ok", false, nil
+	}
+	r, err := s.handleRun(context.Background(), callToolReq("run", map[string]any{"project_path": compose, "device": "vm:test", "build_type": "compose"}))
+	if err != nil || r.IsError || !strings.Contains(strings.Join(args, " "), "--prefix "+compose+" ") {
+		t.Fatalf("compose project without wendy.json was not deployed: %v %v %v", r, err, args)
+	}
+	file := filepath.Join(compose, "compose.yaml")
+	for _, path := range []string{filepath.Join(compose, "missing"), file} {
+		args = nil
+		r, _ := s.handleRun(context.Background(), callToolReq("run", map[string]any{"project_path": path, "device": "vm:test"}))
+		if !r.IsError || args != nil || structuredMap(t, r)["error_code"] != string(errCodeInvalidArgument) || !strings.Contains(structuredMap(t, r)["message"].(string), "directory") {
+			t.Fatalf("project_path %s must be rejected as not a directory: %v", path, r)
+		}
 	}
 }
 

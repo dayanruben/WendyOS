@@ -17,7 +17,7 @@ const serverInstructions = "Wendy MCP manages WendyOS edge devices (Raspberry Pi
 	"or a cloud selector such as cloud://HOST:PORT/org/ID/asset/ID. `cloud_connect` takes a cloud device name. " +
 	"`run` reuses the connected target. If you pass device to deploy elsewhere, connect to that device before verifying. " +
 	"With no connection and no device, `run` fails with NOT_CONNECTED instead of guessing.\n\n" +
-	"Deploy, then verify: pass project_path as an absolute directory containing wendy.json. " +
+	"Deploy, then verify: pass project_path as the absolute project directory. " +
 	"`run` returns status, target and a build-log tail; readiness is not_checked. " +
 	"Check `container_list` (running_state, termination_reason), read `telemetry_logs` for startup errors, " +
 	"and test the app itself, e.g. its HTTP port. A first build can take minutes: raise timeout_seconds (default 300). " +
