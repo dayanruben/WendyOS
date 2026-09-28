@@ -1177,8 +1177,50 @@ var (
 var dockerVersionProbeTimeout = 10 * time.Second
 
 // dockerDaemonPollInterval is how often ensureDockerDaemon re-probes a daemon
-// it is waiting for. A var so tests can shrink it.
-var dockerDaemonPollInterval = 2 * time.Second
+// it is waiting for, and dockerDaemonReadyWait how long it waits at most.
+// Vars so tests can shrink them.
+var (
+	dockerDaemonPollInterval = 2 * time.Second
+	dockerDaemonReadyWait    = 60 * time.Second
+)
+
+// waitForDockerDaemon polls until the daemon answers, for up to
+// dockerDaemonReadyWait: (true, nil) once it does, (false, nil) when the wait
+// ran out, ctx's error when the caller stopped. A probe that times out only
+// means the daemon is still starting, so polling goes on.
+func waitForDockerDaemon(ctx context.Context, name string) (bool, error) {
+	deadline := time.Now().Add(dockerDaemonReadyWait)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(dockerDaemonPollInterval):
+		}
+		if ready, _ := dockerDaemonReady(ctx); ready {
+			fmt.Fprintf(os.Stderr, "[docker] %s is ready\n", name)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// dockerDaemonAnswering is dockerDaemonReady for ensureDockerDaemon's checks
+// of a daemon it has not launched. A daemon that is there but does not answer
+// in time is usually starting (Docker Desktop just opened, resuming from
+// sleep, Resource Saver): with a person at the terminal it is waited for, as
+// before the probe was bounded — without launching anything; with no one
+// there (an agent, CI) that is an error at once.
+func dockerDaemonAnswering(ctx context.Context) (bool, error) {
+	ready, err := dockerDaemonReady(ctx)
+	if ready || err == nil || ctx.Err() != nil || !humanPresent() {
+		return ready, err
+	}
+	fmt.Fprintf(os.Stderr, "[docker] Docker is not responding yet; waiting up to %s for it to start...\n", dockerDaemonReadyWait)
+	if ok, waitErr := waitForDockerDaemon(ctx, "Docker"); ok || waitErr != nil {
+		return ok, waitErr
+	}
+	return false, commandErrorf(errBuilderUnavailable, "docker daemon is not responding (no answer to `docker version` after waiting %s) — restart Docker and try again", dockerDaemonReadyWait)
+}
 
 // dockerDaemonReady probes the daemon once, bounded by
 // dockerVersionProbeTimeout: (true, nil) when it answers, (false, nil) when it
@@ -1210,7 +1252,7 @@ func ensureDockerDaemon(ctx context.Context) error {
 }
 
 func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error {
-	if ready, err := dockerDaemonReady(ctx); ready || err != nil {
+	if ready, err := dockerDaemonAnswering(ctx); ready || err != nil {
 		return err
 	}
 
@@ -1240,7 +1282,7 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 					rt = cliRuntime
 					fmt.Fprintf(os.Stderr, "[docker] docker CLI is not on PATH; using %s's bundled CLI at %s. To avoid this message: %s.\n", rt.name, cliPath, rt.cliLinkHint)
 					cliOnPath = true
-					if ready, err := dockerDaemonReady(ctx); ready || err != nil {
+					if ready, err := dockerDaemonAnswering(ctx); ready || err != nil {
 						return err
 					}
 				} else {
@@ -1273,21 +1315,10 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 		if err := dockerOpenRuntimeFn(ctx, rt.app); err != nil {
 			return commandErrorf(errBuilderUnavailable, "docker daemon is not running: could not open %s: %w", rt.name, err)
 		}
-		deadline := time.Now().Add(60 * time.Second)
-		for time.Now().Before(deadline) {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(dockerDaemonPollInterval):
-			}
-			// A probe that times out here only means the daemon is still
-			// starting; keep polling until the deadline.
-			if ready, _ := dockerDaemonReady(ctx); ready {
-				fmt.Fprintf(os.Stderr, "[docker] %s is ready\n", rt.name)
-				return nil
-			}
+		if ok, err := waitForDockerDaemon(ctx, rt.name); ok || err != nil {
+			return err
 		}
-		return commandErrorf(errBuilderUnavailable, "docker daemon did not become ready within 60 seconds — %s may still be starting; please wait or start it manually", rt.name)
+		return commandErrorf(errBuilderUnavailable, "docker daemon did not become ready within %s — %s may still be starting; please wait or start it manually", dockerDaemonReadyWait, rt.name)
 	}
 
 	if hostOS == dockerHostOSWindows {
@@ -1298,7 +1329,7 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 					rt = cliRuntime
 					fmt.Fprintf(os.Stderr, "[docker] docker CLI is not on PATH; using %s's bundled CLI at %s. To avoid this message: %s.\n", rt.name, cliPath, rt.cliLinkHint)
 					cliOnPath = true
-					if ready, err := dockerDaemonReady(ctx); ready || err != nil {
+					if ready, err := dockerDaemonAnswering(ctx); ready || err != nil {
 						return err
 					}
 				} else {

@@ -64,9 +64,6 @@ func TestEnsureDockerDaemon_DarwinNonInteractiveDoesNotLaunchRuntime(t *testing.
 // runtime is opened without a prompt and waited for.
 func TestEnsureDockerDaemon_DarwinPersonWithPipedOutputOpensRuntime(t *testing.T) {
 	stubDockerDaemonSeams(t, time.Second)
-	prevPoll := dockerDaemonPollInterval
-	dockerDaemonPollInterval = 10 * time.Millisecond
-	t.Cleanup(func() { dockerDaemonPollInterval = prevPoll })
 
 	appPath := filepath.Join(t.TempDir(), "Docker.app")
 	if err := os.MkdirAll(appPath, 0o755); err != nil {
