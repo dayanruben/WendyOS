@@ -246,20 +246,31 @@ processes running as your user (and root) can connect and have full QEMU control
 
 Prefer `--device vm:<name>` (or save it with `wendy device set-default
 vm:<name>`) over a literal loopback address. The alias follows the VM's current
-port and keeps enrolled-device trust pins separate for each VM. A literal
-`127.0.0.1:<port>` on a running VM's forwarded agent port is pinned under that
-VM's `vm:<name>` key too. Both addresses the VM forwards — that port and the
-next one, which carries mTLS — are also pinned to the VM's identity, so they
-stay protected while the VM is stopped; an older pin that names a different
-device there is left as it is. Every other loopback address — another port,
-the mTLS port itself, `localhost`, `::1` — is pinned per address and port
-(`localhost:50051`), so two VMs or port forwards never share a pin. A pin
-saved under plain `127.0.0.1` or `localhost` by an older CLI keeps applying to
-every port of that address. Once the device it names connects through that
-address again, the pin moves to that address and port; a pin that names only
-an organization, not a device, stays where it is. If you replace an enrolled
-VM intentionally, clear only its pin with `wendy device unpin vm:<name>`
-before connecting to the replacement.
+port and keeps enrolled-device trust pins separate for each VM. While a VM is
+running, a literal `127.0.0.1:<port>` on its forwarded agent port, or on the
+mTLS port after it, connects to that VM under its `vm:<name>` key too, and
+reconnects to it by name after an agent update.
+
+Every connection to a VM also pins the VM's identity at both addresses it
+forwards (the agent port and the mTLS port after it), unless an older pin
+there names a different device. Those address pins keep the addresses
+protected while the VM is stopped, and they outlive the VM: they stay until
+you unpin them. Every other loopback address (another port, `localhost`,
+`::1`) is pinned per address and port (`localhost:50051`). A connection there
+also pins the port that actually answered it, usually the next one, where a
+provisioned agent serves mTLS, so the reconnect after an agent update stays
+protected too. A pin saved under plain `127.0.0.1` or `localhost` by an older
+CLI keeps applying to every port of that address. Once the device it names
+connects through that address again, the pin moves to that address and port.
+A pin that names only an organization, not a device, stays where it is.
+
+To replace an enrolled VM intentionally, run `wendy device unpin vm:<name>`
+before connecting to the replacement. It clears the VM's pin and the
+`127.0.0.1` address pins that name the same device, and nothing else. An
+address pin that no VM pin covers any more, such as one left by a VM you
+already unpinned or deleted, is cleared by its address: stop any VM using
+that port, then run `wendy device unpin 127.0.0.1:<port>`, and repeat for the
+next port if a refusal names it.
 
 The agent's port is often already in use on a development machine. Move the
 host side of the forward:

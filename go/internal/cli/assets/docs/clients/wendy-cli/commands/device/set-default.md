@@ -35,4 +35,4 @@ Both refusals are **unconditional**: they read identically in interactive, `--js
 wendy device unpin <host>
 ```
 
-Loopback targets are pinned per endpoint: `127.0.0.1:50051`, `127.0.0.1:50151` and `localhost:50051` are different devices. `127.0.0.1` on a running VM's forwarded agent port is pinned as `vm:<name>`, and the VM's identity is also pinned at that port and the mTLS port after it (unless an older pin there names a different device), so the pin still applies while the VM is stopped. `wendy device set-default 127.0.0.1` refers to `127.0.0.1:50051`.
+Loopback targets are pinned per endpoint: `127.0.0.1:50051`, `127.0.0.1:50151` and `localhost:50051` are different devices, and a connection also pins the port that answered it (usually the next one, which carries mTLS). `127.0.0.1` on a running VM's forwarded agent port, or on the mTLS port after it, is that VM, pinned as `vm:<name>`; the VM's identity is also pinned at both of those ports (unless an older pin there names a different device), so the pin still applies while the VM is stopped. `wendy device set-default 127.0.0.1` refers to `127.0.0.1:50051`.
