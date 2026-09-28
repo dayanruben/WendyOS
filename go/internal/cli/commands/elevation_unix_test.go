@@ -5,6 +5,7 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -86,14 +87,28 @@ func TestErrThorNeedsRoot(t *testing.T) {
 	if !strings.Contains(msg, "sudo wendy install --device-type "+thorDeviceType) {
 		t.Errorf("error should give the exact re-run command: %q", msg)
 	}
+	if strings.Contains(msg, "usb-setup") {
+		t.Errorf("error must not point at usb-setup, which does not install the Jetson rule: %q", msg)
+	}
+	if runtime.GOOS == "linux" && !strings.Contains(msg, usbUdevRulePath) {
+		t.Errorf("linux error should give the udev rule install commands: %q", msg)
+	}
 }
 
 func TestThorElevationReason(t *testing.T) {
 	if !strings.Contains(thorElevationReason("darwin"), "root on macOS") {
 		t.Errorf("darwin reason should mention macOS root: %q", thorElevationReason("darwin"))
 	}
-	if !strings.Contains(thorElevationReason("linux"), "wendy device usb-setup") {
-		t.Errorf("linux reason should mention the udev-setup tip: %q", thorElevationReason("linux"))
+	linux := thorElevationReason("linux")
+	for _, want := range []string{usbUdevRulePath, usbUdevRule, "udevadm control --reload-rules"} {
+		if !strings.Contains(linux, want) {
+			t.Errorf("linux reason should give the udev rule install commands (missing %q): %q", want, linux)
+		}
+	}
+	// `wendy device usb-setup` configures the USB-C network link, not the
+	// Jetson recovery rule, so the hint must not send people there.
+	if strings.Contains(linux, "usb-setup") {
+		t.Errorf("linux reason must not point at usb-setup: %q", linux)
 	}
 }
 
