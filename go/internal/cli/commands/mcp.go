@@ -40,10 +40,7 @@ func newMCPServeCmd() *cobra.Command {
 			srv.SetLANDiscoverer(func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error) {
 				return discovery.CollectLAN(ctx, cliLANStreamOptions(ctx), timeout)
 			})
-			address := deviceFlag
-			if address == "" {
-				address = cfg.DefaultDevice
-			}
+			address := mcpStartupDevice(deviceFlag, cfg)
 			switch {
 			case os.Getenv("WENDY_AGENT_SOCKET") != "":
 				// Admin-entitled on-device container: connect over the local

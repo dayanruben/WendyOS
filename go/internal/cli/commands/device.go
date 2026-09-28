@@ -591,9 +591,14 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			// swapped device or MITM. Best-effort and non-interactive: an offline
 			// device is pinned instead on its first successful connection. The pin
 			// itself is established inside connectToAgent's default-device path.
-			if conn, connErr := connectToAgent(cmd.Context(), SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive()); connErr == nil {
-				_ = conn.Close()
-			}
+			//
+			// Without --device and WENDY_DEVICE: this confirms the device just
+			// saved, which an override in effect would otherwise replace.
+			withoutDeviceOverride(func() {
+				if conn, connErr := connectToAgent(cmd.Context(), SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive()); connErr == nil {
+					_ = conn.Close()
+				}
+			})
 			return nil
 		},
 	}

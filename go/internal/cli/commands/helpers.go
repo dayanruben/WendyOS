@@ -900,7 +900,7 @@ func resolveDeviceAddress() (addr string, pinKey string, isDefault bool, err err
 		isDefault = hostname != ""
 	}
 	if hostname == "" {
-		return "", "", false, commandErrorf(errNoDevice, "no device specified; use --device flag or set a default with 'wendy device set-default'")
+		return "", "", false, commandErrorf(errNoDevice, "%s", noDeviceMessage)
 	}
 	// If the hostname already contains a port, use it as-is.
 	addr = hostname
@@ -1136,9 +1136,19 @@ func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr
 // connectToAgent establishes a gRPC connection to the target device.
 // If the CLI has auth certs, it connects via mTLS on the secure port.
 // Otherwise, it falls back to plaintext on the default port.
-// If no device is specified via --device or config default, an interactive
-// device picker is presented (unless running in --json mode).
+// If no device is specified via --device, WENDY_DEVICE or the config default,
+// an interactive device picker is presented (unless running in --json mode).
 func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.AgentConnection, error) {
+	conn, err := connectToAgentInner(ctx, opts...)
+	if err == nil {
+		noteEnvDevice("")
+	}
+	return conn, err
+}
+
+// connectToAgentInner is connectToAgent minus the WENDY_DEVICE notice, which
+// waits until a connection exists so a failed connect never claims a target.
+func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclient.AgentConnection, error) {
 	cfg := resolveConfig{excludeProviderKeys: make(map[string]bool)}
 	for _, o := range opts {
 		o(&cfg)
@@ -1245,7 +1255,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 
 	// No device configured — fall back to interactive picker.
 	if cfg.nonInteractive || jsonOutput {
-		return nil, commandErrorf(errNoDevice, "no device specified; use --device flag or set a default with 'wendy device set-default'")
+		return nil, commandErrorf(errNoDevice, "%s", noDeviceMessage)
 	}
 
 	target, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
@@ -3160,6 +3170,7 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 	if err != nil {
 		return nil, err
 	}
+	noteEnvDevice(resolveOptionsDevice(opts))
 	if sel != nil && sel.Agent != nil {
 		maybeFixClock(ctx, sel.Agent)
 	}
@@ -3349,7 +3360,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 
 	// No device specified — run interactive picker if we have a TTY.
 	if jsonOutput || cfg.nonInteractive {
-		return nil, commandErrorf(errNoDevice, "no device specified; use --device flag or set a default with 'wendy device set-default'")
+		return nil, commandErrorf(errNoDevice, "%s", noDeviceMessage)
 	}
 
 	picked, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
