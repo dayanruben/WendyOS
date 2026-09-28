@@ -183,9 +183,11 @@ type loginCallbackResult struct {
 var browserLoginTimeout = 5 * time.Minute
 
 // browserLoginTimeoutError is what both login flows return when no browser
-// finished the sign-in within browserLoginTimeout.
+// finished the sign-in within browserLoginTimeout. It doesn't name `wendy auth
+// login`: the same flows run inside `cloud org switch`, org setup and device
+// enrollment.
 func browserLoginTimeoutError() error {
-	return fmt.Errorf("timed out after %s: no browser finished the sign-in; run the same `wendy auth login` command again and complete it in the browser", browserLoginTimeout)
+	return fmt.Errorf("timed out after %s: no browser finished the sign-in; run the command again and complete it in the browser", browserLoginTimeout)
 }
 
 // printLoginURLForManualOpen is used instead of opening a browser when no

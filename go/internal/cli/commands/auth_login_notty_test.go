@@ -74,8 +74,10 @@ func TestPerformLogin_NonInteractivePrintsURLAndTimesOut(t *testing.T) {
 	if strings.Contains(out, "iOS app") || strings.Contains(out, "█") {
 		t.Fatalf("printed the QR code with no one at the terminal:\n%s", out)
 	}
-	if !strings.Contains(err.Error(), "run the same `wendy auth login` command again") {
-		t.Fatalf("err = %v, want it to say how to retry", err)
+	// The same flow backs `cloud org switch`, org v2 and device enrollment,
+	// so the advice must not name `wendy auth login`.
+	if !strings.Contains(err.Error(), "run the command again") || strings.Contains(err.Error(), "wendy auth login") {
+		t.Fatalf("err = %v, want it to say to run the command again, without naming `wendy auth login`", err)
 	}
 }
 
@@ -180,7 +182,7 @@ func TestPerformOIDCLogin_NonInteractivePrintsURLAndTimesOut(t *testing.T) {
 		})
 	})
 
-	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "run the same `wendy auth login` command again") {
+	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "run the command again") {
 		t.Fatalf("err = %v, want an actionable timeout error", err)
 	}
 	if got := opened(); len(got) != 0 {
