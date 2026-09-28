@@ -1938,6 +1938,14 @@ func offerAIAssistant(appID, target, language string, entitlements []appconfig.E
 		return nil
 	}
 
+	// The picker needs a terminal. Without one (an agent shell, CI, a pipe),
+	// the project is already scaffolded, so skip the offer rather than fail
+	// the whole command — a retry would only hit "wendy.json already exists".
+	if !isInteractiveTerminal() {
+		cliLogln("Not starting an AI assistant (no interactive terminal); pass --assistant claude, codex, or skip to choose explicitly.")
+		return nil
+	}
+
 	var assistants []tui.PickerItem
 	if hasClaude {
 		assistants = append(assistants, tui.PickerItem{
