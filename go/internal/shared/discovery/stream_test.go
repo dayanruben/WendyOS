@@ -1354,3 +1354,29 @@ func TestCollectLANReportsBackendDownAtSessionEnd(t *testing.T) {
 		t.Fatalf("OnBackendError calls = %v, want exactly the backend's error, once", got)
 	}
 }
+
+// A backend that browsed normally and then failed late in the session (the
+// scan did listen, just not to the end) must not turn an empty network into
+// "discovery never listened". Only a session in which no attempt stayed up
+// for backendListenedAfter is reported.
+func TestCollectLANDoesNotReportALateBackendFailure(t *testing.T) {
+	shrinkDuration(t, &backendRetryDelay, time.Minute)
+	shrinkDuration(t, &backendListenedAfter, 50*time.Millisecond)
+	useStreamSeams(t, func(ctx context.Context, _ string, _ func(MDNSService)) error {
+		select {
+		case <-time.After(150 * time.Millisecond): // browsed for a while...
+			return errors.New("mDNSResponder went away") // ...then failed, with no time left to recover
+		case <-ctx.Done():
+			return nil
+		}
+	}, nil)
+
+	var reported atomic.Int32
+	opts := StreamOptions{OnBackendError: func(error) { reported.Add(1) }}
+	if _, err := CollectLAN(context.Background(), opts, 400*time.Millisecond); err != nil {
+		t.Fatalf("CollectLAN: %v", err)
+	}
+	if n := reported.Load(); n != 0 {
+		t.Fatalf("OnBackendError called %d times for a backend that listened before failing, want 0", n)
+	}
+}

@@ -58,14 +58,16 @@ type StreamOptions struct {
 	Prober   LANProber // nil = no probing (mDNS-only confirmation)
 	Exclude  LANFilter // nil = nothing is excluded
 	// OnBackendError, when non-nil, is called at most once, with the platform
-	// mDNS backend's last error, if the backend was down when the session
-	// ended: every restart failed, or the session ended while it waited to
-	// retry. A backend that failed and then recovered on a retry (e.g. an
-	// mDNSResponder restart) is not reported. Without it, a browse that can
-	// never start — mDNSResponder unreachable from a sandbox, Local Network
-	// permission denied, no multicast socket — looks exactly like an empty
-	// network. Called on the backend goroutine before the session's results
-	// are complete (CollectLAN has not returned yet); it must not block.
+	// mDNS backend's last error, when the session never listened: the backend
+	// was down as the session ended (every restart failed, or it was waiting
+	// to retry) and no attempt had browsed for backendListenedAfter. A backend
+	// that recovered on a retry (an mDNSResponder restart), or that browsed
+	// for a while before failing late in the session, is not reported: the
+	// scan did see the network. Without it, a browse that can never start —
+	// mDNSResponder unreachable from a sandbox, Local Network permission
+	// denied, no multicast socket — looks exactly like an empty network.
+	// Called on the backend goroutine before the session's results are
+	// complete (CollectLAN has not returned yet); it must not block.
 	OnBackendError func(error)
 }
 
@@ -106,6 +108,11 @@ var (
 	cacheFlushDelay   = time.Second             // debounce for cache writes
 	backendRetryDelay = 2 * time.Second         // backend died mid-session
 	backendRetries    = 3                       // ...restart attempts before giving up
+	// backendListenedAfter is how long one backend attempt must browse before
+	// it counts as having listened (see StreamOptions.OnBackendError). A
+	// browse that can't start (sandbox, no Local Network permission, no
+	// multicast socket) fails at once; one that ran this long saw the network.
+	backendListenedAfter = time.Second
 	// probeRetryInterval bounds how often a live device whose probe failed is
 	// re-probed while it keeps announcing itself. The retry is driven by mDNS
 	// re-sightings (a device mid-boot re-announces, and the hashicorp backend
@@ -504,30 +511,36 @@ func (s *lanStream) runBackend() {
 		case <-s.ctx.Done():
 		}
 	}
+	listened := false // some attempt browsed for backendListenedAfter
 	for attempt := 0; ; attempt++ {
+		start := time.Now()
 		err := lanBackendFn(s.ctx, wendyServiceType, emit)
 		if err == nil || s.ctx.Err() != nil {
 			return // browsed until the session ended (or stopped cleanly)
 		}
+		if time.Since(start) >= backendListenedAfter {
+			listened = true
+		}
 		if attempt >= backendRetries {
 			log.Printf("discovery: LAN stream backend stopped: %v", err)
-			s.reportBackendDown(err)
+			s.reportNeverListened(listened, err)
 			return
 		}
 		select {
 		case <-time.After(backendRetryDelay):
 		case <-s.ctx.Done():
 			// The session ended with the backend down, waiting to retry.
-			s.reportBackendDown(err)
+			s.reportNeverListened(listened, err)
 			return
 		}
 	}
 }
 
-// reportBackendDown tells the consumer, if it asked, that the session is
-// ending with the mDNS backend not running (see StreamOptions.OnBackendError).
-func (s *lanStream) reportBackendDown(err error) {
-	if s.opts.OnBackendError != nil {
+// reportNeverListened tells the consumer, if it asked, that the session is
+// ending without the mDNS backend ever having browsed — unless it did
+// (listened). See StreamOptions.OnBackendError.
+func (s *lanStream) reportNeverListened(listened bool, err error) {
+	if !listened && s.opts.OnBackendError != nil {
 		s.opts.OnBackendError(err)
 	}
 }
