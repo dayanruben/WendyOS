@@ -349,4 +349,40 @@ rc=0; no_tty env PATH="$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" "$BASH" --posix 
 check "posix.piped.exit" "0" "$rc"
 check "posix.piped.binary" "yes" "$([ -x "$DEST/wendy" ] && echo yes || echo no)"
 
+# --- Test S: after installing to ~/.local/bin, an older `wendy` earlier on PATH ---
+# The summary used to say "Installed successfully!" and print the OLD binary's
+# version. It must report the binary it installed and name the one shadowing it.
+if [ "$(/usr/bin/id -u)" -ne 0 ]; then
+  make_stubs Linux x86_64
+  printf '#!/usr/bin/env bash\necho "apt-get $*"\n' > "$STUB/apt-get"; chmod +x "$STUB/apt-get"
+  OLD="$(mktemp -d)"
+  printf '#!/bin/sh\necho "wendy version 2026.01.01-OLD"\n' > "$OLD/wendy"; chmod +x "$OLD/wendy"
+  # dpkg owns the old binary, as it would after an earlier `apt-get install wendy`.
+  printf '#!/bin/sh\n[ "$1" = "-S" ] && [ "$2" = "%s/wendy" ]\n' "$OLD" > "$STUB/dpkg-query"; chmod +x "$STUB/dpkg-query"
+  D="$(mktemp -d)"; setup_net "$D"; serve_cli_release "$D" linux amd64
+  FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; RO="$(mktemp -d)"; chmod 555 "$RO"
+  SCRIPT="$(cli_with_default_dir "$RO")"
+  rc=0; no_tty env PATH="$STUB:$BIN:$OLD:$BASE_PATH" HOME="$FAKE_HOME" bash "$SCRIPT" </dev/null >"$OUT" 2>&1 || rc=$?
+  chmod 755 "$RO"
+  check "shadow.exit" "0" "$rc"
+  absent "shadow.no_false_success" "$(cat "$OUT")" "Installed successfully!"
+  contains "shadow.new_version" "$(cat "$OUT")" "wendy version 2026.07.19-143000"
+  absent "shadow.no_old_version" "$(cat "$OUT")" "2026.01.01-OLD"
+  contains "shadow.names_old" "$(cat "$OUT")" "on your PATH is $OLD/wendy"
+  contains "shadow.package_hint" "$(cat "$OUT")" "sudo apt-get remove wendy"
+  contains "shadow.path_fix" "$(cat "$OUT")" "export PATH=\"$FAKE_HOME/.local/bin:\$PATH\""
+
+  # Same install with ~/.local/bin already first on PATH: a plain success.
+  make_stubs Linux x86_64
+  D="$(mktemp -d)"; setup_net "$D"; serve_cli_release "$D" linux amd64
+  FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; RO="$(mktemp -d)"; chmod 555 "$RO"
+  SCRIPT="$(cli_with_default_dir "$RO")"
+  rc=0; no_tty env PATH="$FAKE_HOME/.local/bin:$STUB:$BIN:$OLD:$BASE_PATH" HOME="$FAKE_HOME" bash "$SCRIPT" </dev/null >"$OUT" 2>&1 || rc=$?
+  chmod 755 "$RO"
+  check "shadow.first_on_path.exit" "0" "$rc"
+  contains "shadow.first_on_path.success" "$(cat "$OUT")" "Installed successfully!"
+  contains "shadow.first_on_path.version" "$(cat "$OUT")" "wendy version 2026.07.19-143000"
+  absent "shadow.first_on_path.no_warning" "$(cat "$OUT")" "Warning:"
+fi
+
 exit $fail

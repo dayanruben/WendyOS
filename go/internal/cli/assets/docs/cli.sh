@@ -14,6 +14,7 @@ HOMEBREW_TAP="wendylabsinc/tap"
 HOMEBREW_FORMULA="wendylabsinc/tap/wendy"
 YES=false
 INSTALL_DIR_EXPLICIT=false
+INSTALLED_BIN="" # set by install_binary: the standalone binary this run installed
 
 usage() {
   cat <<EOF
@@ -233,6 +234,22 @@ install_binary() {
     mkdir -p "$INSTALL_DIR"
     install -m 755 "$src" "${INSTALL_DIR}/${BINARY_NAME}"
   fi
+  INSTALLED_BIN="${INSTALL_DIR}/${BINARY_NAME}"
+}
+
+# package_remove_hint FILE prints the command that removes FILE when a package
+# manager installed it, or nothing.
+package_remove_hint() {
+  local f="$1"
+  if command -v dpkg-query &>/dev/null && dpkg-query -S "$f" &>/dev/null; then
+    echo "sudo apt-get remove ${BINARY_NAME}"
+  elif command -v rpm &>/dev/null && rpm -qf "$f" &>/dev/null; then
+    if command -v dnf &>/dev/null; then echo "sudo dnf remove ${BINARY_NAME}"; else echo "sudo yum remove ${BINARY_NAME}"; fi
+  elif command -v pacman &>/dev/null && pacman -Qo "$f" &>/dev/null; then
+    echo "sudo pacman -R ${BINARY_NAME}"
+  elif [[ "$(readlink "$f" 2>/dev/null || true)" == *"/Cellar/"* ]]; then
+    echo "brew uninstall ${BINARY_NAME}"
+  fi
 }
 
 OS=$(detect_os)
@@ -448,7 +465,28 @@ fi
 
 # --- Verify ---
 echo ""
-if command -v "$BINARY_NAME" &>/dev/null; then
+if [[ -n "$INSTALLED_BIN" ]]; then
+  # A standalone install: report the binary just installed, and say so when
+  # another `wendy` earlier on PATH (an older install) would run instead.
+  ON_PATH="$(command -v "$BINARY_NAME" 2>/dev/null || true)"
+  if [[ -n "$ON_PATH" && "$ON_PATH" -ef "$INSTALLED_BIN" ]]; then
+    echo "Installed successfully!"
+    "$INSTALLED_BIN" --version
+  else
+    echo "Installed to ${INSTALLED_BIN}."
+    "$INSTALLED_BIN" --version
+    if [[ -n "$ON_PATH" ]]; then
+      echo "Warning: '${BINARY_NAME}' on your PATH is ${ON_PATH}, which runs instead of the version just installed."
+      REMOVE_HINT="$(package_remove_hint "$ON_PATH" || true)"
+      if [[ -n "$REMOVE_HINT" ]]; then
+        echo "  A package manager installed it; to remove it: ${REMOVE_HINT}"
+      fi
+      echo "Put the new one first on your PATH: export PATH=\"${INSTALL_DIR}:\$PATH\""
+    else
+      echo "Add it to your PATH: export PATH=\"${INSTALL_DIR}:\$PATH\""
+    fi
+  fi
+elif command -v "$BINARY_NAME" &>/dev/null; then
   echo "Installed successfully!"
   "$BINARY_NAME" --version
 else
@@ -457,17 +495,19 @@ else
 fi
 
 # --- Offer tour ---
-if [[ "$YES" != true ]] && command -v "$BINARY_NAME" &>/dev/null && [[ -t 1 ]] && have_tty; then
+# The tour runs the binary this run installed, not whichever is first on PATH.
+WENDY_CMD="${INSTALLED_BIN:-$BINARY_NAME}"
+if [[ "$YES" != true ]] && command -v "$WENDY_CMD" &>/dev/null && [[ -t 1 ]] && have_tty; then
   printf "\nWould you like a quick guided tour of the Wendy CLI? [Y/n] "
   read -r tour_answer </dev/tty
   case "$tour_answer" in
     # The installer may be run as `curl ... | bash`, which leaves the script's
     # stdin attached to the download pipe. Reattach the tour to the controlling
     # terminal so Bubble Tea sees an interactive stdin and stdout.
-    ""|[yY]|[yY][eE][sS]) "$BINARY_NAME" tour </dev/tty >/dev/tty ;;
+    ""|[yY]|[yY][eE][sS]) "$WENDY_CMD" tour </dev/tty >/dev/tty ;;
   esac
 elif have_tty; then
   # Only suggest the tour where it can run: it needs an interactive terminal.
   echo ""
-  echo "Run '${INSTALL_DIR}/${BINARY_NAME} tour' at any time for a guided walkthrough."
+  echo "Run '${WENDY_CMD} tour' at any time for a guided walkthrough."
 fi
