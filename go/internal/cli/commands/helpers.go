@@ -3071,8 +3071,9 @@ var (
 // certificate, and still be different endpoints — so the identity check alone
 // cannot tell them apart, and a host-keyed broker would route an explicit
 // :51000 request to whichever agent a previous default-port command brokered.
-// The pin lookup, by contrast, is host-keyed on purpose: identity is a
-// property of the device, not of the port it answers on.
+// The pin lookup, by contrast, is host-keyed on purpose — identity is a
+// property of the device, not of the port it answers on — except on loopback,
+// where the host names no device (see pinKeyForAddr).
 func connectPinnedSession(ctx context.Context, addr string) (*grpcclient.AgentConnection, bool) {
 	// The GOOS check lives here as well as in sessionbroker.Connect: bailing
 	// only inside Connect would still charge Windows the expectedIdentityFor

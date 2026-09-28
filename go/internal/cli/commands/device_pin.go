@@ -190,38 +190,54 @@ func decideFallbackAction(updateErr error, changed bool, refusal error) fallback
 // applyDeviceIdentity is enforceDeviceIdentity's decision, made against cfg and
 // recorded into it. changed reports whether cfg must be saved; refusal is the
 // error to return when the device must not be used (cfg is then unchanged).
+//
+// The pin judged is identityPinKey's: hostname's own, or — for a loopback
+// endpoint with none yet — the pin an older CLI filed under the bare host.
+// Refusals name that key, because it is the one `wendy device unpin` must
+// clear. A connection that passes a bare-host pin moves it onto hostname.
 func applyDeviceIdentity(cfg *config.Config, hostname string, obs observedDeviceIdentity) (changed bool, refusal error) {
+	pinKey := identityPinKey(cfg, hostname)
 	if !obs.mTLS {
-		return false, challengeUnprovisionedDevice(cfg, hostname)
+		return false, challengeUnprovisionedDevice(cfg, pinKey)
 	}
 
 	cloud := cloudGRPCForOrg(cfg, obs.orgID)
-	switch cfg.EvaluateDevicePin(hostname, obs.orgID, cloud, obs.assetID) {
+	switch cfg.EvaluateDevicePin(pinKey, obs.orgID, cloud, obs.assetID) {
 	case config.PinMatch:
 		// Backfill the principal into a pin that matches but predates the SPIFFE
-		// cutover. Same silent upgrade as PinAdoptAsset: nothing about the trust
-		// decision changes, the pin just gains the key an unpin needs to find
-		// the device's SPKI entry.
-		if prev, ok := cfg.DevicePinFor(hostname); ok && prev.Principal == "" && obs.principal != "" {
-			cfg.SetDevicePinFrom(hostname, prev.OrgID, prev.CloudGRPC, prev.AssetID, obs.principal, cfg.PinSource(hostname))
-			return true, nil
+		// cutover (the pin gains the key an unpin needs to reach the device's
+		// SPKI entry), and file a matching bare-host pin under the endpoint.
+		prev, _ := cfg.DevicePinFor(pinKey)
+		principal := prev.Principal
+		if principal == "" {
+			principal = obs.principal
 		}
-		return false, nil
+		if pinKey != hostname || principal != prev.Principal {
+			cfg.SetDevicePinFrom(hostname, prev.OrgID, prev.CloudGRPC, prev.AssetID, principal, cfg.PinSource(pinKey))
+			changed = true
+		}
 	case config.PinFirstUse, config.PinAdoptAsset:
 		// PinAdoptAsset is a pin written before asset ids were recorded: org and
 		// cloud already match, so this is a silent upgrade, not a challenge.
 		cfg.SetDevicePin(hostname, obs.orgID, cloud, obs.assetID, obs.principal)
-		return true, nil
+		changed = true
 	default: // config.PinMismatch
-		prev, _ := cfg.DevicePinFor(hostname)
+		prev, _ := cfg.DevicePinFor(pinKey)
 		return false, refuseDevicePin(devicePinDiagnostic{
-			hostname: hostname,
-			heading:  fmt.Sprintf("Connection blocked: device %q identity changed.", hostname),
+			hostname: pinKey,
+			heading:  fmt.Sprintf("Connection blocked: device %q identity changed.", pinKey),
 			details: fmt.Sprintf("Saved: organization %d via %s%s\nNow:   organization %d via %s%s",
 				prev.OrgID, displayCloud(prev.CloudGRPC), assetSuffix(prev.AssetID),
 				obs.orgID, displayCloud(cloud), assetSuffix(obs.assetID)),
 		})
 	}
+	if pinKey != hostname {
+		cfg.ClearDevicePin(pinKey)
+	}
+	if retireLegacyLoopbackPins(cfg, hostname) {
+		changed = true
+	}
+	return changed, nil
 }
 
 // devicePinDiagnostic puts intentional unenrollment and organization changes

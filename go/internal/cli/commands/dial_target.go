@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
@@ -174,24 +176,137 @@ func governingPin(pinKey string) (config.DevicePin, string, bool) {
 // means. A resolved IP is deliberately never used as a key — it changes on
 // ordinary DHCP churn — but an address the user typed as a literal IP is the
 // name they asked for, so it keys a pin like any other host.
-// Loopback gets no special case. It used to: local VMs all answer on 127.0.0.1,
-// so two of them collide on one key. But every alternative was worse -- an
-// empty key reads as "unpinned" and disarms the guard against reaching a
-// previously-authenticated host over plaintext, and a port-qualified key
-// orphans the pins existing users already hold under the bare host. Known VM
-// aliases instead use their own vm:<name> key (see connectSimulatorAgent),
-// leaving typed IP addresses governed by their existing pins.
+//
+// Loopback is the one exception, because there the host names no device:
+// every local VM and every port forward answers at 127.0.0.1. A loopback
+// address on the forwarded port of a running local VM is keyed as that VM —
+// vm:<name>, the key its alias already uses — and any other loopback address is
+// keyed per endpoint (127.0.0.1:50051). Neither is ever empty, so the
+// plaintext-downgrade guard stays armed; and pins older CLIs filed under the
+// bare host are not orphaned: pinCandidateKeys still consults them for a
+// port-qualified key, and enforceDeviceIdentity moves one onto its endpoint
+// once the device it names is the one answering. Non-loopback hosts are
+// unchanged: one device per host, whatever the port.
 func pinKeyForAddr(addr string) string {
 	// SplitHostPort accepts non-numeric service names, so vm:dev would
 	// otherwise become just "vm" when set-default/unpin derives its key.
 	if name, matched, err := simulatorName(addr); err == nil && matched {
 		return vmDeviceIDPrefix + name
 	}
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return strings.TrimSpace(addr)
 	}
+	if !isLoopbackHost(host) {
+		return host
+	}
+	if p, convErr := strconv.Atoi(port); convErr == nil {
+		if name, ok := loopbackVMNameFn(p); ok {
+			return vmDeviceIDPrefix + name
+		}
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// loopbackVMNameFn names the running user-mode VM whose agent is forwarded to
+// a loopback port. A seam over the VM store for tests.
+var loopbackVMNameFn = runningVMOnLoopbackPort
+
+// runningVMOnLoopbackPort reports which running user-mode VM forwards port —
+// its agent's plaintext port or the mTLS port beside it. A run record counts
+// only while its VM holds the run lock (vm.Store.Status reaps stale ones), and
+// two records claiming one port name no VM: the key then falls back to the
+// endpoint rather than a guess.
+func runningVMOnLoopbackPort(port int) (string, bool) {
+	statuses, err := vmStatusesFn()
+	if err != nil {
+		return "", false
+	}
+	match := ""
+	for _, st := range statuses {
+		if !st.Running || st.State.NetMode != vm.NetUser || st.State.AgentPort == 0 {
+			continue
+		}
+		if port != st.State.AgentPort && port != st.State.AgentPort+agentMTLSPortOffset {
+			continue
+		}
+		if match != "" {
+			return "", false
+		}
+		match = st.Name
+	}
+	return match, match != ""
+}
+
+// dialPinKeyForDevice is the pin key a dial to device — as typed for --device
+// or set-default — is checked under. It adds the default agent port first,
+// exactly as resolveDeviceAddress does, because for loopback the port is part
+// of the key: "127.0.0.1" is dialled, and pinned, as 127.0.0.1:50051.
+func dialPinKeyForDevice(device string) string {
+	if _, matched, err := simulatorName(device); matched || err != nil {
+		return pinKeyForAddr(device)
+	}
+	if _, _, err := net.SplitHostPort(device); err != nil {
+		device = hostPort(device, defaultAgentPort)
+	}
+	return pinKeyForAddr(device)
+}
+
+// legacyLoopbackPinKey returns the bare host a port-qualified loopback key's
+// pin was filed under before loopback endpoints were keyed by port
+// ("127.0.0.1" for "127.0.0.1:50051"), or "" for any other key.
+func legacyLoopbackPinKey(key string) string {
+	host, _, err := net.SplitHostPort(key)
+	if err != nil || !isLoopbackHost(host) {
+		return ""
+	}
 	return host
+}
+
+// identityPinKey is the key enforceDeviceIdentity judges a connection to
+// hostname against: hostname's own pin when it has one, else a pin its
+// loopback endpoint still has under the bare host. It is the post-connect half
+// of pinCandidateKeys' legacy candidate, so the dial and the pin check agree
+// on which pin governs.
+func identityPinKey(cfg *config.Config, hostname string) string {
+	if _, ok := cfg.DevicePinFor(hostname); ok {
+		return hostname
+	}
+	if legacy := legacyLoopbackPinKey(hostname); legacy != "" {
+		if _, ok := cfg.DevicePinFor(legacy); ok {
+			return legacy
+		}
+	}
+	return hostname
+}
+
+// retireLegacyLoopbackPins drops bare loopback pins ("127.0.0.1", "localhost",
+// "::1") that name the same device as the pin now filed under key, once key is
+// a per-endpoint loopback key (vm:<name> or host:port). Such a pin identifies
+// exactly one device, which is now pinned under its own key; left behind, it
+// would only constrain every OTHER loopback endpoint to that device — the
+// collision per-endpoint keys exist to end. A bare pin naming a different
+// device, or no device (no asset id), is left alone.
+func retireLegacyLoopbackPins(cfg *config.Config, key string) bool {
+	if !strings.HasPrefix(key, vmDeviceIDPrefix) && legacyLoopbackPinKey(key) == "" {
+		return false
+	}
+	current, ok := cfg.DevicePinFor(key)
+	if !ok {
+		return false
+	}
+	removed := false
+	for host, pin := range cfg.DevicePins {
+		if _, _, err := net.SplitHostPort(host); err == nil || !isLoopbackHost(host) {
+			continue
+		}
+		if !sameConfigPinIdentity(pin, current) {
+			continue
+		}
+		cfg.ClearDevicePin(host)
+		removed = true
+	}
+	return removed
 }
 
 // isLoopbackHost reports whether host names this machine. "localhost" is
@@ -270,19 +385,31 @@ func expectedIdentityForPin(pin config.DevicePin) *certs.WendyIdentity {
 // to drop another device's pin, which is a bypass — see clearPinsGoverning,
 // which consumes this list but removes an alias's pin only when it names the
 // same device as the governing one.
+//
+// A port-qualified loopback key also lists its bare host (see
+// legacyLoopbackPinKey): consulting an extra key can only find a pin, never
+// discard one.
 func pinCandidateKeys(pinKey string) []string {
 	if pinKey == "" {
 		return nil
 	}
 	candidates := []string{pinKey}
+	seen := map[string]bool{normalizeMDNSHost(pinKey): true}
+	// A port-qualified loopback key's pin may still sit under the bare host,
+	// from before loopback endpoints were keyed by port (see pinKeyForAddr).
+	// Consulted after the endpoint's own key, so an existing pin keeps
+	// governing until enforceDeviceIdentity moves it.
+	if legacy := legacyLoopbackPinKey(pinKey); legacy != "" {
+		candidates = append(candidates, legacy)
+		seen[normalizeMDNSHost(legacy)] = true
+	}
 	// Best effort by construction: cachedDeviceHostEntry reports false for an
 	// unopenable cache, an unreadable one, and a plain miss alike, and every
-	// one of those degrades to exactly the single-key list above.
+	// one of those degrades to exactly the candidates above.
 	entry, ok := cachedDeviceHostEntry(pinKey)
 	if !ok {
 		return candidates
 	}
-	seen := map[string]bool{normalizeMDNSHost(pinKey): true}
 	for _, alias := range []string{entry.MeshName, entry.DisplayName} {
 		norm := normalizeMDNSHost(alias)
 		if norm == "" || seen[norm] {

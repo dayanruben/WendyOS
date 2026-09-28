@@ -11,7 +11,8 @@ import (
 )
 
 func TestVMIdentityUsesNameNotLoopbackOrPort(t *testing.T) {
-	for alias, want := range map[string]string{"vm:one": "vm:one", "vm:two": "vm:two", "sim": "vm:sim", "simulator": "vm:sim", "127.0.0.1:50100": "127.0.0.1"} {
+	stubLoopbackVMs(t, nil)
+	for alias, want := range map[string]string{"vm:one": "vm:one", "vm:two": "vm:two", "sim": "vm:sim", "simulator": "vm:sim", "127.0.0.1:50100": "127.0.0.1:50100"} {
 		if got := pinKeyForAddr(alias); got != want {
 			t.Fatalf("pin key for %s = %s, want %s", alias, got, want)
 		}

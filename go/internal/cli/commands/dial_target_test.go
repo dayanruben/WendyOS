@@ -834,29 +834,3 @@ func selfSignedCLICert(t *testing.T, orgID int) config.CertificateInfo {
 		PemCertificateChain: certPEM,
 	}
 }
-
-func TestPinKeyDerivationIsUnchangedForEveryAddress(t *testing.T) {
-	// This is shared, security-relevant derivation used by every device. Two
-	// VMs colliding on 127.0.0.1 is a real annoyance, but neither cure worked:
-	// an empty key reads as "unpinned" and disarms the plaintext-downgrade
-	// guard, and a port-qualified key orphans pins users already hold under the
-	// bare host, turning a mismatch into a silent first-use. The VM is exempted
-	// in connectToAgent instead, so this stays exactly what ships today.
-	for addr, want := range map[string]string{
-		"127.0.0.1:50051":  "127.0.0.1",
-		"localhost:50051":  "localhost",
-		"[::1]:50051":      "::1",
-		"127.0.0.1":        "127.0.0.1",
-		"rpi5.local:50051": "rpi5.local",
-		"192.168.2.253":    "192.168.2.253",
-	} {
-		if got := pinKeyForAddr(addr); got != want {
-			t.Errorf("pinKeyForAddr(%q) = %q, want %q", addr, got, want)
-		}
-	}
-	for _, addr := range []string{"127.0.0.1:50051", "localhost:50051"} {
-		if pinKeyForAddr(addr) == "" {
-			t.Errorf("pinKeyForAddr(%q) is empty; that would disarm the downgrade guard", addr)
-		}
-	}
-}

@@ -135,13 +135,13 @@ off.
 In another terminal:
 
 ```sh
-wendy --device 127.0.0.1:50051 device info
+wendy --device vm:dev device info
 ```
 
-To avoid repeating the address:
+To avoid repeating it:
 
 ```sh
-wendy device set-default 127.0.0.1:50051
+wendy device set-default vm:dev
 wendy run
 ```
 
@@ -247,17 +247,23 @@ processes running as your user (and root) can connect and have full QEMU control
 Prefer `--device vm:<name>` (or save it with `wendy device set-default
 vm:<name>`) over a literal loopback address. The alias follows the VM's current
 port and keeps enrolled-device trust pins separate for each VM. A literal
-`127.0.0.1` target retains its existing host-based pin behavior. If you replace
-an enrolled VM intentionally, clear only its pin with `wendy device unpin
-vm:<name>` before connecting to the replacement.
+loopback address on a running VM's forwarded port is pinned under that VM's
+`vm:<name>` key too; any other loopback address is pinned per port
+(`127.0.0.1:50051`), so two VMs or port forwards never share a pin. A pin saved
+under plain `127.0.0.1` by an older CLI keeps applying to loopback addresses
+until the device it names connects again, when it moves to the new key. If you
+replace an enrolled VM intentionally, clear only its pin with `wendy device
+unpin vm:<name>` before connecting to the replacement.
 
 The agent's port is often already in use on a development machine. Move the
 host side of the forward:
 
 ```sh
 wendy vm start dev --port 50151
-wendy --device 127.0.0.1:50151 device info
+wendy --device vm:dev device info
 ```
+
+The alias follows the VM to its new port.
 
 ## Updating the OS
 
@@ -266,7 +272,7 @@ The VM is partitioned exactly like a device — two rootfs slots plus a growable
 here the same way it works on hardware:
 
 ```sh
-wendy --device 127.0.0.1:50051 os update
+wendy --device vm:dev os update
 ```
 
 The update is written to the slot that is not running, the VM reboots into it,
@@ -278,8 +284,8 @@ one running, and each entry names its partition, so you can watch A on
 `/dev/vda3` hand over to B on `/dev/vda4`:
 
 ```sh
-wendy --device 127.0.0.1:50051 device info
-wendy --device 127.0.0.1:50051 os update-status   # how the last update ended
+wendy --device vm:dev device info
+wendy --device vm:dev os update-status   # how the last update ended
 ```
 
 The agent returns on the same forwarded port after the reboot, so nothing needs

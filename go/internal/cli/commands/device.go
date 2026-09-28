@@ -592,11 +592,12 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			// identity changed a way back (otherwise this connect would hit the
 			// same refusal and never re-pin).
 			//
-			// pinKeyForAddr, not the raw argument: `set-default my-mac.local:50051`
-			// is a legal default, and enforcement keys that host under
-			// "my-mac.local". Clearing "my-mac.local:50051" would drop nothing,
-			// leaving a host:port default with no way out of a refusal at all.
-			clearDevicePinForRepin(pinKeyForAddr(device))
+			// dialPinKeyForDevice, not the raw argument: `set-default
+			// my-mac.local:50051` is a legal default, and enforcement keys that
+			// host under "my-mac.local"; `set-default 127.0.0.1` is dialled — and
+			// pinned — as 127.0.0.1:50051. Clearing any other key would leave the
+			// refusal with no way out.
+			clearDevicePinForRepin(dialPinKeyForDevice(device))
 
 			// WDY-1149: pin the device's (organisation, cloud host, asset)
 			// identity now if it is reachable, so later connections detect a
