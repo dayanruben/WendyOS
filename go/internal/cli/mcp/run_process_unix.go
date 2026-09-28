@@ -23,6 +23,15 @@ func pinRunProcess(*exec.Cmd) func() { return func() {} }
 
 // reapRunGroup kills what is left of a cancelled run's process group after
 // the CLI has exited.
+//
+// The leader is already reaped here, so its PID is free, but kill(-pgid)
+// addresses the group, not the PID. A process group lives while any member
+// does, and the kernel does not hand out a PID that is still in use as a live
+// group's ID, so while a descendant remains, -pgid can only reach this run's
+// group. Once the group is empty the signal fails with ESRCH, unless a new
+// process has since been given the old PID and made itself a group leader
+// (setsid/setpgid) in the microseconds since Wait returned, which is
+// negligible.
 func reapRunGroup(cmd *exec.Cmd) { _ = signalRunProcess(cmd, len(runStopSignals)-1) }
 
 // signalRunProcess sends stage's stop signal (the last one for any later
