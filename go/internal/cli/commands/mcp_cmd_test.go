@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -162,5 +163,67 @@ func TestMCPCmd_HelpText(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "serve") {
 		t.Fatalf("expected help to mention 'serve', got: %s", out)
+	}
+}
+
+func TestMCPRestartNotice(t *testing.T) {
+	notice := mcpRestartNotice([]mcpSetupResult{
+		{tool: "Claude Code", path: "/h/.claude.json"},
+		{tool: "Cursor", path: "/h/.cursor/mcp.json", err: errors.New("parsing")},
+		{tool: "Codex", path: "/h/.codex/config.toml"},
+	})
+	for _, want := range []string{"Restart any of these", "Claude Code: start a new session", "`/mcp`", "Codex: start a new Codex session"} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("notice missing %q:\n%s", want, notice)
+		}
+	}
+	if strings.Contains(notice, "Cursor") {
+		t.Errorf("a tool whose setup failed must not be listed:\n%s", notice)
+	}
+	if got := mcpRestartNotice(nil); got != "" {
+		t.Errorf("no configured tools should print nothing, got %q", got)
+	}
+	if got := mcpRestartNotice([]mcpSetupResult{{tool: "Codex skills", path: "/h/.codex/wendy-skills.md"}}); got != "" {
+		t.Errorf("skill installs are not MCP clients, got %q", got)
+	}
+}
+
+// End to end: `wendy mcp setup` in an isolated HOME keeps a hand-written Codex
+// config intact apart from the wendy table, and tells the user what to restart.
+func TestMCPSetupCmd_PreservesCodexConfigAndPrintsRestartNotice(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("PATH", t.TempDir()) // no claude/cursor/windsurf/codex binaries
+	t.Setenv("WENDY_CONFIG_DIR", filepath.Join(home, ".wendy"))
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := "# my codex settings\nmodel = \"o3\"  # pinned\n\n[mcp_servers.github]\ncommand = \"npx\"\n"
+	codexPath := filepath.Join(home, ".codex", "config.toml")
+	if err := os.WriteFile(codexPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newMCPSetupCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(codexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(got), original+"\n[mcp_servers.wendy]\n") {
+		t.Fatalf("codex config not preserved:\n%s", got)
+	}
+	for _, want := range []string{"✓ Codex: configured at " + codexPath, "Codex: start a new Codex session"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
+		}
 	}
 }

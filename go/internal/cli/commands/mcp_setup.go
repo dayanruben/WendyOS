@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -19,8 +20,8 @@ func newMCPSetupCmd() *cobra.Command {
 		Short: "Configure the Wendy MCP server in supported AI tools",
 		Long:  "Detects installed AI tools and adds the wendy MCP server to their configuration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			results := setupMCPForAllTools()
-			results = append(results, installSkillsForAllTools()...)
+			mcpResults := setupMCPForAllTools()
+			results := append(append([]mcpSetupResult(nil), mcpResults...), installSkillsForAllTools()...)
 			for _, r := range results {
 				if r.err != nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "✗ %s: %v\n", r.tool, r.err)
@@ -32,6 +33,7 @@ func newMCPSetupCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "No supported AI tools detected.")
 				fmt.Fprintln(cmd.OutOrStdout(), "Install Claude Code: npm install -g @anthropic-ai/claude-code")
 			}
+			fmt.Fprint(cmd.OutOrStdout(), mcpRestartNotice(mcpResults))
 			// Record the CLI version so the root command can auto-refresh the
 			// configuration and skills after a later upgrade.
 			recordMCPSetupVersion()
@@ -81,6 +83,35 @@ func maybeRefreshMCPSetup(cfg *config.Config) {
 	installSkillsForAllTools()
 	cfg.LastMCPSetupVersion = version.Version
 	_ = config.Save(cfg)
+}
+
+// mcpRestartHints says how an already-running instance of each MCP client
+// picks up a server added to its config. Keys match mcpSetupResult.tool.
+var mcpRestartHints = map[string]string{
+	"Claude Code":    "start a new session (exit, run `claude` again), then check `/mcp`",
+	"Claude Desktop": "quit it completely (not just close the window) and reopen it",
+	"Cursor":         "restart Cursor",
+	"Windsurf":       "restart Windsurf",
+	"Codex":          "start a new Codex session",
+}
+
+// mcpRestartNotice lists the AI tools setup configured successfully and how to
+// make a running instance load the wendy MCP server — config changes are only
+// read at startup. It returns "" when no MCP client was configured. Only
+// `wendy mcp setup` prints it; the silent upgrade refresh stays quiet.
+func mcpRestartNotice(results []mcpSetupResult) string {
+	var b strings.Builder
+	for _, r := range results {
+		hint, ok := mcpRestartHints[r.tool]
+		if !ok || r.err != nil {
+			continue
+		}
+		fmt.Fprintf(&b, "  • %s: %s\n", r.tool, hint)
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "\nRestart any of these that are already running so they load the wendy MCP server:\n" + b.String()
 }
 
 type mcpSetupResult struct {
