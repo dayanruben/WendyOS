@@ -57,13 +57,15 @@ type StreamOptions struct {
 	UseCache bool      // emit cached entries and persist discoveries
 	Prober   LANProber // nil = no probing (mDNS-only confirmation)
 	Exclude  LANFilter // nil = nothing is excluded
-	// OnBackendError, when non-nil, is called with every error the platform
-	// mDNS backend returns while the session is live (the backend is then
-	// retried as before). Without it, a browse that can never start —
-	// mDNSResponder unreachable from a sandbox, Local Network permission
-	// denied, no multicast socket — looks exactly like an empty network.
-	// Called on the backend goroutine: it must be safe for concurrent use and
-	// must not block.
+	// OnBackendError, when non-nil, is called at most once, with the platform
+	// mDNS backend's last error, if the backend was down when the session
+	// ended: every restart failed, or the session ended while it waited to
+	// retry. A backend that failed and then recovered on a retry (e.g. an
+	// mDNSResponder restart) is not reported. Without it, a browse that can
+	// never start — mDNSResponder unreachable from a sandbox, Local Network
+	// permission denied, no multicast socket — looks exactly like an empty
+	// network. Called on the backend goroutine before the session's results
+	// are complete (CollectLAN has not returned yet); it must not block.
 	OnBackendError func(error)
 }
 
@@ -505,20 +507,28 @@ func (s *lanStream) runBackend() {
 	for attempt := 0; ; attempt++ {
 		err := lanBackendFn(s.ctx, wendyServiceType, emit)
 		if err == nil || s.ctx.Err() != nil {
-			return
-		}
-		if s.opts.OnBackendError != nil {
-			s.opts.OnBackendError(err)
+			return // browsed until the session ended (or stopped cleanly)
 		}
 		if attempt >= backendRetries {
 			log.Printf("discovery: LAN stream backend stopped: %v", err)
+			s.reportBackendDown(err)
 			return
 		}
 		select {
 		case <-time.After(backendRetryDelay):
 		case <-s.ctx.Done():
+			// The session ended with the backend down, waiting to retry.
+			s.reportBackendDown(err)
 			return
 		}
+	}
+}
+
+// reportBackendDown tells the consumer, if it asked, that the session is
+// ending with the mDNS backend not running (see StreamOptions.OnBackendError).
+func (s *lanStream) reportBackendDown(err error) {
+	if s.opts.OnBackendError != nil {
+		s.opts.OnBackendError(err)
 	}
 }
 

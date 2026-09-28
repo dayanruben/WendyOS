@@ -1302,3 +1302,55 @@ func TestCollectLANReportsBackendErrors(t *testing.T) {
 		t.Fatalf("OnBackendError calls = %v, want the backend's error reported", got)
 	}
 }
+
+// An mDNSResponder restart makes one browse attempt fail and the retry
+// recovers. That scan did listen, so it must not be reported as failed.
+func TestCollectLANDoesNotReportARecoveredBackend(t *testing.T) {
+	shrinkDuration(t, &backendRetryDelay, 10*time.Millisecond)
+	var attempts atomic.Int32
+	useStreamSeams(t, func(ctx context.Context, _ string, _ func(MDNSService)) error {
+		if attempts.Add(1) == 1 {
+			return errors.New("dns-sd error -65563")
+		}
+		<-ctx.Done() // the retry browses normally until the session ends
+		return nil
+	}, nil)
+
+	var reported atomic.Int32
+	opts := StreamOptions{OnBackendError: func(error) { reported.Add(1) }}
+	if _, err := CollectLAN(context.Background(), opts, 300*time.Millisecond); err != nil {
+		t.Fatalf("CollectLAN: %v", err)
+	}
+	if attempts.Load() < 2 {
+		t.Fatalf("backend attempts = %d, want the failure retried", attempts.Load())
+	}
+	if n := reported.Load(); n != 0 {
+		t.Fatalf("OnBackendError called %d times for a backend that recovered, want 0", n)
+	}
+}
+
+// A session that ends while the backend is down, waiting to retry, reports
+// the failure once — before CollectLAN returns, so the caller can act on it.
+func TestCollectLANReportsBackendDownAtSessionEnd(t *testing.T) {
+	shrinkDuration(t, &backendRetryDelay, time.Minute)
+	browseErr := errors.New("dns-sd error -65570")
+	useStreamSeams(t, func(context.Context, string, func(MDNSService)) error {
+		return browseErr
+	}, nil)
+
+	var mu sync.Mutex
+	var got []error
+	opts := StreamOptions{OnBackendError: func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, err)
+	}}
+	if _, err := CollectLAN(context.Background(), opts, 200*time.Millisecond); err != nil {
+		t.Fatalf("CollectLAN: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || !errors.Is(got[0], browseErr) {
+		t.Fatalf("OnBackendError calls = %v, want exactly the backend's error, once", got)
+	}
+}
