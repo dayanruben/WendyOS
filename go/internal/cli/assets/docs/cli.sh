@@ -291,6 +291,16 @@ package_upgrade_hint() {
   fi
 }
 
+# print_version BIN prints BIN's version. Its stdin is /dev/null because
+# under `curl … | bash` stdin is the rest of this script. A binary that can't
+# run here (a noexec mount, the wrong architecture) gets a warning rather than
+# aborting the summary under set -e.
+print_version() {
+  if ! "$1" --version </dev/null; then
+    echo "Warning: '$1 --version' failed; ${BINARY_NAME} may not be able to run on this system."
+  fi
+}
+
 OS=$(detect_os)
 ARCH=$(detect_arch)
 
@@ -521,10 +531,10 @@ if [[ -n "$INSTALLED_BIN" ]]; then
   fi
   if [[ -n "$ON_PATH" && "$ON_PATH" -ef "$INSTALLED_BIN" ]]; then
     echo "Installed successfully!"
-    "$INSTALLED_BIN" --version
+    print_version "$INSTALLED_BIN"
   else
     echo "Installed to ${INSTALLED_BIN}."
-    "$INSTALLED_BIN" --version
+    print_version "$INSTALLED_BIN"
     if [[ -n "$ON_PATH" ]]; then
       echo "Warning: '${BINARY_NAME}' on your PATH is ${ON_PATH}, which runs instead of the version just installed."
       UPGRADE_HINT="$(package_upgrade_hint "$ON_PATH" || true)"
@@ -544,7 +554,7 @@ if [[ -n "$INSTALLED_BIN" ]]; then
   fi
 elif command -v "$BINARY_NAME" &>/dev/null; then
   echo "Installed successfully!"
-  "$BINARY_NAME" --version
+  print_version "$BINARY_NAME"
 else
   echo "Installed to ${INSTALL_DIR}/${BINARY_NAME}."
   echo "Add it to your PATH: export PATH=\"${INSTALL_DIR}:\$PATH\""

@@ -539,4 +539,34 @@ rc=0; no_tty env PATH="$HB/bin:$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" bash "$C
 check "shadow_brew.exit" "0" "$rc"
 contains "shadow_brew.upgrade_hint" "$(cat "$OUT")" "brew upgrade wendy"
 
+# --- Test Y: the summary's `wendy --version` can neither abort nor eat the script ---
+# serve_cli_binary DIR OS ARCH BODY: like serve_cli_release, with BODY as the
+# stub wendy's script.
+serve_cli_binary() {
+  local dir="$1" os="$2" arch="$3" body="$4" v="2026.07.19-143000" pkg
+  printf '{"latest":"%s"}\n' "$v" > "$dir/manifest.json"
+  pkg="$(mktemp -d)"; mkdir -p "$pkg/wendy-cli-${os}-${arch}"
+  printf '#!/bin/sh\n%s\n' "$body" > "$pkg/wendy-cli-${os}-${arch}/wendy"; chmod +x "$pkg/wendy-cli-${os}-${arch}/wendy"
+  tar -czf "$dir/wendy-cli-${os}-${arch}-${v}.tar.gz" -C "$pkg" "wendy-cli-${os}-${arch}"
+}
+# A binary that can't run here (noexec mount, wrong architecture): warn, and
+# still print the PATH line instead of dying under set -e.
+make_stubs Linux x86_64
+D="$(mktemp -d)"; setup_net "$D"; serve_cli_binary "$D" linux amd64 'echo "exec format error" >&2; exit 126'
+FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; DEST="$(mktemp -d)"
+rc=0; run_no_tty "$OUT" "$CLI" -y -d "$DEST" || rc=$?
+check "version_fails.exit" "0" "$rc"
+contains "version_fails.warns" "$(cat "$OUT")" "Warning: '$DEST/wendy --version' failed"
+contains "version_fails.path_line" "$(cat "$OUT")" "export PATH=\"$DEST:\$PATH\""
+# Under `curl … | bash` stdin is the rest of the script: `wendy --version`
+# must not be able to read it.
+make_stubs Linux x86_64
+D="$(mktemp -d)"; setup_net "$D"
+serve_cli_binary "$D" linux amd64 'if read -r line; then echo "stdin had: $line"; fi; echo "wendy version 2026.07.19-143000"'
+FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; DEST="$(mktemp -d)"
+rc=0; no_tty env PATH="$DEST:$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" bash -s -- -y -d "$DEST" <"$CLI" >"$OUT" 2>&1 || rc=$?
+check "version_stdin.exit" "0" "$rc"
+contains "version_stdin.version" "$(cat "$OUT")" "wendy version 2026.07.19-143000"
+absent "version_stdin.no_script_read" "$(cat "$OUT")" "stdin had"
+
 exit $fail
