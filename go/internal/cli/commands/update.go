@@ -18,20 +18,30 @@ const cliUpdateCheckInterval = 24 * time.Hour
 // and persists the result to config. PersistentPostRunE reads the persisted
 // value on the next invocation, which avoids the race where the HTTP call
 // hasn't finished by the time a fast command completes.
-func scheduleCLIUpdateCheck(cfg *config.Config) {
+func scheduleCLIUpdateCheck() {
 	go func() {
 		latest, err := checkLatestRelease()
-		cfg.LastCLIUpdateCheck = time.Now().UTC().Format(time.RFC3339)
-		if err == nil {
+		// Best-effort: if we can't save, we'll retry on the next check.
+		_ = recordCLIUpdateCheck(latest, err, time.Now())
+	}()
+}
+
+// recordCLIUpdateCheck persists one check's outcome by changing only its own
+// two fields on the CURRENT config. It used to save the snapshot root loaded
+// at startup, seconds after the command had saved its own changes — a new
+// default device, a fresh pin, a login — and silently revert them.
+func recordCLIUpdateCheck(latest string, checkErr error, now time.Time) error {
+	return config.Update(func(cfg *config.Config) (bool, error) {
+		cfg.LastCLIUpdateCheck = now.UTC().Format(time.RFC3339)
+		if checkErr == nil {
 			if version.CompareVersions(latest, version.Version) > 0 {
 				cfg.AvailableCLIUpdate = latest
 			} else {
 				cfg.AvailableCLIUpdate = ""
 			}
 		}
-		// Best-effort: if we can't save, we'll retry on the next check.
-		_ = config.Save(cfg)
-	}()
+		return true, nil
+	})
 }
 
 // dueCLIUpdateCheck returns true when the CLI is a released build and enough

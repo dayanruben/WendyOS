@@ -710,10 +710,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cursor := m.table.Cursor()
 			if len(items) > 0 && cursor >= 0 && cursor < len(items) {
 				deviceID := items[cursor].defaultDevice
-				if cfg, err := config.Load(); err == nil {
-					cfg.DefaultDevice = deviceID
-					_ = config.Save(cfg)
-				}
+				_ = saveDefaultDevice(deviceID)
 				m.flashMessage = "Default device set to: " + deviceID
 				m.flashIsError = false
 				m.refreshTable()
@@ -721,10 +718,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "x":
-			if cfg, err := config.Load(); err == nil {
-				cfg.DefaultDevice = ""
-				_ = config.Save(cfg)
-			}
+			_ = saveDefaultDevice("")
 			m.flashMessage = "Default device cleared."
 			m.flashIsError = false
 			m.refreshTable()

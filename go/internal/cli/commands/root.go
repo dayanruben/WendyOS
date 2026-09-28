@@ -78,19 +78,19 @@ func NewRootCmd() *cobra.Command {
 
 			// Refresh MCP config and skills if the CLI was upgraded since the
 			// user last ran `wendy mcp setup`. Runs synchronously here, before
-			// the update-check goroutine below also mutates and saves cfg.
+			// the update-check goroutine below also writes config.json.
 			maybeRefreshMCPSetup(cfg)
 			premark("  prerun: maybeRefreshMCPSetup")
 
 			// Reconcile credentials with the configured storage policy. Runs in
-			// the synchronous zone: the update-check goroutine below saves cfg
-			// too, and its Save must observe an already-migrated on-disk state.
+			// the synchronous zone: the update-check goroutine below rewrites
+			// config.json too, and must find it already migrated.
 			if config.MigrateSecretsIfNeeded(cfg) {
 				cmd.PrintErrln("Moved wendy credentials into ~/.wendy/config.json.")
 			}
 
 			if dueCLIUpdateCheck(cfg) {
-				scheduleCLIUpdateCheck(cfg)
+				scheduleCLIUpdateCheck()
 			}
 			premark("  prerun: dueCLIUpdateCheck")
 

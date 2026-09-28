@@ -3,7 +3,9 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -243,5 +245,42 @@ func TestCloudV2DefaultPreservesTenantAndAssetAcrossRename(t *testing.T) {
 		if _, matched, err := parseCloudDeviceSelector(key); !matched || err == nil {
 			t.Fatalf("invalid UUID selector accepted: %s", key)
 		}
+	}
+}
+
+// Two agent sessions setting defaults while a third process updates another
+// field: without the config lock, saveDefaultDevice writes back the snapshot it
+// loaded and reverts the other writers.
+func TestSaveDefaultDeviceKeepsConcurrentConfigWrites(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	const n = 20
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			_ = saveDefaultDevice(fmt.Sprintf("dev-%d.local", i))
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			_ = config.Update(func(c *config.Config) (bool, error) {
+				if c.OptimizeTipShownAt == nil {
+					c.OptimizeTipShownAt = map[string]string{}
+				}
+				c.OptimizeTipShownAt[fmt.Sprintf("p%d", i)] = "2026-09-28"
+				return true, nil
+			})
+		}(i)
+	}
+	wg.Wait()
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(cfg.OptimizeTipShownAt); got != n {
+		t.Fatalf("%d of %d concurrent config updates survived; saveDefaultDevice overwrote the rest", got, n)
+	}
+	if !strings.HasPrefix(cfg.DefaultDevice, "dev-") {
+		t.Fatalf("DefaultDevice = %q, want one of the saved defaults", cfg.DefaultDevice)
 	}
 }

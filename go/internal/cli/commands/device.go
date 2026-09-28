@@ -563,14 +563,8 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 				return selectorErr
 			}
 
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-
-			cfg.DefaultDevice = device
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving config: %w", err)
+			if err := saveDefaultDevice(device); err != nil {
+				return err
 			}
 
 			fmt.Printf("Default device set to: %s\n", tui.Device(device))
@@ -688,14 +682,8 @@ func newDeviceUnsetDefaultCmd() *cobra.Command {
 		Use:   "unset-default",
 		Short: "Clear the default device",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-
-			cfg.DefaultDevice = ""
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving config: %w", err)
+			if err := saveDefaultDevice(""); err != nil {
+				return err
 			}
 
 			fmt.Println("Default device cleared.")

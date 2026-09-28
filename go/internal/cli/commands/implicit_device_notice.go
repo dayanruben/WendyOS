@@ -97,10 +97,8 @@ func implicitDeviceHintShownToday() bool {
 }
 
 func recordImplicitDeviceHintShown() {
-	cfg, err := config.Load()
-	if err != nil {
-		return
-	}
-	cfg.ImplicitDeviceHintShownAt = implicitDeviceHintToday()
-	_ = config.Save(cfg)
+	_ = config.Update(func(cfg *config.Config) (bool, error) {
+		cfg.ImplicitDeviceHintShownAt = implicitDeviceHintToday()
+		return true, nil
+	})
 }

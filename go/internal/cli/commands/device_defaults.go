@@ -154,13 +154,15 @@ func connectCloudDeviceSelector(ctx context.Context, selector cloudDeviceSelecto
 	return nil, fmt.Errorf("cloud asset %d in organization %d is offline or unavailable; choose another device with --device or 'wendy device set-default'", selector.AssetID, selector.OrgID)
 }
 
+// saveDefaultDevice records key as the default device ("" clears it), changing
+// only that field of the config as it is on disk now. Under config.Update, so
+// an agent session setting its default cannot revert a login, pin or default
+// another wendy process saved a moment earlier.
 func saveDefaultDevice(key string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("loading default device: %w", err)
-	}
-	cfg.DefaultDevice = key
-	if err := config.Save(cfg); err != nil {
+	if err := config.Update(func(cfg *config.Config) (bool, error) {
+		cfg.DefaultDevice = key
+		return true, nil
+	}); err != nil {
 		return fmt.Errorf("saving default device: %w", err)
 	}
 	return nil
