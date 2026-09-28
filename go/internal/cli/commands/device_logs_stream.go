@@ -27,11 +27,15 @@ type logStreamReceiver interface {
 // quiet) are never flagged. So:
 //
 //   - the first frame without IsHistory proves the replay is over; and
-//   - a pause of noFollowIdleGap after a replayed frame is taken to mean the
-//     same. The replay is a single burst (sub-millisecond gaps observed from a
-//     Jetson over USB), so this only cuts history short on a link that stalls
-//     for that long mid-burst. That is the trade-off for not waiting up to
-//     15 s for a heartbeat that pre-WDY-2912 agents never send.
+//   - a pause after a replayed frame is taken to mean the same. The replay is
+//     a single burst (sub-millisecond gaps observed from a Jetson over USB),
+//     so the pause needed is short: noFollowIdleGap, stretched to 3x the
+//     longest pause seen so far within the replay when the link is slower
+//     (LTE, a cloud tunnel), up to noFollowMaxIdleGap — see adaptiveIdleGap.
+//     This can still cut history short on a link that stalls longer than
+//     that mid-burst, so the command notes when a replay ended this way. It
+//     is the trade-off for not waiting up to 15 s for a heartbeat that
+//     pre-WDY-2912 agents never send.
 //
 // noFollowFirstFrameWait covers the agent reading its on-disk buffer before
 // the first replayed frame (it scans segments newest-first until it has N
@@ -40,7 +44,17 @@ type logStreamReceiver interface {
 var (
 	noFollowFirstFrameWait = 10 * time.Second
 	noFollowIdleGap        = 1500 * time.Millisecond
+	noFollowMaxIdleGap     = 10 * time.Second
 )
+
+// adaptiveIdleGap is how long --no-follow waits after a replayed frame before
+// taking the replay as over, given the longest pause seen so far between two
+// replayed frames: 3x that pause, but at least noFollowIdleGap and at most
+// noFollowMaxIdleGap (under the agents' 15 s heartbeat, which ends a replay
+// definitively anyway).
+func adaptiveIdleGap(longestPause time.Duration) time.Duration {
+	return max(noFollowIdleGap, min(3*longestPause, noFollowMaxIdleGap))
+}
 
 // logReplayEnd says why a --no-follow read stopped.
 type logReplayEnd int
@@ -56,13 +70,19 @@ const (
 // logReplayResult describes how a --no-follow read ended.
 type logReplayResult struct {
 	end     logReplayEnd
-	history int // replayed frames passed to handle
+	history int           // replayed frames passed to handle
+	idleGap time.Duration // the idle gap in force when it ended (replayEndedIdle)
 }
 
-// noFollowHint explains a --no-follow run that printed nothing, or returns ""
-// when there is nothing to explain. Without it an empty result, exit 0, reads
-// as "this app has no logs" when the agent may simply not have replayed any.
+// noFollowHint explains a --no-follow run that printed nothing, or notes one
+// that ended on the idle-gap guess rather than a definitive live frame; it
+// returns "" when there is nothing to say. Without it an empty result, exit 0,
+// reads as "this app has no logs" when the agent may simply not have
+// replayed any.
 func noFollowHint(res logReplayResult, tail int32) string {
+	if res.end == replayEndedIdle && res.history > 0 {
+		return fmt.Sprintf("Replay ended after %s without new logs; on a slow connection it may have been cut short.", res.idleGap)
+	}
 	if res.history > 0 || res.end == replayEndedCancelled {
 		return ""
 	}
@@ -120,6 +140,8 @@ func consumeLogStream(ctx context.Context, stream logStreamReceiver, follow bool
 	}()
 
 	var res logReplayResult
+	var lastFrame time.Time
+	var longestPause time.Duration
 	idle := time.NewTimer(noFollowFirstFrameWait)
 	defer idle.Stop()
 	for {
@@ -146,8 +168,14 @@ func consumeLogStream(ctx context.Context, stream logStreamReceiver, follow bool
 				return res, nil
 			}
 			handle(f.resp)
+			now := time.Now()
+			if res.history > 0 {
+				longestPause = max(longestPause, now.Sub(lastFrame))
+			}
+			lastFrame = now
 			res.history++
-			idle.Reset(noFollowIdleGap)
+			res.idleGap = adaptiveIdleGap(longestPause)
+			idle.Reset(res.idleGap)
 		}
 	}
 }

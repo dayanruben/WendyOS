@@ -283,3 +283,78 @@ func TestDeviceLogsNoFollowHelpMentionsAgentCaveat(t *testing.T) {
 		t.Fatalf("--no-follow help should say older agents replay history only with --tail; got %q", f.Usage)
 	}
 }
+
+// timedFrame is a frame a fakeLogStream delivers after a delay.
+type timedFrame struct {
+	after time.Duration // since the previous frame (or the start)
+	frame *agentpb.StreamLogsResponse
+}
+
+// newTimedLogStream delivers frames on a schedule, like a replay crossing a
+// slow link, then stays open (no EOF) as a live stream would.
+func newTimedLogStream(ctx context.Context, schedule ...timedFrame) *fakeLogStream {
+	f := &fakeLogStream{ctx: ctx, frames: make(chan *agentpb.StreamLogsResponse, len(schedule))}
+	go func() {
+		for _, s := range schedule {
+			select {
+			case <-time.After(s.after):
+				f.frames <- s.frame
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return f
+}
+
+// Over LTE or a cloud tunnel the replay burst can pause between frames. A
+// fixed 1.5 s idle gap then cut the history short without a word. The gap now
+// stretches to 3x the longest pause seen so far in the replay.
+func TestConsumeLogStream_NoFollowIdleGapAdaptsToSlowReplay(t *testing.T) {
+	setNoFollowTimings(t, time.Minute, 400*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := newTimedLogStream(ctx,
+		timedFrame{0, historyFrame("h1")},
+		timedFrame{250 * time.Millisecond, historyFrame("h2")}, // within the 400ms base gap; the gap becomes 750ms
+		timedFrame{550 * time.Millisecond, historyFrame("h3")}, // a fixed 400ms gap would have stopped before this
+	)
+	var rec frameRecorder
+	res, err := consumeLogStream(ctx, stream, false, rec.handle)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got := rec.got(); got != "h1,h2,h3" {
+		t.Fatalf("handled %q, want the whole slow replay h1,h2,h3", got)
+	}
+	if res.end != replayEndedIdle || res.idleGap < time.Second {
+		t.Fatalf("result = %+v, want an idle end with a gap stretched past 1s by the 550ms pause", res)
+	}
+}
+
+func TestAdaptiveIdleGap(t *testing.T) {
+	cases := []struct{ longest, want time.Duration }{
+		{0, 1500 * time.Millisecond},                      // a fast burst: the floor
+		{400 * time.Millisecond, 1500 * time.Millisecond}, // 3x is still under the floor
+		{time.Second, 3 * time.Second},                    // a slow link: 3x its longest pause
+		{5 * time.Second, 10 * time.Second},               // capped
+	}
+	for _, tc := range cases {
+		if got := adaptiveIdleGap(tc.longest); got != tc.want {
+			t.Errorf("adaptiveIdleGap(%s) = %s, want %s", tc.longest, got, tc.want)
+		}
+	}
+}
+
+// Ending on the idle gap is a guess, so the command says so.
+func TestNoFollowHint_IdleEndIsNoted(t *testing.T) {
+	hint := noFollowHint(logReplayResult{end: replayEndedIdle, history: 4, idleGap: 1500 * time.Millisecond}, 20)
+	for _, want := range []string{"1.5s", "slow connection"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("idle-end note %q does not mention %q", hint, want)
+		}
+	}
+	if hint := noFollowHint(logReplayResult{end: replayEndedLive, history: 4}, 20); hint != "" {
+		t.Errorf("a replay ended by a live frame is definitive, want no note, got %q", hint)
+	}
+}
