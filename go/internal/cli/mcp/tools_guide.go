@@ -107,7 +107,16 @@ and the boundary between remote observation and local robot control.
 
 ## Deploying a workload
 
-Use the run tool to build and deploy a local project to a cloud-enrolled device:
+Use the run tool to build and deploy to an explicit device or the connected target:
+  run(project_path="/path/to/project", device="vm:go2")
+  run(project_path="/path/to/project") // reuse current direct/cloud session target
+Use start=false to create the container without starting it. With no connection
+and no device, run returns NOT_CONNECTED; AUTH_REQUIRED means the user must run
+'wendy auth login' in a terminal. run returns status, target and a build-log tail
+but does not check readiness (readiness is "not_checked"): verify with
+container_list, telemetry_logs, and the app's own endpoint or output. If you pass
+device to deploy elsewhere, device_connect to it before verifying.
+Legacy cloud-only targeting is still accepted but omitted from the advertised schema:
   run(project_path="/path/to/project", device_name="mydevice")
 
 ## Disconnecting

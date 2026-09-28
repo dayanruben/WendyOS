@@ -121,3 +121,16 @@ func TestServerInstructionsNameOnlyRegisteredTools(t *testing.T) {
 		}
 	}
 }
+
+// The guide is the "read this first" resource the instructions point to; it
+// must describe the same run tool.
+func TestGuideDescribesConnectedTargetRun(t *testing.T) {
+	if strings.Contains(guideText, "to a cloud-enrolled device:\n  run(") {
+		t.Fatal("guide still describes run as cloud-only")
+	}
+	for _, want := range []string{`run(project_path="/path/to/project") // reuse`, "NOT_CONNECTED", "AUTH_REQUIRED", "not_checked"} {
+		if !strings.Contains(guideText, want) {
+			t.Errorf("guide deploy section is missing %q", want)
+		}
+	}
+}

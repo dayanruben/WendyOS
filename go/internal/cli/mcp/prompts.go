@@ -16,7 +16,8 @@ func (s *mcpServer) registerPrompts(srv *server.MCPServer) {
 		mcpgo.NewPrompt("deploy_app",
 			mcpgo.WithPromptDescription("Walks through connecting to a device and deploying a project with the run tool."),
 			mcpgo.WithArgument("project_path", mcpgo.ArgumentDescription("Path to the project to deploy (defaults to the current directory).")),
-			mcpgo.WithArgument("device_name", mcpgo.ArgumentDescription("Cloud device name to target the run at (defaults to the currently connected/default device).")),
+			mcpgo.WithArgument("device", mcpgo.ArgumentDescription("Device address from device_list (host:port), vm:NAME or a cloud:// selector; omit to reuse the connection.")),
+			mcpgo.WithArgument("device_name", mcpgo.ArgumentDescription("Explicit cloud device name; omit to reuse the current direct, simulator or cloud session target.")),
 		),
 		s.handleDeployAppPrompt,
 	)
@@ -52,7 +53,14 @@ func promptArg(req mcpgo.GetPromptRequest, name, defaultVal string) string {
 
 func (s *mcpServer) handleDeployAppPrompt(_ context.Context, req mcpgo.GetPromptRequest) (*mcpgo.GetPromptResult, error) {
 	projectPath := promptArg(req, "project_path", ".")
-	device := promptArg(req, "device_name", "")
+	device := promptArg(req, "device", "")
+	argument := ""
+	if device != "" {
+		argument = fmt.Sprintf(", device=%q", device)
+	} else {
+		device = promptArg(req, "device_name", "")
+		argument = deviceArg(device)
+	}
 
 	deviceClause := "the currently connected device"
 	if device != "" {
@@ -61,10 +69,10 @@ func (s *mcpServer) handleDeployAppPrompt(_ context.Context, req mcpgo.GetPrompt
 
 	text := fmt.Sprintf(`Deploy the project at %s to %s.
 
-1. Make sure a device is connected: use device_connect (for a LAN/direct device by host:port) or cloud_connect (for a cloud-enrolled device). If already connected, you can skip this.
-2. Deploy with the run tool: run(project_path=%q%s). This builds the project and starts it on the device.
-3. Verify it came up: check container_list for the app's running_state, and tail telemetry_logs for startup errors.
-`, projectPath, deviceClause, projectPath, deviceArg(device))
+1. Confirm the intended target with wendy_status. If it is not connected, use device_connect with an address from device_list (host:port), vm:NAME or a cloud:// selector, or cloud_connect for a cloud device name. Reuse a connection only if it is the intended target.
+2. Deploy with the run tool: run(project_path=%q%s). This builds the project and starts it on that target. With no connection and no device, run returns NOT_CONNECTED.
+3. Check the returned target; if it is not the connected device, device_connect to it first. Detached run does not wait for readiness: check container_list for the app's running_state and termination_reason, telemetry_logs for startup errors, and the app's actual health endpoint or output.
+`, projectPath, deviceClause, projectPath, argument)
 
 	return mcpgo.NewGetPromptResult(
 		"Deploy a project to a Wendy device",
@@ -75,8 +83,7 @@ func (s *mcpServer) handleDeployAppPrompt(_ context.Context, req mcpgo.GetPrompt
 }
 
 // deviceArg renders the optional device_name argument suffix for the run tool
-// call shown in the deploy_app prompt text. The run tool's device selector is
-// device_name (not device), so the rendered example must match that param.
+// call shown in the deploy_app prompt text; this legacy prompt arg is cloud-only.
 func deviceArg(device string) string {
 	if device == "" {
 		return ""

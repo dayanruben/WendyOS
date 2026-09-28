@@ -34,11 +34,15 @@ wendy run --device <name>
 ```
 
 Use the `run` MCP tool to deploy from within an AI session.
+It uses an explicit `device` selector or the current connection's target and
+transport; legacy `device_name` selects cloud deployment. Detached success does
+not verify readiness. Check container state, logs and actual app/ROS output.
 
 ## Connection Model
 
-Most MCP tools require an active device connection. The `run` tool works
-without a prior connection (it manages the cloud tunnel internally).
+Most MCP tools require an active device connection. The `run` tool deploys to
+the connected target or an explicit `device`; with neither it returns
+`NOT_CONNECTED` rather than picking a device.
 
 ## Authentication
 
