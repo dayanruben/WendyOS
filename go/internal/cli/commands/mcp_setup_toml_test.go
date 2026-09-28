@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	toml "github.com/BurntSushi/toml"
 )
 
 const testWendyBin = "/opt/wendy/bin/wendy"
@@ -175,6 +177,63 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 				"startup_timeout_sec = 30\n",
 			want: wendyTable +
 				"startup_timeout_sec = 30\n",
+		},
+		{
+			// TOML lets a multi-line string end with up to two quotes of its
+			// own right before the closing delimiter.
+			name: "four-quote string ending inside replaced args keeps the next comment",
+			in: "[mcp_servers.wendy]\n" +
+				"command = \"/opt/wendy/bin/wendy\"\n" +
+				"args = [\"\"\"mcp\"\"\"\", \"serve\"]\n" +
+				"# keep me\n",
+			want: wendyTable +
+				"# keep me\n",
+		},
+		{
+			name: "four-quote literal string ending inside replaced args keeps the next comment",
+			in: "[mcp_servers.wendy]\n" +
+				"command = \"/opt/wendy/bin/wendy\"\n" +
+				"args = ['''mcp'''', 'serve']\n" +
+				"# keep me\n" +
+				"startup_timeout_sec = 30\n",
+			want: wendyTable +
+				"# keep me\n" +
+				"startup_timeout_sec = 30\n",
+		},
+		{
+			name: "five-quote string ending in another key does not hide the wendy table",
+			in: "notes = [\"\"\"a\"\"\"\"\", \"b\"]\n" +
+				"# keep me\n" +
+				"[mcp_servers.wendy]\n" +
+				"command = \"/old/wendy\"\n" +
+				"args = [\"mcp\", \"serve\"]\n",
+			want: "notes = [\"\"\"a\"\"\"\"\", \"b\"]\n" +
+				"# keep me\n" +
+				wendyTable,
+		},
+		{
+			// Comments are never deleted: those inside a replaced multi-line
+			// value move to just after the new line.
+			name: "comments inside replaced multi-line args are kept",
+			in: "[mcp_servers.wendy]\n" +
+				"command = \"/opt/wendy/bin/wendy\"\n" +
+				"args = [\n" +
+				"  \"stdio\",\n" +
+				"  # why: see ticket 123\n" +
+				"]\n" +
+				"startup_timeout_sec = 30\n",
+			want: wendyTable +
+				"  # why: see ticket 123\n" +
+				"startup_timeout_sec = 30\n",
+		},
+		{
+			name: "comment-like lines inside a replaced multi-line string are string content",
+			in: "[mcp_servers.wendy]\n" +
+				"command = \"\"\"\n" +
+				"# not a comment\n" +
+				"/old/wendy\"\"\"\n" +
+				"args = [\"mcp\", \"serve\"]\n",
+			want: wendyTable,
 		},
 		{
 			name: "args that are not an array are replaced",
@@ -463,6 +522,8 @@ func FuzzUpsertCodexMCPServer(f *testing.F) {
 		"[mcp_servers]\nwendy = { command = \"x\" }\n",
 		"notes = '''\n[mcp_servers.wendy]\n'''\n",
 		"# c\r\n[mcp_servers.wendy]\r\ncommand = \"x\"\r\n",
+		"[mcp_servers.wendy]\nargs = [\"\"\"mcp\"\"\"\", \"serve\"]\n# keep me\n",
+		"[mcp_servers.wendy]\nargs = [\n  \"x\",\n  # c\n]\n",
 	} {
 		f.Add(seed)
 	}
@@ -471,9 +532,50 @@ func FuzzUpsertCodexMCPServer(f *testing.F) {
 		if err != nil {
 			return
 		}
+		have := map[string]int{}
+		for _, l := range strings.Split(string(out), "\n") {
+			have[strings.TrimRight(l, "\r")]++
+		}
+		for _, c := range tomlCommentLines(in) {
+			if have[c]--; have[c] < 0 {
+				t.Fatalf("comment line %q was deleted\n--- in ---\n%q\n--- out ---\n%q", c, in, out)
+			}
+		}
 		again, err := upsertCodexMCPServer(out, "mcp_servers", "wendy", testWendyBin, testWendyArgs)
 		if err != nil || string(again) != string(out) {
 			t.Fatalf("accepted output is not stable (err=%v)\n--- in ---\n%q\n--- out ---\n%q\n--- again ---\n%q", err, in, out, again)
 		}
 	})
+}
+
+// tomlCommentLines returns the comment-only lines of src, found without the
+// editor's scanner: a line starting with '#' is a comment when changing it
+// leaves the decoded document unchanged (inside a multi-line string, the
+// change would alter the string).
+func tomlCommentLines(src string) []string {
+	decode := func(s string) (string, bool) {
+		var doc map[string]any
+		if _, err := toml.Decode(s, &doc); err != nil {
+			return "", false
+		}
+		c, err := canonicalTOML(doc)
+		return c, err == nil
+	}
+	orig, ok := decode(src)
+	if !ok {
+		return nil
+	}
+	lines := strings.SplitAfter(src, "\n")
+	var comments []string
+	for i, l := range lines {
+		text := strings.TrimRight(l, "\r\n")
+		if !strings.HasPrefix(strings.TrimLeft(text, " \t"), "#") {
+			continue
+		}
+		changed := strings.Join(lines[:i], "") + text + "x" + l[len(text):] + strings.Join(lines[i+1:], "")
+		if c, ok := decode(changed); ok && c == orig {
+			comments = append(comments, text)
+		}
+	}
+	return comments
 }
