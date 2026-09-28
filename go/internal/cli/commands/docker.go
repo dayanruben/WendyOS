@@ -1168,8 +1168,9 @@ var (
 
 // ensureDockerDaemon verifies the Docker daemon is running. On macOS, when
 // running interactively it prompts the user before launching the installed
-// Docker runtime; in non-interactive mode it launches it automatically.
-// Waits up to 60 s for the daemon to become ready before returning an error.
+// Docker runtime and then waits up to 60 s for the daemon to become ready; in
+// non-interactive mode it never launches the app and returns an error asking
+// the user to start it.
 func ensureDockerDaemon(ctx context.Context) error {
 	return ensureDockerDaemonForHostOS(ctx, dockerHostOS(runtime.GOOS))
 }
@@ -1221,10 +1222,13 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 			return dockerCLIMissingError(rt)
 		}
 
-		if isInteractiveTerminalFn() {
-			if !confirmFn(fmt.Sprintf("Docker daemon is not running or is still starting for %s. Open it now?", rt.name)) {
-				return commandErrorf(errBuilderUnavailable, "docker daemon is not running — please start %s and try again", rt.name)
-			}
+		if !isInteractiveTerminalFn() {
+			// No one is there to confirm launching a GUI app, and waiting up
+			// to a minute for it would stall an agent or script. Say what to do.
+			return commandErrorf(errBuilderUnavailable, "docker daemon is not running — start %s and try again (wendy does not open it without an interactive terminal)", rt.name)
+		}
+		if !confirmFn(fmt.Sprintf("Docker daemon is not running or is still starting for %s. Open it now?", rt.name)) {
+			return commandErrorf(errBuilderUnavailable, "docker daemon is not running — please start %s and try again", rt.name)
 		}
 
 		fmt.Fprintf(os.Stderr, "[docker] Opening %s...\n", rt.name)
