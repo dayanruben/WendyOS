@@ -359,8 +359,9 @@ if [ "$(/usr/bin/id -u)" -ne 0 ]; then
   printf '#!/usr/bin/env bash\necho "apt-get $*"\n' > "$STUB/apt-get"; chmod +x "$STUB/apt-get"
   OLD="$(mktemp -d)"
   printf '#!/bin/sh\necho "wendy version 2026.01.01-OLD"\n' > "$OLD/wendy"; chmod +x "$OLD/wendy"
-  # dpkg owns the old binary, as it would after an earlier `apt-get install wendy`.
-  printf '#!/bin/sh\n[ "$1" = "-S" ] && [ "$2" = "%s/wendy" ]\n' "$OLD" > "$STUB/dpkg-query"; chmod +x "$STUB/dpkg-query"
+  # dpkg owns the old binary, as it would after an earlier apt install (here
+  # of a differently named package, so the hint must use dpkg's answer).
+  printf '#!/bin/sh\n[ "$1" = "-S" ] && [ "$2" = "%s/wendy" ] && echo "wendy-legacy: %s/wendy"\n' "$OLD" "$OLD" > "$STUB/dpkg-query"; chmod +x "$STUB/dpkg-query"
   D="$(mktemp -d)"; setup_net "$D"; serve_cli_release "$D" linux amd64
   FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; RO="$(mktemp -d)"; chmod 555 "$RO"
   SCRIPT="$(cli_with_default_dir "$RO")"
@@ -371,7 +372,9 @@ if [ "$(/usr/bin/id -u)" -ne 0 ]; then
   contains "shadow.new_version" "$(cat "$OUT")" "wendy version 2026.07.19-143000"
   absent "shadow.no_old_version" "$(cat "$OUT")" "2026.01.01-OLD"
   contains "shadow.names_old" "$(cat "$OUT")" "on your PATH is $OLD/wendy"
-  contains "shadow.package_hint" "$(cat "$OUT")" "sudo apt-get remove wendy"
+  contains "shadow.package_hint" "$(cat "$OUT")" "apt package wendy-legacy"
+  contains "shadow.upgrade_hint" "$(cat "$OUT")" "sudo apt-get install --only-upgrade wendy-legacy"
+  absent "shadow.no_remove_advice" "$(cat "$OUT")" "remove"
   contains "shadow.path_fix" "$(cat "$OUT")" "export PATH=\"$FAKE_HOME/.local/bin:\$PATH\""
 
   # Same install with ~/.local/bin already first on PATH: a plain success.
@@ -506,5 +509,34 @@ if command -v dash >/dev/null 2>&1; then
   check "dash_file.exit" "0" "$rc"
   check "dash_file.binary" "yes" "$([ -x "$DEST/wendy" ] && echo yes || echo no)"
 fi
+
+# --- Test X: how the shadow report identifies the older binary ---
+make_shadow_run() { # make_shadow_run: a standalone install into DEST with $1 prepended to PATH
+  make_stubs Linux x86_64
+  D="$(mktemp -d)"; setup_net "$D"; serve_cli_release "$D" linux amd64
+  FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; DEST="$(mktemp -d)"
+}
+# A relative PATH entry: the report names the absolute path, and dpkg-query is
+# not asked about "bin/wendy" (for a relative argument it does a substring
+# search, which matches the apt package's /usr/bin/wendy).
+make_shadow_run
+W="$(mktemp -d)"; mkdir -p "$W/bin"
+printf '#!/bin/sh\necho "wendy version 2026.01.01-OLD"\n' > "$W/bin/wendy"; chmod +x "$W/bin/wendy"
+printf '#!/bin/sh\ncase "$2" in /*) [ "$2" = /usr/bin/wendy ];; *bin/wendy*) true;; *) false;; esac && echo "wendy: /usr/bin/wendy"\n' > "$STUB/dpkg-query"; chmod +x "$STUB/dpkg-query"
+rc=0; (cd "$W" && no_tty env PATH="bin:$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" bash "$CLI" -y -d "$DEST" </dev/null >"$OUT" 2>&1) || rc=$?
+W_ABS="$(cd "$W" && pwd)"
+check "shadow_rel.exit" "0" "$rc"
+contains "shadow_rel.absolute" "$(cat "$OUT")" "on your PATH is $W_ABS/bin/wendy"
+contains "shadow_rel.rm_hint" "$(cat "$OUT")" "rm $W_ABS/bin/wendy"
+absent "shadow_rel.no_false_package" "$(cat "$OUT")" "apt-get"
+
+# A Homebrew-installed older wendy: upgrade it through brew, by formula name.
+make_shadow_run
+HB="$(mktemp -d)"; mkdir -p "$HB/Cellar/wendy/2026.01.01/bin" "$HB/bin"
+printf '#!/bin/sh\necho "wendy version 2026.01.01-OLD"\n' > "$HB/Cellar/wendy/2026.01.01/bin/wendy"; chmod +x "$HB/Cellar/wendy/2026.01.01/bin/wendy"
+ln -s ../Cellar/wendy/2026.01.01/bin/wendy "$HB/bin/wendy"
+rc=0; no_tty env PATH="$HB/bin:$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" bash "$CLI" -y -d "$DEST" </dev/null >"$OUT" 2>&1 || rc=$?
+check "shadow_brew.exit" "0" "$rc"
+contains "shadow_brew.upgrade_hint" "$(cat "$OUT")" "brew upgrade wendy"
 
 exit $fail

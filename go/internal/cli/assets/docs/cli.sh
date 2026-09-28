@@ -266,18 +266,28 @@ package_installed() {
   INSTALLED_BY_PKG=true
 }
 
-# package_remove_hint FILE prints the command that removes FILE when a package
-# manager installed it, or nothing.
-package_remove_hint() {
-  local f="$1"
-  if command -v dpkg-query &>/dev/null && dpkg-query -S "$f" &>/dev/null; then
-    echo "sudo apt-get remove ${BINARY_NAME}"
-  elif command -v rpm &>/dev/null && rpm -qf "$f" &>/dev/null; then
-    if command -v dnf &>/dev/null; then echo "sudo dnf remove ${BINARY_NAME}"; else echo "sudo yum remove ${BINARY_NAME}"; fi
-  elif command -v pacman &>/dev/null && pacman -Qo "$f" &>/dev/null; then
-    echo "sudo pacman -R ${BINARY_NAME}"
-  elif [[ "$(readlink "$f" 2>/dev/null || true)" == *"/Cellar/"* ]]; then
-    echo "brew uninstall ${BINARY_NAME}"
+# package_upgrade_hint FILE prints, when a package manager owns FILE, which
+# package it belongs to and how to upgrade it there; otherwise nothing. FILE
+# must be absolute: given anything else, `dpkg-query -S` does a substring
+# search and would claim some other package's file.
+package_upgrade_hint() {
+  local f="$1" pkg="" link=""
+  [[ "$f" == /* ]] || return 0
+  if command -v dpkg-query &>/dev/null && pkg="$(dpkg-query -S "$f" 2>/dev/null)"; then
+    pkg="${pkg%%$'\n'*}"; pkg="${pkg%%: *}"; pkg="${pkg%%,*}"
+    echo "It belongs to the apt package ${pkg}; upgrade it: sudo apt-get update && sudo apt-get install --only-upgrade ${pkg}"
+  elif command -v rpm &>/dev/null && pkg="$(rpm -qf --qf '%{NAME}\n' "$f" 2>/dev/null)"; then
+    pkg="${pkg%%$'\n'*}"
+    if command -v dnf &>/dev/null; then
+      echo "It belongs to the rpm package ${pkg}; upgrade it: sudo dnf upgrade ${pkg}"
+    else
+      echo "It belongs to the rpm package ${pkg}; upgrade it: sudo yum update ${pkg}"
+    fi
+  elif command -v pacman &>/dev/null && pkg="$(pacman -Qqo "$f" 2>/dev/null)"; then
+    echo "It belongs to the pacman package ${pkg}; upgrade it with your AUR helper, e.g.: yay -S ${pkg}"
+  elif link="$(readlink "$f" 2>/dev/null)" && [[ "$link" == *"/Cellar/"* ]]; then
+    pkg="${link#*/Cellar/}"; pkg="${pkg%%/*}"
+    echo "It belongs to the Homebrew formula ${pkg}; upgrade it: brew upgrade ${pkg}"
   fi
 }
 
@@ -505,6 +515,10 @@ if [[ -n "$INSTALLED_BIN" ]]; then
   # left by a no-terminal install) would run instead.
   INSTALLED_DIR="$(dirname "$INSTALLED_BIN")"
   ON_PATH="$(command -v "$BINARY_NAME" 2>/dev/null || true)"
+  if [[ -n "$ON_PATH" && "$ON_PATH" != /* ]]; then
+    # Found through a relative PATH entry: name it by its absolute path.
+    ON_PATH="$(cd "$(dirname "$ON_PATH")" && pwd)/$(basename "$ON_PATH")"
+  fi
   if [[ -n "$ON_PATH" && "$ON_PATH" -ef "$INSTALLED_BIN" ]]; then
     echo "Installed successfully!"
     "$INSTALLED_BIN" --version
@@ -513,9 +527,9 @@ if [[ -n "$INSTALLED_BIN" ]]; then
     "$INSTALLED_BIN" --version
     if [[ -n "$ON_PATH" ]]; then
       echo "Warning: '${BINARY_NAME}' on your PATH is ${ON_PATH}, which runs instead of the version just installed."
-      REMOVE_HINT="$(package_remove_hint "$ON_PATH" || true)"
-      if [[ -n "$REMOVE_HINT" ]]; then
-        echo "  A package manager installed it; to remove it: ${REMOVE_HINT}"
+      UPGRADE_HINT="$(package_upgrade_hint "$ON_PATH" || true)"
+      if [[ -n "$UPGRADE_HINT" ]]; then
+        echo "  ${UPGRADE_HINT}"
       else
         echo "  To remove it: rm ${ON_PATH}"
       fi
