@@ -241,26 +241,77 @@ func setupMCPRefreshTest(t *testing.T) string {
 	oldVersion := version.Version
 	version.Version = "9.9.9"
 	t.Cleanup(func() { version.Version = oldVersion })
+	// Run as HOME's owner, not under sudo, whoever runs the tests (CI may
+	// run them as root).
+	t.Setenv("SUDO_UID", "")
+	owner := -1
+	if fi, err := os.Stat(home); err == nil {
+		if uid, _, ok := fileOwner(fi); ok {
+			owner = uid
+		}
+	}
 	oldEUID := mcpRefreshEUID
-	mcpRefreshEUID = func() int { return 1000 } // CI may run tests as root
+	mcpRefreshEUID = func() int { return owner }
 	t.Cleanup(func() { mcpRefreshEUID = oldEUID })
 	return home
 }
 
-// `sudo wendy …` right after an upgrade runs as root, and sudo keeps $HOME on
-// macOS: a refresh then would leave root-owned AI tool configs the user's
-// tools cannot read. The refresh waits for the next non-root run instead.
-func TestMaybeRefreshMCPSetup_SkipsAsRoot(t *testing.T) {
+func TestMCPRefreshAsForeignUser(t *testing.T) {
+	tests := []struct {
+		name       string
+		sudoUID    string
+		euid       int
+		homeOwner  int
+		ownerKnown bool
+		want       bool
+	}{
+		{"user in own HOME", "", 501, 501, true, false},
+		{"root in own HOME (container, root-only box)", "", 0, 0, true, false},
+		{"sudo keeping the user's HOME (macOS)", "501", 0, 501, true, true},
+		{"sudo with HOME reset to root's", "501", 0, 0, true, true},
+		{"su keeping another user's HOME", "", 0, 501, true, true},
+		{"no POSIX owners (Windows)", "", -1, 0, false, false},
+	}
+	for _, tt := range tests {
+		if got := mcpRefreshAsForeignUser(tt.sudoUID, tt.euid, tt.homeOwner, tt.ownerKnown); got != tt.want {
+			t.Errorf("%s: mcpRefreshAsForeignUser = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// `sudo wendy …` right after an upgrade keeps $HOME on macOS: a refresh then
+// would leave root-owned AI tool configs the user's tools cannot read. The
+// refresh waits for the next run as the user instead.
+func TestMaybeRefreshMCPSetup_SkipsUnderSudo(t *testing.T) {
 	home := setupMCPRefreshTest(t)
-	mcpRefreshEUID = func() int { return 0 }
+	t.Setenv("SUDO_UID", "501")
+	assertMCPRefreshSkipped(t, home)
+}
+
+func TestMaybeRefreshMCPSetup_SkipsWhenHomeHasAnotherOwner(t *testing.T) {
+	home := setupMCPRefreshTest(t)
+	fi, err := os.Stat(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _, ok := fileOwner(fi)
+	if !ok {
+		t.Skip("no POSIX file owners here")
+	}
+	mcpRefreshEUID = func() int { return owner + 1 }
+	assertMCPRefreshSkipped(t, home)
+}
+
+func assertMCPRefreshSkipped(t *testing.T, home string) {
+	t.Helper()
 	cfg := &config.Config{LastMCPSetupVersion: "9.9.8"}
 	maybeRefreshMCPSetup(cfg)
 	if cfg.LastMCPSetupVersion != "9.9.8" {
-		t.Errorf("LastMCPSetupVersion = %q; a root run must leave the refresh for the next user run", cfg.LastMCPSetupVersion)
+		t.Errorf("LastMCPSetupVersion = %q; the refresh must wait for a run as HOME's owner", cfg.LastMCPSetupVersion)
 	}
 	for _, p := range []string{filepath.Join(home, ".codex", "config.toml"), filepath.Join(home, ".wendy")} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Errorf("root refresh wrote %s (err=%v)", p, err)
+			t.Errorf("skipped refresh wrote %s (err=%v)", p, err)
 		}
 	}
 }

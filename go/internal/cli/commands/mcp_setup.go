@@ -70,19 +70,39 @@ func shouldRefreshMCPSetup(lastSetupVersion, currentVersion string) bool {
 	return lastSetupVersion != currentVersion
 }
 
-// mcpRefreshEUID is os.Geteuid; a variable so tests can pretend to be root.
+// mcpRefreshEUID is os.Geteuid; a variable so tests can run as any user.
 var mcpRefreshEUID = os.Geteuid
+
+// mcpRefreshAsForeignUser reports whether the process runs as someone other
+// than the owner of HOME: under sudo (sudoUID is $SUDO_UID; sudo keeps $HOME
+// on macOS) or with a HOME another user owns. Files a refresh wrote then would
+// belong to the wrong user. Root in its own HOME — a container or a root-only
+// machine — is fine. ownerKnown is false where files have no POSIX owner.
+func mcpRefreshAsForeignUser(sudoUID string, euid, homeOwner int, ownerKnown bool) bool {
+	return sudoUID != "" || (ownerKnown && homeOwner != euid)
+}
+
+// mcpRefreshRunsAsForeignUser is mcpRefreshAsForeignUser for this process.
+func mcpRefreshRunsAsForeignUser() bool {
+	owner, known := -1, false
+	if home, err := os.UserHomeDir(); err == nil {
+		if fi, err := os.Stat(home); err == nil {
+			owner, _, known = fileOwner(fi)
+		}
+	}
+	return mcpRefreshAsForeignUser(os.Getenv("SUDO_UID"), mcpRefreshEUID(), owner, known)
+}
 
 // maybeRefreshMCPSetup re-applies the MCP server configuration and re-installs
 // the bundled skills when the CLI has been upgraded (or downgraded) since
 // `wendy mcp setup` last ran, so users automatically pick up the latest skills.
 // It runs silently and only touches tools that are already configured; the
-// underlying setup helpers no-op for tools they don't detect. It never runs
-// as root: sudo keeps $HOME on macOS, so a `sudo wendy …` right after an
-// upgrade would otherwise leave the user root-owned AI tool configs. The next
-// run as the user refreshes instead.
+// underlying setup helpers no-op for tools they don't detect. It never runs as
+// a user other than HOME's owner: sudo keeps $HOME on macOS, so a `sudo wendy …`
+// right after an upgrade would otherwise leave the user root-owned AI tool
+// configs. The next run as HOME's owner refreshes instead.
 func maybeRefreshMCPSetup(cfg *config.Config) {
-	if mcpRefreshEUID() == 0 || !shouldRefreshMCPSetup(cfg.LastMCPSetupVersion, version.Version) {
+	if mcpRefreshRunsAsForeignUser() || !shouldRefreshMCPSetup(cfg.LastMCPSetupVersion, version.Version) {
 		return
 	}
 	setupMCPForAllTools()
