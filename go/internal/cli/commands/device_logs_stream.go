@@ -47,6 +47,12 @@ var (
 	noFollowMaxIdleGap     = 10 * time.Second
 )
 
+// agentRecentLogBatches is how many recent log batches a device agent keeps in
+// memory and replays when no --tail is given (defaultMaxCachedLogs in the Go
+// agent, maxCachedLogs in the Swift one; counted device-wide, before the app
+// filter). It is the most a replay without --tail can hold.
+const agentRecentLogBatches = 20
+
 // adaptiveIdleGap is how long --no-follow waits after a replayed frame before
 // taking the replay as over, given the longest pause seen so far between two
 // replayed frames: 3x that pause, but at least noFollowIdleGap and at most
@@ -75,13 +81,24 @@ type logReplayResult struct {
 }
 
 // noFollowHint explains a --no-follow run that printed nothing, or notes one
-// that ended on the idle-gap guess rather than a definitive live frame; it
-// returns "" when there is nothing to say. Without it an empty result, exit 0,
+// that ended on the idle-gap guess rather than a definitive live frame with
+// fewer batches than it could hold; it returns "" when there is nothing to say. Without it an empty result, exit 0,
 // reads as "this app has no logs" when the agent may simply not have
 // replayed any.
 func noFollowHint(res logReplayResult, tail int32) string {
 	if res.end == replayEndedIdle && res.history > 0 {
-		return fmt.Sprintf("Replay ended after %s without new logs; on a slow connection it may have been cut short.", res.idleGap)
+		// A quiet app always ends on the gap, so only mention it when the
+		// replay came up short of what it could hold: --tail N, or the
+		// agent's cache without it. (Short can also just mean the app has
+		// fewer stored logs; the note says "may".)
+		replayMax := agentRecentLogBatches
+		if tail > 0 {
+			replayMax = int(tail)
+		}
+		if res.history < replayMax {
+			return fmt.Sprintf("Replay ended after %s without new logs, with %d of up to %d batches; on a slow connection it may have been cut short.", res.idleGap, res.history, replayMax)
+		}
+		return ""
 	}
 	if res.history > 0 || res.end == replayEndedCancelled {
 		return ""

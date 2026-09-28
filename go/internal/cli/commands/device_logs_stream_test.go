@@ -346,15 +346,44 @@ func TestAdaptiveIdleGap(t *testing.T) {
 	}
 }
 
-// Ending on the idle gap is a guess, so the command says so.
+// Ending on the idle gap is a guess, so the command says so — but only when
+// the replay came up short of what it could hold (--tail N, or the agents'
+// 20 cached batches without it). A quiet app always ends on the gap, and a
+// full replay is not worth a caveat on every run.
 func TestNoFollowHint_IdleEndIsNoted(t *testing.T) {
-	hint := noFollowHint(logReplayResult{end: replayEndedIdle, history: 4, idleGap: 1500 * time.Millisecond}, 20)
-	for _, want := range []string{"1.5s", "slow connection"} {
-		if !strings.Contains(hint, want) {
-			t.Errorf("idle-end note %q does not mention %q", hint, want)
-		}
+	idle := func(history int) logReplayResult {
+		return logReplayResult{end: replayEndedIdle, history: history, idleGap: 1500 * time.Millisecond}
 	}
-	if hint := noFollowHint(logReplayResult{end: replayEndedLive, history: 4}, 20); hint != "" {
-		t.Errorf("a replay ended by a live frame is definitive, want no note, got %q", hint)
+	cases := []struct {
+		name     string
+		res      logReplayResult
+		tail     int32
+		wantNote bool
+	}{
+		{"--tail 20, 4 replayed", idle(4), 20, true},
+		{"--tail 20, 20 replayed", idle(20), 20, false},
+		{"--tail 5, more than 5 replayed", idle(7), 5, false},
+		{"no --tail, 5 replayed", idle(5), 0, true},
+		{"no --tail, the agent's full 20-batch cache", idle(agentRecentLogBatches), 0, false},
+		{"ended by a live frame", logReplayResult{end: replayEndedLive, history: 4}, 20, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hint := noFollowHint(tc.res, tc.tail)
+			if !tc.wantNote {
+				if hint != "" {
+					t.Fatalf("want no note, got %q", hint)
+				}
+				return
+			}
+			for _, want := range []string{"1.5s", "slow connection"} {
+				if !strings.Contains(hint, want) {
+					t.Errorf("idle-end note %q does not mention %q", hint, want)
+				}
+			}
+		})
+	}
+	if agentRecentLogBatches != 20 {
+		t.Fatalf("agentRecentLogBatches = %d; the Go and Swift agents cache 20 recent log batches", agentRecentLogBatches)
 	}
 }
