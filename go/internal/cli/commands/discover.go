@@ -126,10 +126,22 @@ func externalDiscoveryProviders(includeLocal bool) []providers.DeviceProvider {
 // discoverExternalDevices queries providers for their devices in one shot. The
 // continuous TUI does not use this — see discoverModel.startExternalStream.
 func discoverExternalDevices(ctx context.Context, includeLocal bool) []models.ExternalDevice {
+	return discoverExternalDevicesReporting(ctx, includeLocal, nil)
+}
+
+// discoverExternalDevicesReporting is discoverExternalDevices that also passes
+// skipped (when non-nil) each runtime left out because it did not answer
+// within the discovery bound (providers.ProbeTimeoutError) — unlike a runtime
+// that is not running, that one may well be there, just slow.
+func discoverExternalDevicesReporting(ctx context.Context, includeLocal bool, skipped func(error)) []models.ExternalDevice {
 	var all []models.ExternalDevice
 	for _, p := range externalDiscoveryProviders(includeLocal) {
 		devices, err := p.DiscoverDevices(ctx)
 		if err != nil {
+			var slow *providers.ProbeTimeoutError
+			if skipped != nil && errors.As(err, &slow) {
+				skipped(err)
+			}
 			continue
 		}
 		all = append(all, devices...)
@@ -163,7 +175,9 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 
 	if shouldIncludeExternal(opts) {
 		// JSON output always includes local run targets (see newDiscoverCmd).
-		collection.ExternalDevices = discoverExternalDevices(ctx, true)
+		collection.ExternalDevices = discoverExternalDevicesReporting(ctx, true, func(err error) {
+			fmt.Fprintf(os.Stderr, "Warning: %v; it is not listed.\n", err)
+		})
 	}
 
 	warning, err := lanBrowseOutcome(collection, browse.first())

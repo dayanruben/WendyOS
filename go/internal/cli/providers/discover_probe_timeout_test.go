@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,14 +42,45 @@ func TestDockerDiscoverDevices_HungDaemonIsBounded(t *testing.T) {
 	devices, err := (&DockerProvider{}).DiscoverDevices(context.Background())
 	elapsed := time.Since(start)
 
-	if err != nil {
-		t.Fatalf("DiscoverDevices: %v", err)
-	}
 	if len(devices) != 0 {
 		t.Fatalf("devices = %+v, want none from an unresponsive daemon", devices)
 	}
+	// Distinct from "not running" (nil, nil): the runtime may be there but slow.
+	var slow *ProbeTimeoutError
+	if !errors.As(err, &slow) || err.Error() != "Docker did not answer within 200ms" {
+		t.Fatalf("err = %v, want a ProbeTimeoutError saying Docker did not answer within 200ms", err)
+	}
 	if elapsed > 5*time.Second {
 		t.Fatalf("DiscoverDevices took %s with a hung daemon; want it bounded by discoverProbeTimeout", elapsed)
+	}
+}
+
+func TestDockerDiscoverDevices_StoppedDaemonIsNotATimeout(t *testing.T) {
+	// The default bound: the first run of a fresh script can take a few
+	// hundred ms on macOS, and this test is about the fast failure.
+	fakeDockerOnPath(t, "echo 'Cannot connect to the Docker daemon' >&2\nexit 1\n")
+
+	devices, err := (&DockerProvider{}).DiscoverDevices(context.Background())
+	if err != nil || len(devices) != 0 {
+		t.Fatalf("DiscoverDevices = %+v, %v; want no devices and no error for a stopped daemon", devices, err)
+	}
+}
+
+// A runtime the user named explicitly (--device docker) gets a longer bound.
+func TestDockerDiscoverDevices_WithProbeTimeoutWaitsLonger(t *testing.T) {
+	shrinkDiscoverProbeTimeout(t)
+	fakeDockerOnPath(t, "/bin/sleep 0.6\necho 28.5.1\n")
+
+	ctx := WithProbeTimeout(context.Background(), 5*time.Second)
+	if got := ProbeTimeout(ctx); got != 5*time.Second {
+		t.Fatalf("ProbeTimeout = %s, want 5s", got)
+	}
+	devices, err := (&DockerProvider{}).DiscoverDevices(ctx)
+	if err != nil || len(devices) != 1 {
+		t.Fatalf("DiscoverDevices = %+v, %v; want the slow-but-healthy daemon listed", devices, err)
+	}
+	if got := ProbeTimeout(context.Background()); got != discoverProbeTimeout {
+		t.Fatalf("default ProbeTimeout = %s, want discoverProbeTimeout", got)
 	}
 }
 
@@ -86,8 +118,9 @@ func TestAppleContainerDiscoverDevices_HungCLIIsBounded(t *testing.T) {
 	devices, err := (&AppleContainerProvider{}).DiscoverDevices(context.Background())
 	elapsed := time.Since(start)
 
-	if err != nil || len(devices) != 0 {
-		t.Fatalf("DiscoverDevices = %+v, %v; want no devices and no error", devices, err)
+	var slow *ProbeTimeoutError
+	if len(devices) != 0 || !errors.As(err, &slow) {
+		t.Fatalf("DiscoverDevices = %+v, %v; want no devices and a ProbeTimeoutError", devices, err)
 	}
 	if elapsed > 5*time.Second {
 		t.Fatalf("DiscoverDevices took %s with a hung container CLI; want it bounded", elapsed)

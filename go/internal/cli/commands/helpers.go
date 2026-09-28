@@ -3256,17 +3256,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 	// Check if the device flag matches a known provider key.
 	if device != "" {
 		if p := providers.ProviderForKey(device); p != nil {
-			devices, err := p.DiscoverDevices(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("discovering %s devices: %w", p.DisplayName(), err)
-			}
-			if len(devices) == 0 {
-				return nil, commandErrorf(errNoDevice, "no %s devices found", p.DisplayName())
-			}
-			return &SelectedDevice{
-				External: &devices[0],
-				Provider: p,
-			}, nil
+			return explicitProviderDevice(ctx, p)
 		}
 	}
 
@@ -3377,6 +3367,32 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		return nil, pinErr
 	}
 	return picked, nil
+}
+
+// explicitProviderProbeTimeout bounds a runtime probe when the user named the
+// runtime (--device docker): longer than a discovery sweep's, because here a
+// slow-but-healthy daemon (busy with a build, just resumed) is worth waiting
+// for rather than reporting "no devices found".
+const explicitProviderProbeTimeout = 10 * time.Second
+
+// explicitProviderDevice selects the first device of p, the provider the user
+// named with --device.
+func explicitProviderDevice(ctx context.Context, p providers.DeviceProvider) (*SelectedDevice, error) {
+	devices, err := p.DiscoverDevices(providers.WithProbeTimeout(ctx, explicitProviderProbeTimeout))
+	if err != nil {
+		var slow *providers.ProbeTimeoutError
+		if errors.As(err, &slow) {
+			return nil, fmt.Errorf("%w — check that %s is running and responsive, then try again", err, p.DisplayName())
+		}
+		return nil, fmt.Errorf("discovering %s devices: %w", p.DisplayName(), err)
+	}
+	if len(devices) == 0 {
+		return nil, commandErrorf(errNoDevice, "no %s devices found", p.DisplayName())
+	}
+	return &SelectedDevice{
+		External: &devices[0],
+		Provider: p,
+	}, nil
 }
 
 // findDeviceByID searches all available providers for a device whose ID
