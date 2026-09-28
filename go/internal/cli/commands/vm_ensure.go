@@ -165,12 +165,16 @@ func waitForSimulatorAgent(ctx context.Context, name, addr string, budget time.D
 // VM aliases carry identity separately from their current loopback port. Never
 // consult a localhost pin or session cached for an unrelated VM/container.
 func connectSimulatorAgent(ctx context.Context, name, addr string) (*grpcclient.AgentConnection, *agentpb.GetAgentVersionResponse, error) {
+	// A reconnect passes conn.Addr, the mTLS forward; dial the plaintext
+	// forward so the ladder never tries a port QEMU does not forward.
+	addr = vmAgentForwardAddr(name, addr)
 	conn, resp, err := probeSimulatorAgent(ctx, name, addr)
 	if err != nil {
 		return nil, nil, err
 	}
-	// addr is the VM's forwarded 127.0.0.1 endpoint; it is pinned beside
-	// vm:<name> so a typed address stays pinned while the VM is stopped.
+	// addr is the VM's forwarded 127.0.0.1 endpoint; both of its forwards
+	// are pinned beside vm:<name>, so a typed address stays pinned while the
+	// VM is stopped.
 	if err := enforceDevicePinAt(vmDeviceIDPrefix+name, addr, conn); err != nil {
 		conn.Close()
 		return nil, nil, err

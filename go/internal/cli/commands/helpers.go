@@ -1246,8 +1246,9 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 		// identity we are about to reject.
 		//
 		// The dialled endpoint goes with it: when 127.0.0.1:PORT is a running
-		// VM's forward, it may be pinned beside vm:<name> (see
-		// vmEndpointPinKey). A substituted connection never reached it.
+		// VM's forward, the VM's forwarded ports may be pinned beside
+		// vm:<name> (see vmEndpointPinKeys). A substituted connection never
+		// reached them.
 		if pinErr := enforceDevicePinAt(pinKey, dialled, conn); pinErr != nil {
 			conn.Close()
 			return nil, pinErr
@@ -3369,7 +3370,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		// Same pin key as connectToAgent's: the host of the address dialled, via
 		// the same pinKeyForAddr the ladder uses. resolveTarget reaches devices
 		// connectToAgent never sees, and an unchecked path is the whole attack.
-		// Same dialled endpoint too, for a VM's forward (see vmEndpointPinKey).
+		// Same dialled endpoint too, for a VM's forward (see vmEndpointPinKeys).
 		if pinErr := enforceDevicePinAt(pinKeyForAddr(addr), addr, conn); pinErr != nil {
 			conn.Close()
 			return nil, pinErr

@@ -82,8 +82,9 @@ func enforceDevicePin(hostname string, conn *grpcclient.AgentConnection) error {
 
 // enforceDevicePinAt is enforceDevicePin for a connection dialled at dialAddr.
 // The address matters only when hostname is a VM's vm:<name> key and dialAddr
-// is that VM's forwarded 127.0.0.1 endpoint: the endpoint is then pinned to
-// the same identity (see vmEndpointPinKey). Every other key ignores it.
+// is one of that VM's forwarded 127.0.0.1 endpoints: both of them are then
+// pinned to the same identity (see vmEndpointPinKeys, recordVMEndpointPin).
+// Every other key ignores it.
 func enforceDevicePinAt(hostname, dialAddr string, conn *grpcclient.AgentConnection) error {
 	if conn == nil {
 		return nil
@@ -93,7 +94,7 @@ func enforceDevicePinAt(hostname, dialAddr string, conn *grpcclient.AgentConnect
 	if hostname == "" {
 		return nil
 	}
-	return enforceDeviceIdentityAt(hostname, vmEndpointPinKey(hostname, dialAddr), observeDeviceIdentityFn(conn))
+	return enforceDeviceIdentityAt(hostname, vmEndpointPinKeys(hostname, dialAddr), observeDeviceIdentityFn(conn))
 }
 
 // enforceDeviceIdentity compares what a connection proved about a device
@@ -120,21 +121,21 @@ func enforceDevicePinAt(hostname, dialAddr string, conn *grpcclient.AgentConnect
 // a config read/write/lock failure never blocks an already-verified connection
 // — and never skips the check either (see the read-only fallback below).
 func enforceDeviceIdentity(hostname string, obs observedDeviceIdentity) error {
-	return enforceDeviceIdentityAt(hostname, "", obs)
+	return enforceDeviceIdentityAt(hostname, nil, obs)
 }
 
 // enforceDeviceIdentityAt is enforceDeviceIdentity for a VM whose forwarded
-// endpoint key (vmEndpointPinKey) is known: an accepted identity is also
-// recorded there, in the same locked update. endpoint "" records nothing
+// endpoint keys (vmEndpointPinKeys) are known: an accepted identity is also
+// recorded there, in the same locked update. No endpoints records nothing
 // extra.
-func enforceDeviceIdentityAt(hostname, endpoint string, obs observedDeviceIdentity) error {
+func enforceDeviceIdentityAt(hostname string, endpoints []string, obs observedDeviceIdentity) error {
 	var refusal error
 	judged := false
 	// Under the config lock so a pin recorded here cannot be reverted by, or
 	// revert, another wendy process's concurrent write.
 	updateErr := config.Update(func(cfg *config.Config) (bool, error) {
 		judged = true
-		changed, err := applyDeviceIdentity(cfg, hostname, endpoint, obs)
+		changed, err := applyDeviceIdentity(cfg, hostname, endpoints, obs)
 		refusal = err
 		return changed && err == nil, nil
 	})
@@ -149,7 +150,7 @@ func enforceDeviceIdentityAt(hostname, endpoint string, obs observedDeviceIdenti
 	if err != nil {
 		return nil
 	}
-	changed, refusal := applyDeviceIdentity(cfg, hostname, endpoint, obs)
+	changed, refusal := applyDeviceIdentity(cfg, hostname, endpoints, obs)
 	switch decideFallbackAction(updateErr, changed, refusal) {
 	case fallbackWarnUnrecorded:
 		// Another wendy process holds config.lock — hung, or just busy. Writing
@@ -225,10 +226,10 @@ func decideFallbackAction(updateErr error, changed bool, refusal error) fallback
 // names the same device is retired. An asset-less match proves an
 // organisation, which every same-org device shares, so it moves nothing.
 //
-// Last, any accepted mTLS judgement under a VM's vm:<name> key pins the VM's
-// forwarded endpoint (endpoint, from vmEndpointPinKey) where nothing else
-// governs it — see recordVMEndpointPin.
-func applyDeviceIdentity(cfg *config.Config, hostname, endpoint string, obs observedDeviceIdentity) (changed bool, refusal error) {
+// Last, any accepted mTLS judgement under a VM's vm:<name> key records the
+// VM's identity at its forwarded endpoints (endpoints, from
+// vmEndpointPinKeys) — see recordVMEndpointPin.
+func applyDeviceIdentity(cfg *config.Config, hostname string, endpoints []string, obs observedDeviceIdentity) (changed bool, refusal error) {
 	pinKey := identityPinKey(cfg, hostname)
 	if !obs.mTLS {
 		return false, challengeUnprovisionedDevice(cfg, pinKey)
@@ -280,36 +281,61 @@ func applyDeviceIdentity(cfg *config.Config, hostname, endpoint string, obs obse
 	}
 	// After the retire step, so an endpoint whose bare pin was just retired
 	// counts as ungoverned.
-	if recordVMEndpointPin(cfg, hostname, endpoint) {
-		changed = true
+	if vmPin, ok := cfg.DevicePinFor(hostname); ok && strings.HasPrefix(hostname, vmDeviceIDPrefix) {
+		for _, endpoint := range endpoints {
+			if recordVMEndpointPin(cfg, vmPin, endpoint) {
+				changed = true
+			}
+		}
 	}
 	return changed, nil
 }
 
-// recordVMEndpointPin pins endpoint — a VM's forwarded 127.0.0.1:PORT — to the
-// identity just accepted under the VM's vm:<name> key, so the endpoint stays
-// pinned while the VM is stopped (see vmEndpointPinKey), for a certificate
-// with or without an asset id.
+// recordVMEndpointPin records vmPin — the identity just accepted under a VM's
+// vm:<name> key, with or without an asset id — at endpoint, one of the VM's
+// forwarded 127.0.0.1 ports, so the endpoint stays pinned while the VM is
+// stopped (see vmEndpointPinKeys).
 //
-// It is purely additive: it pins an endpoint only when nothing governs it —
-// neither a pin of its own nor a legacy bare-host pin it falls back to
-// (identityPinKey) — that is, only where the endpoint would otherwise be a
-// first use. The identity was verified under vm:<name>, not at the endpoint,
-// so it must never outrank a pin that already applies there; and nothing here
-// can refuse — the vm:<name> judgement governs this connection.
-func recordVMEndpointPin(cfg *config.Config, key, endpoint string) bool {
-	if endpoint == "" || !strings.HasPrefix(key, vmDeviceIDPrefix) {
+// It judges vmPin against whatever governs the endpoint (identityPinKey: its
+// own pin, else a legacy bare-host pin) exactly as a connection there would
+// be judged, and writes only what such a connection could:
+//
+//   - nothing governs it (first use): the endpoint gets vmPin;
+//   - an org-only pin governs it and vmPin names an asset (adopt): the
+//     endpoint's own org-only pin is upgraded in place with the asset (its
+//     source kept); a legacy org-only bare pin stays where it is (it names no
+//     device, and still covers the other ports) and the endpoint gets its own
+//     pin with the asset;
+//   - the governing pin matches, or names a different identity: nothing.
+//
+// So it only ever adds a pin or adopts an asset into an org-only one — never
+// records a different identity over a pin that already applies there, since
+// the identity was verified under vm:<name>, not at the endpoint. Nothing
+// here can refuse: the vm:<name> judgement governs this connection.
+func recordVMEndpointPin(cfg *config.Config, vmPin config.DevicePin, endpoint string) bool {
+	if endpoint == "" {
 		return false
 	}
-	pin, ok := cfg.DevicePinFor(key)
-	if !ok {
+	governing := identityPinKey(cfg, endpoint)
+	switch cfg.EvaluateDevicePin(governing, vmPin.OrgID, vmPin.CloudGRPC, vmPin.AssetID) {
+	case config.PinFirstUse:
+		cfg.SetDevicePin(endpoint, vmPin.OrgID, vmPin.CloudGRPC, vmPin.AssetID, vmPin.Principal)
+		return true
+	case config.PinAdoptAsset:
+		if governing == endpoint {
+			own, _ := cfg.DevicePinFor(endpoint)
+			principal := own.Principal
+			if principal == "" {
+				principal = vmPin.Principal
+			}
+			cfg.SetDevicePinFrom(endpoint, own.OrgID, own.CloudGRPC, vmPin.AssetID, principal, cfg.PinSource(endpoint))
+			return true
+		}
+		cfg.SetDevicePin(endpoint, vmPin.OrgID, vmPin.CloudGRPC, vmPin.AssetID, vmPin.Principal)
+		return true
+	default: // config.PinMatch, config.PinMismatch
 		return false
 	}
-	if _, governed := cfg.DevicePinFor(identityPinKey(cfg, endpoint)); governed {
-		return false
-	}
-	cfg.SetDevicePin(endpoint, pin.OrgID, pin.CloudGRPC, pin.AssetID, pin.Principal)
-	return true
 }
 
 // devicePinDiagnostic puts intentional unenrollment and organization changes
