@@ -24,8 +24,10 @@ Usage: install-cli.sh [OPTIONS]
 
 Options:
   -y            Skip confirmation prompt (assumed when no terminal is attached)
-  -d DIR        Install directory (default: /usr/local/bin, or ~/.local/bin
-                when that needs a sudo password and no terminal is attached)
+  -d DIR        Install directory. Default: /usr/local/bin, or ~/.local/bin
+                when that isn't writable and sudo can't be used (not installed,
+                or no terminal to type its password into). An explicit -d DIR
+                is never relocated.
   -h, --help    Show this help message
 
 Environment:

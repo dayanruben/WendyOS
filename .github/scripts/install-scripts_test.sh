@@ -385,4 +385,9 @@ if [ "$(/usr/bin/id -u)" -ne 0 ]; then
   absent "shadow.first_on_path.no_warning" "$(cat "$OUT")" "Warning:"
 fi
 
+# --- Test U: the -d help says when the ~/.local/bin fallback applies ---
+help="$(bash "$CLI" -h)"
+contains "usage.fallback_when" "$help" "sudo can't be used (not installed,"
+contains "usage.explicit_dir" "$help" "is never relocated."
+
 exit $fail
