@@ -42,6 +42,7 @@ case "\$url" in
   *install.wendy.dev/manifest.json) src="$SERVE_DIR/manifest.json";;
   *api.github.com/*) src="$SERVE_DIR/github.json";;
   */releases/download/*) src="$SERVE_DIR/\${url##*/}";;
+  */repo-signing-key.gpg) src="$SERVE_DIR/repo-signing-key.gpg";;
   *) src="";;
 esac
 [ -n "\$src" ] && [ -f "\$src" ] || exit 22   # mimic curl -f on missing/non-2xx
@@ -389,5 +390,44 @@ fi
 help="$(bash "$CLI" -h)"
 contains "usage.fallback_when" "$help" "sudo can't be used (not installed,"
 contains "usage.explicit_dir" "$help" "is never relocated."
+
+# sudo_that_works replaces the stub sudo with one that succeeds, as sudo does
+# with NOPASSWD or a password typed at a terminal. It logs every call to
+# SUDO_LOG and never runs anything; it drains piped input (`… | sudo tee`).
+sudo_that_works() {
+  cat > "$STUB/sudo" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$SUDO_LOG"
+[ -t 0 ] || cat >/dev/null
+exit 0
+EOF
+  chmod +x "$STUB/sudo"
+}
+
+# --- Test Q: no TTY, passwordless sudo: the package manager is still used ---
+make_stubs Linux x86_64
+sudo_that_works
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/apt-get"; chmod +x "$STUB/apt-get"
+D="$(mktemp -d)"; setup_net "$D"; echo "fake key" > "$D/repo-signing-key.gpg"
+FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"
+rc=0; run_no_tty "$OUT" "$CLI" || rc=$?
+check "nopasswd.pkg.exit" "0" "$rc"
+contains "nopasswd.pkg.apt" "$(cat "$OUT")" "APT detected"
+contains "nopasswd.pkg.probed" "$(cat "$SUDO_LOG")" "-n true"
+contains "nopasswd.pkg.installed" "$(cat "$SUDO_LOG")" "apt-get install -y wendy"
+absent "nopasswd.pkg.no_standalone" "$(cat "$OUT")" "standalone"
+
+# --- Test R: with a terminal, Linux: the package manager is used, sudo prompts itself ---
+make_stubs Linux x86_64
+sudo_that_works
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/apt-get"; chmod +x "$STUB/apt-get"
+D="$(mktemp -d)"; setup_net "$D"; echo "fake key" > "$D/repo-signing-key.gpg"
+FAKE_HOME="$(mktemp -d)"
+out="$({ printf 'y\n'; sleep 3; } | with_pty env PATH="$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" bash "$CLI" 2>&1 || true)"
+contains "tty.pkg.prompted" "$out" "Proceed? [y/N]"
+contains "tty.pkg.apt" "$out" "APT detected"
+contains "tty.pkg.installed" "$(cat "$SUDO_LOG")" "apt-get install -y wendy"
+absent "tty.pkg.no_nonint_probe" "$(cat "$SUDO_LOG")" "-n true"
+absent "tty.pkg.no_standalone" "$out" "standalone"
 
 exit $fail
