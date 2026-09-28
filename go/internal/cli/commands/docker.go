@@ -1166,6 +1166,36 @@ var (
 	}
 )
 
+// dockerVersionProbeTimeout bounds each `docker version` probe that
+// ensureDockerDaemon runs on the `wendy run` / `wendy build` path. The probe
+// round-trips to the daemon, and a wedged one — the socket accepts the
+// connection but nothing answers (Docker Desktop mid-update, its VM stuck
+// after sleep) — used to stall a deploy indefinitely. A healthy daemon answers
+// in well under a second, and even a busy one (a large build in flight, the VM
+// just resumed) within a few, so 10 s leaves ample headroom before calling it
+// unresponsive. A var so tests can shrink it.
+var dockerVersionProbeTimeout = 10 * time.Second
+
+// dockerDaemonReady probes the daemon once, bounded by
+// dockerVersionProbeTimeout: (true, nil) when it answers, (false, nil) when it
+// is not running (a stopped daemon refuses the connection and fails fast),
+// ctx's error when the caller stopped (Ctrl-C), and a "not responding" error
+// when the probe ran out of time, i.e. a daemon that is there but hung.
+func dockerDaemonReady(ctx context.Context) (bool, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, dockerVersionProbeTimeout)
+	defer cancel()
+	if dockerVersionOKFn(probeCtx) {
+		return true, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+		return false, commandErrorf(errBuilderUnavailable, "docker daemon is not responding (no answer to `docker version` within %s) — restart Docker and try again", dockerVersionProbeTimeout)
+	}
+	return false, nil
+}
+
 // ensureDockerDaemon verifies the Docker daemon is running. On macOS, when
 // running interactively it prompts the user before launching the installed
 // Docker runtime and then waits up to 60 s for the daemon to become ready; in
@@ -1176,8 +1206,8 @@ func ensureDockerDaemon(ctx context.Context) error {
 }
 
 func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error {
-	if dockerVersionOKFn(ctx) {
-		return nil
+	if ready, err := dockerDaemonReady(ctx); ready || err != nil {
+		return err
 	}
 
 	_, cliErr := dockerLookPathFn("docker")
@@ -1206,8 +1236,8 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 					rt = cliRuntime
 					fmt.Fprintf(os.Stderr, "[docker] docker CLI is not on PATH; using %s's bundled CLI at %s. To avoid this message: %s.\n", rt.name, cliPath, rt.cliLinkHint)
 					cliOnPath = true
-					if dockerVersionOKFn(ctx) {
-						return nil
+					if ready, err := dockerDaemonReady(ctx); ready || err != nil {
+						return err
 					}
 				} else {
 					return dockerCLIMissingError(rt)
@@ -1242,7 +1272,9 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 				return ctx.Err()
 			case <-time.After(2 * time.Second):
 			}
-			if dockerVersionOKFn(ctx) {
+			// A probe that times out here only means the daemon is still
+			// starting; keep polling until the deadline.
+			if ready, _ := dockerDaemonReady(ctx); ready {
 				fmt.Fprintf(os.Stderr, "[docker] %s is ready\n", rt.name)
 				return nil
 			}
@@ -1258,8 +1290,8 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 					rt = cliRuntime
 					fmt.Fprintf(os.Stderr, "[docker] docker CLI is not on PATH; using %s's bundled CLI at %s. To avoid this message: %s.\n", rt.name, cliPath, rt.cliLinkHint)
 					cliOnPath = true
-					if dockerVersionOKFn(ctx) {
-						return nil
+					if ready, err := dockerDaemonReady(ctx); ready || err != nil {
+						return err
 					}
 				} else {
 					return dockerCLIMissingError(rt)
