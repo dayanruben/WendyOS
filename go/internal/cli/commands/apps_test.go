@@ -193,13 +193,18 @@ func TestAppLifecycleSkill_NoStaleClaims(t *testing.T) {
 		}
 		checked++
 		text := string(data)
-		for _, stale := range []string{"There is no `wendy device apps start --detach` flag", "timeout 20s wendy"} {
+		// The log-sampling snippet must not drop a file into the user's
+		// working directory either.
+		for _, stale := range []string{"There is no `wendy device apps start --detach` flag", "timeout 20s wendy", "> wendy-logs.jsonl"} {
 			if strings.Contains(text, stale) {
 				t.Errorf("%s still says %q", path, stale)
 			}
 		}
 		if !strings.Contains(text, "wendy device apps start <app-id> --detach") {
 			t.Errorf("%s should show `wendy device apps start <app-id> --detach`", path)
+		}
+		if !strings.Contains(text, "$(mktemp)") {
+			t.Errorf("%s should sample logs into a $(mktemp) file", path)
 		}
 	}
 	if checked == 0 {

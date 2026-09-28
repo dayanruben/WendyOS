@@ -112,8 +112,9 @@ wendy --json device logs --app <app-id> --min-severity 9 --device <hostname>
 - In a plain POSIX shell (macOS and Linux):
 
 ```bash
-wendy --json device logs --app <app-id> --tail 50 --device <hostname> > wendy-logs.jsonl &
-pid=$!; sleep 20; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; cat wendy-logs.jsonl
+log=$(mktemp)
+wendy --json device logs --app <app-id> --tail 50 --device <hostname> > "$log" &
+pid=$!; sleep 20; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; cat "$log"; rm -f "$log"
 ```
 
 For structured telemetry streams:
