@@ -149,10 +149,14 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(tui.InfoMessage("Opening your browser to sign in..."))
-	fmt.Println("  " + authURL)
-	if openErr := openBrowser(authURL); openErr != nil {
-		fmt.Println(tui.WarningMessage("Could not open a browser automatically; open the URL above manually."))
+	if !isInteractiveTerminal() {
+		printLoginURLForManualOpen(authURL)
+	} else {
+		fmt.Println(tui.InfoMessage("Opening your browser to sign in..."))
+		fmt.Println("  " + authURL)
+		if openErr := openBrowser(authURL); openErr != nil {
+			fmt.Println(tui.WarningMessage("Could not open a browser automatically; open the URL above manually."))
+		}
 	}
 
 	// Step 5: wait for the redirect.
@@ -161,7 +165,7 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	case result = <-resultCh:
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(5 * time.Minute):
+	case <-time.After(browserLoginTimeout):
 		return fmt.Errorf("timed out waiting for the browser callback")
 	}
 	if result.Err != nil {
