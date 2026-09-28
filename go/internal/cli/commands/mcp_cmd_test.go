@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	toml "github.com/BurntSushi/toml"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 func TestCursorConfigPath_ReturnsDirBasedPath(t *testing.T) {
@@ -86,38 +88,123 @@ func TestAddMCPToTOMLConfig_PreservesExisting(t *testing.T) {
 	}
 }
 
-// Setup owns only type, command and args of the wendy entry; anything the user
-// added to it (env, timeouts) must survive setup and the upgrade refresh.
+// Setup owns only type and command of the wendy entry, plus args unless they
+// already start with "mcp serve"; anything else the user added to the entry
+// (env, timeouts, a pinned --device) must survive setup and the upgrade
+// refresh.
 func TestAddMCPToJSONConfig_KeepsUserKeysInWendyEntry(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "mcp.json")
-	in := `{"numStartups": 3, "mcpServers": {
+	tests := []struct {
+		name, in, want string
+	}{
+		{
+			name: "user keys kept, stale args replaced",
+			in: `{"numStartups": 3, "mcpServers": {
   "github": {"command": "npx"},
-  "wendy": {"type": "stdio", "command": "/old/wendy", "args": ["mcp", "serve", "--old"], "env": {"WENDY_DEVICE": "pi.local"}}
-}}`
-	if err := os.WriteFile(path, []byte(in), 0o644); err != nil {
+  "wendy": {"type": "stdio", "command": "/old/wendy", "args": ["serve", "--old"], "env": {"WENDY_DEVICE": "pi.local"}}
+}}`,
+			want: `{"numStartups": 3, "mcpServers": {
+  "github": {"command": "npx"},
+  "wendy": {"type": "stdio", "command": "/new/wendy", "args": ["mcp", "serve"], "env": {"WENDY_DEVICE": "pi.local"}}
+}}`,
+		},
+		{
+			name: "pinned --device kept",
+			in: `{"mcpServers": {
+  "wendy": {"type": "stdio", "command": "/old/wendy", "args": ["mcp", "serve", "--device", "my-pi.local"]}
+}}`,
+			want: `{"mcpServers": {
+  "wendy": {"type": "stdio", "command": "/new/wendy", "args": ["mcp", "serve", "--device", "my-pi.local"]}
+}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "mcp.json")
+			if err := os.WriteFile(path, []byte(tt.in), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			entry := map[string]any{"type": "stdio", "command": "/new/wendy", "args": []string{"mcp", "serve"}}
+			if err := addMCPToJSONConfig(path, "mcpServers", "wendy", entry); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want map[string]any
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(tt.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("got:\n%s", data)
+			}
+		})
+	}
+}
+
+// End to end: the silent refresh after a CLI upgrade updates the command in
+// every configured client but keeps a device the user pinned in args.
+func TestMaybeRefreshMCPSetup_KeepsPinnedDevice(t *testing.T) {
+	home := setupMCPRefreshTest(t)
+	claudePath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(claudePath, []byte(`{"mcpServers": {"wendy": {"type": "stdio", "command": "/old/wendy", "args": ["mcp", "serve", "--device", "my-pi.local"]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	entry := map[string]any{"type": "stdio", "command": "/new/wendy", "args": []string{"mcp", "serve"}}
-	if err := addMCPToJSONConfig(path, "mcpServers", "wendy", entry); err != nil {
+	codexPath := filepath.Join(home, ".codex", "config.toml")
+	if err := os.WriteFile(codexPath, []byte("[mcp_servers.wendy]\ncommand = \"/old/wendy\"\nargs = [\"mcp\", \"serve\", \"--device\", \"my-pi.local\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(path)
+
+	cfg := &config.Config{LastMCPSetupVersion: "9.9.8"}
+	maybeRefreshMCPSetup(cfg)
+	if cfg.LastMCPSetupVersion != "9.9.9" {
+		t.Fatalf("refresh did not run: LastMCPSetupVersion = %q", cfg.LastMCPSetupVersion)
+	}
+
+	wantArgs := []any{"mcp", "serve", "--device", "my-pi.local"}
+	var claude map[string]any
+	data, err := os.ReadFile(claudePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got, want map[string]any
-	if err := json.Unmarshal(data, &got); err != nil {
+	if err := json.Unmarshal(data, &claude); err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal([]byte(`{"numStartups": 3, "mcpServers": {
-  "github": {"command": "npx"},
-  "wendy": {"type": "stdio", "command": "/new/wendy", "args": ["mcp", "serve"], "env": {"WENDY_DEVICE": "pi.local"}}
-}}`), &want); err != nil {
+	entry := claude["mcpServers"].(map[string]any)["wendy"].(map[string]any)
+	if entry["command"] != wendyBinaryPath() || !reflect.DeepEqual(entry["args"], wantArgs) {
+		t.Errorf("Claude Code entry after refresh = %v", entry)
+	}
+	var codex map[string]any
+	if _, err := toml.DecodeFile(codexPath, &codex); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got:\n%s", data)
+	entry = codex["mcp_servers"].(map[string]any)["wendy"].(map[string]any)
+	if entry["command"] != wendyBinaryPath() || !reflect.DeepEqual(entry["args"], wantArgs) {
+		t.Errorf("Codex entry after refresh = %v", entry)
 	}
+}
+
+// setupMCPRefreshTest isolates HOME, PATH and the CLI config directory, makes
+// ~/.codex exist so Codex counts as installed, and pretends the running CLI is
+// release 9.9.9 so maybeRefreshMCPSetup has something to refresh. It returns
+// the temporary HOME.
+func setupMCPRefreshTest(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("PATH", t.TempDir()) // no claude/cursor/windsurf/codex binaries
+	t.Setenv("WENDY_CONFIG_DIR", filepath.Join(home, ".wendy"))
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldVersion := version.Version
+	version.Version = "9.9.9"
+	t.Cleanup(func() { version.Version = oldVersion })
+	return home
 }
 
 func TestCodexConfigPath_ReturnsDirBasedPath(t *testing.T) {

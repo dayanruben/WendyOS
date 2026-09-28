@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 
 	toml "github.com/BurntSushi/toml"
@@ -16,12 +15,14 @@ import (
 // the user's own key order and other MCP servers. Decoding it into a map and
 // re-encoding it (the previous approach) threw all of that away on every
 // `wendy mcp setup` — and, through maybeRefreshMCPSetup, on every CLI upgrade.
-// So the file is edited as text. Setup owns only the command and args keys of
-// the [<topKey>.<name>] table: those lines are replaced in place (or added),
-// and every other byte is left alone — including keys and sub-tables the user
-// added to the entry, such as env or startup_timeout_sec. When the table does
-// not exist it is appended. The result is then decoded and compared with the
-// original, so a scanner mistake can never silently change another setting.
+// So the file is edited as text. Setup owns only the command key of the
+// [<topKey>.<name>] table, and its args unless they already start with the
+// ones setup writes (a pinned `mcp serve --device <host>` is the user's):
+// those lines are replaced in place (or added), and every other byte is left
+// alone — including keys and sub-tables the user added to the entry, such as
+// env or startup_timeout_sec. When the table does not exist it is appended.
+// The result is then decoded and compared with the original, so a scanner
+// mistake can never silently change another setting.
 
 // errTOMLUnmanagedEntry reports that the entry (or its parent) is written with
 // inline-table or dotted-key syntax. Adding a [table] header next to such a
@@ -367,22 +368,19 @@ func withoutTOMLKeys(doc map[string]any, topKey, name string, keys ...string) ma
 	return out
 }
 
-// upsertCodexMCPServer returns the new config text with the command and args
-// of [topKey.name] set to a stdio server; any other key of that entry is kept.
-// It returns src unchanged when the entry is already current, and an error —
+// upsertCodexMCPServer returns the new config text with [topKey.name] set to a
+// stdio server running command with args. Existing args that already start with
+// args (a pinned --device) and any other key of that entry are kept. It
+// returns src unchanged when the entry is already current, and an error —
 // never a partial edit — when the edit is unsafe or would change anything else.
 func upsertCodexMCPServer(src []byte, topKey, name, command string, args []string) ([]byte, error) {
 	var before map[string]any
 	if _, err := toml.Decode(string(src), &before); err != nil {
 		return nil, fmt.Errorf("parsing: %w", err)
 	}
-	wantArgs := make([]any, len(args))
-	for i, a := range args {
-		wantArgs[i] = a
-	}
 	current := func(doc map[string]any) bool {
 		entry, ok := tomlEntry(doc, topKey, name)
-		return ok && entry["command"] == command && reflect.DeepEqual(entry["args"], wantArgs)
+		return ok && entry["command"] == command && mcpArgsStartWith(entry["args"], args)
 	}
 	if current(before) {
 		return src, nil // nothing to do: keep the user's formatting as is
@@ -401,7 +399,13 @@ func upsertCodexMCPServer(src []byte, topKey, name, command string, args []strin
 		}
 	}
 
-	owned := tomlStdioServerKeys(command, args)
+	var owned []tomlKeyValue
+	for _, kv := range tomlStdioServerKeys(command, args) {
+		if entry, ok := tomlEntry(before, topKey, name); ok && kv.key == "args" && mcpArgsStartWith(entry["args"], args) {
+			continue // the user's own args, e.g. a pinned --device
+		}
+		owned = append(owned, kv)
+	}
 	out := upsertTOMLTableKeys(src, lines, path, owned)
 
 	var after map[string]any

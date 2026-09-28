@@ -267,9 +267,27 @@ func windsurfConfigPath() string {
 	return ""
 }
 
+// mcpArgsStartWith reports whether args, a decoded JSON or TOML array, starts
+// with want. Args that already start with the ones setup writes ("mcp serve")
+// belong to the user — the wendy-mcp-setup skill tells users to pin a device
+// with `mcp serve --device <host>` — so setup leaves them alone.
+func mcpArgsStartWith(args any, want []string) bool {
+	list, ok := args.([]any)
+	if !ok || len(list) < len(want) {
+		return false
+	}
+	for i, w := range want {
+		if s, ok := list[i].(string); !ok || s != w {
+			return false
+		}
+	}
+	return true
+}
+
 // addMCPToJSONConfig sets the keys in entry on cfg[topKey][name] in the JSON
 // file at path. Keys the user added to an existing entry (env, timeouts) are
-// kept; only the keys setup writes are replaced.
+// kept, and so are existing args that already start with entry's args (a
+// pinned --device); only the other keys setup writes are replaced.
 func addMCPToJSONConfig(path, topKey, name string, entry map[string]any) error {
 	var cfg map[string]any
 	data, err := os.ReadFile(path)
@@ -295,6 +313,9 @@ func addMCPToJSONConfig(path, topKey, name string, entry map[string]any) error {
 		}
 	}
 	for k, v := range entry {
+		if want, ok := v.([]string); ok && k == "args" && mcpArgsStartWith(merged["args"], want) {
+			continue
+		}
 		merged[k] = v
 	}
 	top[name] = merged

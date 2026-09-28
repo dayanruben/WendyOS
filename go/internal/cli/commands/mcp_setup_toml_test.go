@@ -92,7 +92,7 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 		{
 			// A WENDY_DEVICE or timeout the user set must survive every
 			// setup run and the silent refresh after each CLI upgrade.
-			name: "user keys and sub-tables of the wendy entry are kept; multi-line args replaced",
+			name: "user keys and sub-tables of the wendy entry are kept; mcp serve args kept as written",
 			in: "[mcp_servers.wendy]\n" +
 				"command = \"/old/wendy\"\n" +
 				"args = [\n" +
@@ -108,7 +108,13 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 				"\n" +
 				"[mcp_servers.other]\n" +
 				"command = \"other\"\n",
-			want: wendyTable +
+			want: "[mcp_servers.wendy]\n" +
+				wendyCommandLine +
+				"args = [\n" +
+				"  \"mcp\",\n" +
+				"  # a comment inside the array\n" +
+				"  \"serve\",\n" +
+				"]\n" +
 				"startup_timeout_sec = 30\n" +
 				"\n" +
 				"[mcp_servers.wendy.env]\n" +
@@ -132,8 +138,50 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 				"env = { WENDY_DEVICE = \"pi.local\" }\n" +
 				wendyCommandLine +
 				"enabled_tools = [\"run\", \"device_list\"]\n" +
-				wendyArgsLine +
+				"\"args\" = [\"mcp\", \"serve\", \"--old\"]\n" +
 				"tool_timeout_sec = 120\n",
+		},
+		{
+			// The wendy-mcp-setup skill tells users to pin the server to one
+			// device this way; setup and every upgrade refresh must keep it.
+			name: "a pinned --device survives; only the command is updated",
+			in: "[mcp_servers.wendy]\n" +
+				"command = \"/old/wendy\"\n" +
+				"args = [\"mcp\", \"serve\", \"--device\", \"my-pi.local\"]\n",
+			want: "[mcp_servers.wendy]\n" +
+				wendyCommandLine +
+				"args = [\"mcp\", \"serve\", \"--device\", \"my-pi.local\"]\n",
+		},
+		{
+			name: "stale args that do not start with mcp serve are replaced in place",
+			in: "[mcp_servers.wendy]\n" +
+				"env = { A = \"1\" }\n" +
+				"args = [\"serve\", \"--old\"]\n" +
+				"tool_timeout_sec = 120\n" +
+				"command = \"/old/wendy\"\n",
+			want: "[mcp_servers.wendy]\n" +
+				"env = { A = \"1\" }\n" +
+				wendyArgsLine +
+				"tool_timeout_sec = 120\n" +
+				wendyCommandLine,
+		},
+		{
+			name: "multi-line stale args are replaced with all their lines",
+			in: "[mcp_servers.wendy]\n" +
+				"command = \"/opt/wendy/bin/wendy\"\n" +
+				"args = [\n" +
+				"  \"mcp\",\n" +
+				"]\n" +
+				"startup_timeout_sec = 30\n",
+			want: wendyTable +
+				"startup_timeout_sec = 30\n",
+		},
+		{
+			name: "args that are not an array are replaced",
+			in: "[mcp_servers.wendy]\n" +
+				"command = \"/opt/wendy/bin/wendy\"\n" +
+				"args = \"mcp serve\"\n",
+			want: wendyTable,
 		},
 		{
 			name: "missing args is added after command",
