@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
@@ -150,6 +151,8 @@ func shouldIncludeExternal(opts discovery.DiscoveryOptions) bool {
 }
 
 func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
+	var browse lanBrowseErrors
+	opts.LAN.OnBackendError = browse.record
 	collection, err := discoverLocalTargets(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("discovery failed: %w", err)
@@ -161,6 +164,14 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 	if shouldIncludeExternal(opts) {
 		// JSON output always includes local run targets (see newDiscoverCmd).
 		collection.ExternalDevices = discoverExternalDevices(ctx, true)
+	}
+
+	warning, err := lanBrowseOutcome(collection, browse.first())
+	if err != nil {
+		return err
+	}
+	if warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
 	}
 
 	data, err := json.MarshalIndent(collection, "", "  ")

@@ -1271,3 +1271,34 @@ func TestStreamKeepsIPv4TargetOverLinkLocalIPv6(t *testing.T) {
 		t.Fatalf("stored dial target must stay the IPv4 one: %+v", fresh)
 	}
 }
+
+// A backend that can't browse at all (sandboxed mDNSResponder socket, denied
+// Local Network permission) used to be visible only as an empty result.
+func TestCollectLANReportsBackendErrors(t *testing.T) {
+	shrinkDuration(t, &backendRetryDelay, 10*time.Millisecond)
+	browseErr := errors.New("dns-sd error -65570")
+	useStreamSeams(t, func(context.Context, string, func(MDNSService)) error {
+		return browseErr
+	}, nil)
+
+	var mu sync.Mutex
+	var got []error
+	opts := StreamOptions{OnBackendError: func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, err)
+	}}
+
+	devices, err := CollectLAN(context.Background(), opts, 300*time.Millisecond)
+	if err != nil {
+		t.Fatalf("CollectLAN: %v", err)
+	}
+	if len(devices) != 0 {
+		t.Fatalf("devices = %+v, want none", devices)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) == 0 || !errors.Is(got[0], browseErr) {
+		t.Fatalf("OnBackendError calls = %v, want the backend's error reported", got)
+	}
+}

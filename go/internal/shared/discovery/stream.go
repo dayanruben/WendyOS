@@ -57,6 +57,14 @@ type StreamOptions struct {
 	UseCache bool      // emit cached entries and persist discoveries
 	Prober   LANProber // nil = no probing (mDNS-only confirmation)
 	Exclude  LANFilter // nil = nothing is excluded
+	// OnBackendError, when non-nil, is called with every error the platform
+	// mDNS backend returns while the session is live (the backend is then
+	// retried as before). Without it, a browse that can never start —
+	// mDNSResponder unreachable from a sandbox, Local Network permission
+	// denied, no multicast socket — looks exactly like an empty network.
+	// Called on the backend goroutine: it must be safe for concurrent use and
+	// must not block.
+	OnBackendError func(error)
 }
 
 // LANFilter keeps sightings a consumer never wants as device rows out of a
@@ -498,6 +506,9 @@ func (s *lanStream) runBackend() {
 		err := lanBackendFn(s.ctx, wendyServiceType, emit)
 		if err == nil || s.ctx.Err() != nil {
 			return
+		}
+		if s.opts.OnBackendError != nil {
+			s.opts.OnBackendError(err)
 		}
 		if attempt >= backendRetries {
 			log.Printf("discovery: LAN stream backend stopped: %v", err)
