@@ -245,17 +245,54 @@ func TestMCPSetupCmd_WarnsUnderSudo(t *testing.T) {
 	}
 }
 
-// setupMCPRefreshTest isolates HOME, PATH and the CLI config directory, makes
+// Tests that run the real MCP writers must never reach the developer's own AI
+// tool configs, on any OS.
+func TestSetupMCPRefreshTest_IsolatesConfigRoots(t *testing.T) {
+	home := setupMCPRefreshTest(t)
+	for _, env := range []string{"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "WENDY_CONFIG_DIR"} {
+		if v := os.Getenv(env); !strings.HasPrefix(v, home) {
+			t.Errorf("%s = %q, want a path under the test HOME %s", env, v, home)
+		}
+	}
+	for name, p := range map[string]string{
+		"Claude Code":    claudeCodeConfigPath(),
+		"Claude Desktop": claudeDesktopConfigPath(),
+		"Cursor":         cursorConfigPath(),
+		"Windsurf":       windsurfConfigPath(),
+		"Codex":          codexConfigPath(),
+	} {
+		if p != "" && !strings.HasPrefix(p, home) {
+			t.Errorf("%s config path %q is outside the test HOME %s", name, p, home)
+		}
+	}
+}
+
+// isolateAIToolHome points HOME and every per-OS config root the MCP setup
+// writers can read (USERPROFILE and APPDATA on Windows, XDG_CONFIG_HOME) at a
+// temporary directory, PATH at an empty one (no claude/cursor/windsurf/codex
+// binaries) and the CLI config directory inside it, so a test running the
+// real writers never touches the developer's own AI tool configs. It returns
+// the temporary HOME.
+func isolateAIToolHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("WENDY_CONFIG_DIR", filepath.Join(home, ".wendy"))
+	return home
+}
+
+// setupMCPRefreshTest isolates HOME, PATH and the config roots, makes
 // ~/.codex exist so Codex counts as installed, and pretends the running CLI is
 // release 9.9.9 so maybeRefreshMCPSetup has something to refresh. It returns
 // the temporary HOME.
 func setupMCPRefreshTest(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("PATH", t.TempDir()) // no claude/cursor/windsurf/codex binaries
-	t.Setenv("WENDY_CONFIG_DIR", filepath.Join(home, ".wendy"))
+	home := isolateAIToolHome(t)
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -408,11 +445,7 @@ func TestMCPRestartNotice(t *testing.T) {
 // End to end: `wendy mcp setup` in an isolated HOME keeps a hand-written Codex
 // config intact apart from the wendy table, and tells the user what to restart.
 func TestMCPSetupCmd_PreservesCodexConfigAndPrintsRestartNotice(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("PATH", t.TempDir()) // no claude/cursor/windsurf/codex binaries
-	t.Setenv("WENDY_CONFIG_DIR", filepath.Join(home, ".wendy"))
+	home := isolateAIToolHome(t)
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
 		t.Fatal(err)
 	}
