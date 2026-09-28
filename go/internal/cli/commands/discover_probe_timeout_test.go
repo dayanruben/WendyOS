@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -92,5 +93,28 @@ func TestExplicitProviderDevice_PersonPresentWaitsLikeEnsureDockerDaemon(t *test
 	quick := newProbeRecordingProvider(1)
 	if _, err := explicitProviderDevice(context.Background(), quick); err != nil || len(quick.timeouts) != 1 {
 		t.Fatalf("a runtime that answers at once: err = %v, probes = %v; want one probe", err, quick.timeouts)
+	}
+}
+
+// Text-mode `wendy discover --timeout …` also used to drop a slow runtime
+// without a word; it now collects it during the scan (discoverOnce's TUI
+// can't run without a terminal, so the scan is tested on its own) and prints
+// the same stderr warning as --json.
+func TestDiscoverOnceScan_ReportsRuntimesThatDidNotAnswer(t *testing.T) {
+	slow := &fakeProvider{key: "wendy-lite", discoverErr: &providers.ProbeTimeoutError{Runtime: "Docker", After: 3 * time.Second}}
+	ok := &fakeProvider{key: "other", devices: []models.ExternalDevice{extDevice("board")}}
+	withExternalProviders(t, slow, ok)
+
+	collection, skipped, err := discoverOnceScan(context.Background(), externalOpts(), true)
+	if err != nil {
+		t.Fatalf("discoverOnceScan: %v", err)
+	}
+	if collection == nil || len(collection.ExternalDevices) != 1 {
+		t.Fatalf("collection = %+v, want the responsive provider's device", collection)
+	}
+	var buf bytes.Buffer
+	warnSkippedRuntimes(&buf, skipped)
+	if got, want := buf.String(), "Warning: Docker did not answer within 3s; it is not listed.\n"; got != want {
+		t.Fatalf("warnings = %q, want %q", got, want)
 	}
 }
