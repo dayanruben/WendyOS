@@ -296,7 +296,7 @@ func main() {
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
 	agentUpdateSvc := services.NewAgentUpdateService(logger, installer)
 	agentUpdateSvc.PrimeExecPath()
-	osUpdateSvc := services.NewOSUpdateService(logger)
+	osUpdateSvc := services.NewOSUpdateService(logger, installer)
 	driverSvc := services.NewDriverService(logger)
 	// Before anything reads the store: devices updated from an older agent still
 	// have add-ons in the pre-keyed flat layout.
