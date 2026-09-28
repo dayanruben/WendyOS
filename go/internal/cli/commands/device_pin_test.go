@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -780,5 +783,74 @@ func TestEnforceDeviceIdentityRejectsDifferentOrg(t *testing.T) {
 
 	if err := enforceDeviceIdentity("wendy-thor.local", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err == nil {
 		t.Fatal("different org at pinned hostname: want an error, got nil")
+	}
+}
+
+// Parallel agent sessions each connect to a different device for the first
+// time. Unlocked, every first-use pin write saved its own snapshot and most
+// pins were lost — each lost pin is a trust-on-first-use window reopened.
+func TestEnforceDeviceIdentityKeepsConcurrentFirstUsePins(t *testing.T) {
+	stubNonInteractive(t)
+	readPins := writePinTestConfig(t, nil)
+	const devices = 16
+	var wg sync.WaitGroup
+	for i := 0; i < devices; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = enforceDeviceIdentity(fmt.Sprintf("wendy-dev-%d.local", i),
+				observedDeviceIdentity{mTLS: true, orgID: 7, assetID: strconv.Itoa(100 + i)})
+		}(i)
+	}
+	wg.Wait()
+	if got := len(readPins()); got != devices {
+		t.Fatalf("%d of %d devices connected in parallel kept their first-use pin", got, devices)
+	}
+}
+
+// Review Focus 3, first half: a config dir that cannot be written (so the
+// config lock cannot be created) must not turn a verified device away.
+func TestEnforceDeviceIdentityIgnoresAnUnwritableConfigDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: file mode bits do not prevent writes")
+	}
+	stubNonInteractive(t)
+	writePinTestConfig(t, nil)
+	dir, err := config.ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := enforceDeviceIdentity("wendy-thor.local", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
+		t.Fatalf("a config dir that cannot be written refused a verified device: %v", err)
+	}
+}
+
+// Review Focus 3, second half: the same unwritable dir must NOT switch the
+// identity check off. Judging a pin needs only a read.
+func TestEnforceDeviceIdentityStillRefusesWhenConfigCannotBeLocked(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: file mode bits do not prevent writes")
+	}
+	stubNonInteractive(t)
+	writePinTestConfig(t, map[string]config.DevicePin{
+		"wendy-thor": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+	})
+	dir, err := config.ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err = enforceDeviceIdentity("wendy-thor.local", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "43"})
+	if !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("different asset at a pinned hostname with an unlockable config: got %v, want a refusal (fail closed)", err)
 	}
 }

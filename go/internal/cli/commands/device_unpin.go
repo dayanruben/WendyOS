@@ -74,29 +74,25 @@ func newDeviceUnpinCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := strings.TrimSpace(args[0])
 
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-
 			var cleared []clearedPin
-			// Detect the identity form by parsing it, not by guessing at its
-			// shape: a hostname is never a spiffe:// URI nor six colon-separated
-			// fields beginning "urn:wendy:org", and certs owns what a well-formed
-			// identity is.
-			if identity, urnErr := certs.ParseIdentityURN(target); urnErr == nil {
-				cleared = clearPinsForIdentity(cfg, identity)
-			} else {
-				// pinKeyForAddr, not the raw argument: a pin recorded via
-				// `--device host.local:50051` files under "host.local" (the port
-				// stripped), and a user unpinning must be able to hand back exactly
-				// what they used to connect. This is the same bug fixed in
-				// set-default in Task 6 — do not reintroduce it here.
-				cleared = clearPinsGoverning(cfg, pinKeyForAddr(target))
-			}
-
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving config: %w", err)
+			if err := config.Update(func(cfg *config.Config) (bool, error) {
+				// Detect the identity form by parsing it, not by guessing at its
+				// shape: a hostname is never a spiffe:// URI nor six colon-separated
+				// fields beginning "urn:wendy:org", and certs owns what a well-formed
+				// identity is.
+				if identity, urnErr := certs.ParseIdentityURN(target); urnErr == nil {
+					cleared = clearPinsForIdentity(cfg, identity)
+				} else {
+					// pinKeyForAddr, not the raw argument: a pin recorded via
+					// `--device host.local:50051` files under "host.local" (the port
+					// stripped), and a user unpinning must be able to hand back exactly
+					// what they used to connect. This is the same bug fixed in
+					// set-default in Task 6 — do not reintroduce it here.
+					cleared = clearPinsGoverning(cfg, pinKeyForAddr(target))
+				}
+				return true, nil
+			}); err != nil {
+				return fmt.Errorf("unpinning %q: %w", target, err)
 			}
 
 			// A prepared session broker may retain an authenticated transport

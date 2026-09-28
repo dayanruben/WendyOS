@@ -102,15 +102,40 @@ func enforceDevicePin(hostname string, conn *grpcclient.AgentConnection) error {
 //
 // A device with no pin that answers unprovisioned is the ordinary
 // out-of-the-box case and passes silently. It is best-effort about local state:
-// a config read/write failure never blocks an already-verified connection.
+// a config read/write/lock failure never blocks an already-verified connection
+// — and never skips the check either (see the read-only fallback below).
 func enforceDeviceIdentity(hostname string, obs observedDeviceIdentity) error {
+	var refusal error
+	judged := false
+	// Under the config lock so a pin recorded here cannot be reverted by, or
+	// revert, another wendy process's concurrent write.
+	_ = config.Update(func(cfg *config.Config) (bool, error) {
+		judged = true
+		changed, err := applyDeviceIdentity(cfg, hostname, obs)
+		refusal = err
+		return changed && err == nil, nil
+	})
+	if judged {
+		return refusal
+	}
+	// Update never reached the check: the lock could not be taken (a read-only
+	// config dir, a hung wendy process) or the config could not be read.
+	// Recording a pin needs the lock; judging one must not, or an unwritable
+	// ~/.wendy would switch enforcement off. Judge what can be read.
 	cfg, err := config.Load()
 	if err != nil {
 		return nil
 	}
+	_, refusal = applyDeviceIdentity(cfg, hostname, obs)
+	return refusal
+}
 
+// applyDeviceIdentity is enforceDeviceIdentity's decision, made against cfg and
+// recorded into it. changed reports whether cfg must be saved; refusal is the
+// error to return when the device must not be used (cfg is then unchanged).
+func applyDeviceIdentity(cfg *config.Config, hostname string, obs observedDeviceIdentity) (changed bool, refusal error) {
 	if !obs.mTLS {
-		return challengeUnprovisionedDevice(cfg, hostname)
+		return false, challengeUnprovisionedDevice(cfg, hostname)
 	}
 
 	cloud := cloudGRPCForOrg(cfg, obs.orgID)
@@ -122,18 +147,17 @@ func enforceDeviceIdentity(hostname string, obs observedDeviceIdentity) error {
 		// the device's SPKI entry.
 		if prev, ok := cfg.DevicePinFor(hostname); ok && prev.Principal == "" && obs.principal != "" {
 			cfg.SetDevicePinFrom(hostname, prev.OrgID, prev.CloudGRPC, prev.AssetID, obs.principal, cfg.PinSource(hostname))
-			_ = config.Save(cfg)
+			return true, nil
 		}
-		return nil
+		return false, nil
 	case config.PinFirstUse, config.PinAdoptAsset:
 		// PinAdoptAsset is a pin written before asset ids were recorded: org and
 		// cloud already match, so this is a silent upgrade, not a challenge.
 		cfg.SetDevicePin(hostname, obs.orgID, cloud, obs.assetID, obs.principal)
-		_ = config.Save(cfg)
-		return nil
+		return true, nil
 	default: // config.PinMismatch
 		prev, _ := cfg.DevicePinFor(hostname)
-		return refuseDevicePin(devicePinDiagnostic{
+		return false, refuseDevicePin(devicePinDiagnostic{
 			hostname: hostname,
 			heading:  fmt.Sprintf("Connection blocked: device %q identity changed.", hostname),
 			details: fmt.Sprintf("Saved: organization %d via %s%s\nNow:   organization %d via %s%s",
@@ -239,17 +263,13 @@ func challengeUnprovisionedDevice(cfg *config.Config, hostname string) error {
 // name does not mention pins, and the user is the only one who can notice it
 // touched something they did not mean. Stderr keeps it out of any JSON output.
 func clearDevicePinForRepin(hostname string) {
-	cfg, err := config.Load()
-	if err != nil {
-		return
-	}
-	cleared := clearPinsGoverning(cfg, hostname)
+	var cleared []clearedPin
+	_ = config.Update(func(cfg *config.Config) (bool, error) {
+		cleared = clearPinsGoverning(cfg, hostname)
+		// The SPKI half flushes itself, so only a config-store clear needs a save.
+		return clearedAnyConfigPin(cleared), nil
+	})
 	printClearedPins(os.Stderr, cleared)
-	// The SPKI half flushes itself, so only a config-store clear needs a save.
-	if !clearedAnyConfigPin(cleared) {
-		return
-	}
-	_ = config.Save(cfg)
 }
 
 // shellQuoteArg renders s so a copy-paste of the recovery command survives a
