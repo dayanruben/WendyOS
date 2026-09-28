@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -193,9 +194,14 @@ func governingPin(pinKey string) (config.DevicePin, string, bool) {
 // pins older CLIs filed under the bare host are not orphaned (pinCandidateKeys
 // still consults them for a port-qualified key, and enforceDeviceIdentity
 // moves one onto its endpoint once the device it names is the one answering);
-// and a VM's two forwarded endpoints are pinned beside its vm:<name> key
-// (see vmEndpointPinKeys), so they stay pinned while the VM is stopped. Non-loopback hosts are unchanged: one device per host, whatever
-// the port.
+// a VM's two forwarded endpoints are pinned beside its vm:<name> key (see
+// vmEndpointPinKeys), so they stay pinned while the VM is stopped; and a
+// loopback connection also pins the endpoint that actually answered it —
+// usually the mTLS port after the one dialled, which a reconnect after an
+// agent update dials (see endpointPinKeys). A direct dial of a running VM's
+// mTLS forward is re-aimed at its agent forward before this is consulted (see
+// vmForwardDialAddr), so it is keyed as the VM too. Non-loopback hosts are
+// unchanged: one device per host, whatever the port.
 func pinKeyForAddr(addr string) string {
 	// SplitHostPort accepts non-numeric service names, so vm:dev would
 	// otherwise become just "vm" when set-default/unpin derives its key.
@@ -245,10 +251,13 @@ var loopbackVMNameFn = runningVMOnLoopbackPort
 // vmForwardHost only. The mTLS port beside it (AgentPort+1) does not name the
 // VM: the dial ladder tries the given port and the one after it, and
 // AgentPort+2 is not forwarded — something else can listen there — so a dial
-// at AgentPort+1 is keyed per endpoint, where the VM's identity is pinned by
-// recordVMEndpointPin. A run record counts only while its VM holds the run
-// lock (vm.Store.Status reaps stale ones), and two records claiming one port
-// name no VM: the key then falls back to the endpoint rather than a guess.
+// at AgentPort+1 is never made under the VM's key. A direct dial there is
+// re-aimed at AgentPort first (vmForwardDialAddr); the key AgentPort+1 itself
+// is per endpoint, where the VM's identity is pinned by recordEndpointPin, so
+// it stays pinned once the VM stops. A run record counts only while its VM
+// holds the run lock (vm.Store.Status reaps stale ones), and two records
+// claiming one port name no VM: the key then falls back to the endpoint rather
+// than a guess.
 func runningVMOnLoopbackPort(port int) (string, bool) {
 	statuses, err := vmStatusesFn()
 	if err != nil {
@@ -290,9 +299,10 @@ func runningVMAgentPort(name string) (int, bool) {
 }
 
 // dialPinKeyForDevice is the pin key a dial to device — as typed for --device
-// or set-default — is checked under. It adds the default agent port first,
-// exactly as resolveDeviceAddress does, because for loopback the port is part
-// of the key: "127.0.0.1" is dialled, and pinned, as 127.0.0.1:50051.
+// or set-default — is checked under. It adds the default agent port and
+// re-aims a running VM's mTLS forward first, exactly as resolveDeviceAddress
+// does, because for loopback the port is part of the key: "127.0.0.1" is
+// dialled, and pinned, as 127.0.0.1:50051.
 func dialPinKeyForDevice(device string) string {
 	if _, matched, err := simulatorName(device); matched || err != nil {
 		return pinKeyForAddr(device)
@@ -300,7 +310,7 @@ func dialPinKeyForDevice(device string) string {
 	if _, _, err := net.SplitHostPort(device); err != nil {
 		device = hostPort(device, defaultAgentPort)
 	}
-	return pinKeyForAddr(device)
+	return pinKeyForAddr(vmForwardDialAddr(device))
 }
 
 // legacyLoopbackPinKey returns the bare host a port-qualified loopback key's
@@ -316,7 +326,7 @@ func legacyLoopbackPinKey(key string) string {
 }
 
 // vmEndpointPinKeys are the endpoints a connection judged under pinKey may
-// also be pinned under (see recordVMEndpointPin), when pinKey is a VM's
+// also be pinned under (see recordEndpointPin), when pinKey is a VM's
 // vm:<name> key and dialAddr is on the literal vmForwardHost (QEMU's forward
 // answers there only): both ports QEMU forwards for the VM —
 // 127.0.0.1:AgentPort and the mTLS port beside it — when dialAddr is one of
@@ -376,6 +386,78 @@ func vmAgentForwardAddr(name, addr string) string {
 		return addr
 	}
 	return net.JoinHostPort(vmForwardHost, strconv.Itoa(agentPort))
+}
+
+// vmForwardDialAddr is vmAgentForwardAddr for a direct dial that does not know
+// it is reaching a VM: a typed --device address, or the conn.Addr a reconnect
+// after an agent update dials. The literal forward address 127.0.0.1 on the
+// mTLS port of a running user-mode VM (AgentPort+1, a port that is not itself
+// a VM's agent port) becomes that VM's agent forward, 127.0.0.1:AgentPort, so
+// the connection is keyed vm:<name> by pinKeyForAddr and records both of the
+// VM's forwards, exactly like a dial of the agent port or the vm:<name> alias.
+//
+// Keyed as its own endpoint instead, a first connection there would move (or
+// adopt) a legacy bare pin onto AgentPort+1 alone, leaving AgentPort unpinned
+// once the VM stops; and its ladder would also try AgentPort+2, which QEMU
+// does not forward. Every other address is returned unchanged — without
+// reading the VM store unless the host is the literal forward address.
+func vmForwardDialAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host != vmForwardHost {
+		return addr
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p <= agentMTLSPortOffset {
+		return addr
+	}
+	// A VM's own agent port keys as that VM already.
+	if _, ok := loopbackVMNameFn(p); ok {
+		return addr
+	}
+	name, ok := loopbackVMNameFn(p - agentMTLSPortOffset)
+	if !ok {
+		return addr
+	}
+	return vmAgentForwardAddr(name, addr)
+}
+
+// endpointPinKeys are the loopback endpoints a connection judged under pinKey
+// and dialled at dialAddr also records its accepted identity under (see
+// recordEndpointPin), so each stays pinned when it is dialled on its own:
+//
+//   - for a VM's vm:<name> key, both of the VM's forwards (vmEndpointPinKeys);
+//   - for vm:<name> or a port-qualified loopback key, the endpoint the
+//     connection actually answered on — answeredAddr, the connection's
+//     conn.Addr — when that is another port-qualified loopback key. One agent
+//     answers a dial of port P on P+1 once it is provisioned (the ladder's
+//     mTLS rung), and the reconnect after an agent update dials exactly that
+//     address. On main both were the bare "127.0.0.1" key; without its own
+//     pin P+1 would be a first use, its plaintext rung open.
+//
+// A vm:<name> answered endpoint is never recorded: that port keys as the VM
+// while it runs. Nil for every other key, including every non-loopback one,
+// and when dialAddr is "" — a connection some fallback substituted for the
+// dial answered nowhere that was dialled.
+func endpointPinKeys(pinKey, dialAddr, answeredAddr string) []string {
+	if dialAddr == "" || !recordsEndpointPins(pinKey) {
+		return nil
+	}
+	keys := vmEndpointPinKeys(pinKey, dialAddr)
+	if answeredAddr == "" {
+		return keys
+	}
+	answered := pinKeyForAddr(answeredAddr)
+	if answered == pinKey || legacyLoopbackPinKey(answered) == "" || slices.Contains(keys, answered) {
+		return keys
+	}
+	return append(keys, answered)
+}
+
+// recordsEndpointPins reports whether a connection judged under key records
+// its identity at loopback endpoints too: a VM's vm:<name> key, or a
+// port-qualified loopback key. Never a non-loopback key.
+func recordsEndpointPins(key string) bool {
+	return strings.HasPrefix(key, vmDeviceIDPrefix) || legacyLoopbackPinKey(key) != ""
 }
 
 // identityPinKey is the key enforceDeviceIdentity judges a connection to

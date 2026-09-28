@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -1004,5 +1008,551 @@ func TestVMReconnectAtItsMTLSForwardDialsThePlaintextForward(t *testing.T) {
 	pins := readPins()
 	if pins["vm:dev"].AssetID != "42" || pins["127.0.0.1:50151"].AssetID != "42" || pins["127.0.0.1:50152"].AssetID != "42" {
 		t.Fatalf("pins = %+v, want vm:dev and both forwards naming asset 42", pins)
+	}
+}
+
+// mtlsAnswerAddr is where a provisioned agent's authenticated connection
+// lands when the ladder dials addr: the mTLS port after it, which is what
+// conn.Addr then holds (and what a reconnect after an agent update dials).
+func mtlsAnswerAddr(t *testing.T, addr string) string {
+	t.Helper()
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("mtlsAnswerAddr(%q): %v", addr, err)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatalf("mtlsAnswerAddr(%q): %v", addr, err)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(p+agentMTLSPortOffset))
+}
+
+// connectTypedAnsweringAtMTLS drives the real connectToAgent path for a typed
+// --device address with the ladder answering as obs the way a provisioned
+// agent does: on the mTLS port after the one dialled. It returns the
+// connection (the caller closes it) and the dial target the ladder was handed.
+func connectTypedAnsweringAtMTLS(t *testing.T, addr string, obs observedDeviceIdentity) (*grpcclient.AgentConnection, dialTarget, error) {
+	t.Helper()
+	var dialled dialTarget
+	origLadder, origObserve, origDiscover := dialAgentLadderFn, observeDeviceIdentityFn, discoverLANDevices
+	origUSB := usbDirectCandidatesFn
+	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		dialled = target
+		return &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: mtlsAnswerAddr(t, target.Addr), IsMTLS: obs.mTLS,
+			AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}}}, nil, nil
+	}
+	observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity { return obs }
+	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	usbDirectCandidatesFn = func() []discovery.USBDirectCandidate { return nil }
+	defer func() {
+		dialAgentLadderFn, observeDeviceIdentityFn, discoverLANDevices = origLadder, origObserve, origDiscover
+		usbDirectCandidatesFn = origUSB
+	}()
+	deviceFlag = addr
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := connectToAgent(ctx, SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive(), DisableSessionBroker())
+	return conn, dialled, err
+}
+
+// reconnectAfterUpdate runs the reconnect an agent update makes with conn
+// (reconnectAgentAfterRestart), against a ladder that answers every dial as
+// obs, and returns each dial target it handed the ladder plus the VMs whose
+// simulator path it took.
+func reconnectAfterUpdate(t *testing.T, conn *grpcclient.AgentConnection, obs observedDeviceIdentity) (targets []dialTarget, simulatorPath []string, err error) {
+	t.Helper()
+	origLadder, origObserve, origRecord := dialAgentLadderFn, observeDeviceIdentityFn, vmRecordHostnameFn
+	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		targets = append(targets, target)
+		return &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: mtlsAnswerAddr(t, target.Addr), IsMTLS: obs.mTLS,
+			AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}}}, nil, nil
+	}
+	observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity { return obs }
+	vmRecordHostnameFn = func(name, _ string) error {
+		simulatorPath = append(simulatorPath, name)
+		return nil
+	}
+	defer func() {
+		dialAgentLadderFn, observeDeviceIdentityFn, vmRecordHostnameFn = origLadder, origObserve, origRecord
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	newConn, err := reconnectAgentAfterRestart(ctx, conn)
+	if newConn != nil {
+		newConn.Close()
+	}
+	return targets, simulatorPath, err
+}
+
+// assertPlaintextRungRefused runs the real ladder over target with no CLI
+// certificate, so nothing can authenticate: a pinned target must end in a
+// refusal without ever offering the plaintext rung.
+func assertPlaintextRungRefused(t *testing.T, target dialTarget) {
+	t.Helper()
+	// Counted per address and answered with an error, so a stray probe from
+	// elsewhere in the package can neither skew the count nor get a
+	// half-built connection back.
+	var plaintextCalls atomic.Int32
+	origPlaintext := plaintextConnectFn
+	plaintextConnectFn = func(_ context.Context, address string) (*grpcclient.AgentConnection, error) {
+		if address == target.Addr {
+			plaintextCalls.Add(1)
+		}
+		return nil, errors.New("plaintext rung reached in test")
+	}
+	defer func() { plaintextConnectFn = origPlaintext }()
+	conn, _, err := dialAgentLadderWithCerts(context.Background(), target, nil)
+	if conn != nil {
+		conn.Close()
+	}
+	if n := plaintextCalls.Load(); n != 0 || conn != nil {
+		t.Errorf("%s: the plaintext rung was offered (%d calls) — an unprovisioned listener there would be accepted", target.Addr, n)
+	}
+	if !errors.Is(err, errNoAuthenticatedEndpoint) {
+		t.Errorf("%s: ladder err = %v, want a pinned-host refusal", target.Addr, err)
+	}
+}
+
+// R24 (C1): one agent answers a typed 127.0.0.1:P on P (plaintext) and P+1
+// (mTLS), so conn.Addr is P+1 after an authenticated connect — and the
+// reconnect after an agent update (device update, os update, the connect-time
+// update offer) dials exactly that address. It must be pinned to the identity
+// the connection just verified, as the single bare 127.0.0.1 key pinned it on
+// main: otherwise the plaintext rung is open there, and any same-org
+// certificate is accepted on P+1 or P+2, for the rest of the command.
+func TestTypedLoopbackReconnectAtTheMTLSPortStaysPinned(t *testing.T) {
+	orgOnly := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443"}
+	for _, tc := range []struct {
+		name string
+		pins map[string]config.DevicePin
+	}{
+		{"fresh user", map[string]config.DevicePin{}},
+		{"legacy bare pin", map[string]config.DevicePin{"127.0.0.1": pinA}},
+		{"legacy org-only bare pin", map[string]config.DevicePin{"127.0.0.1": orgOnly}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreDeviceGlobals(t)
+			stubNonInteractive(t)
+			setPinCache(t)
+			stubLoopbackVMs(t, nil)
+			readPins := writePinTestConfig(t, tc.pins)
+			const typed, mtls = "127.0.0.1:50051", "127.0.0.1:50052"
+
+			conn, _, err := connectTypedAnsweringAtMTLS(t, typed, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"})
+			if err != nil {
+				t.Fatalf("first connect: %v", err)
+			}
+			defer conn.Close()
+			if conn.Addr != mtls {
+				t.Fatalf("conn.Addr = %q, want the mTLS port %s", conn.Addr, mtls)
+			}
+
+			targets, _, err := reconnectAfterUpdate(t, conn, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"})
+			if err != nil {
+				t.Fatalf("reconnect: %v", err)
+			}
+			if len(targets) == 0 {
+				t.Fatal("the reconnect never dialled")
+			}
+			target := targets[0]
+			if target.Addr != mtls {
+				t.Fatalf("reconnect dialled %q, want %s (conn.Addr)", target.Addr, mtls)
+			}
+			if !target.pinned() || target.Expected == nil || target.Expected.EntityID != "42" {
+				t.Errorf("reconnect target at %s = %+v: want it pinned to asset 42 (plaintext blocked, another device refused)", mtls, target)
+			}
+			assertPlaintextRungRefused(t, target)
+
+			pins := readPins()
+			if pins[typed].AssetID != "42" || pins[mtls].AssetID != "42" {
+				t.Errorf("pins = %+v, want %s and %s both naming asset 42", pins, typed, mtls)
+			}
+			// Unprovisioned first: an accepted asset 99 would be recorded as a
+			// first use and then refuse it for the wrong reason.
+			for _, key := range []string{typed, mtls} {
+				if err := enforceDeviceIdentity(key, observedDeviceIdentity{}); !errors.Is(err, errDeviceIdentityRefused) {
+					t.Errorf("an unprovisioned answer at %s: got %v, want a refusal", key, err)
+				}
+				if err := enforceDeviceIdentity(key, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}); !errors.Is(err, errDeviceIdentityRefused) {
+					t.Errorf("asset 99 at %s: got %v, want a refusal", key, err)
+				}
+			}
+		})
+	}
+}
+
+// R24: the endpoint that answered is recorded only as R21 records a VM's
+// forwards — a first use or an asset adoption. A pin there naming another
+// device is never overwritten, and a connection some fallback substituted for
+// the dial records nothing beside its own key.
+func TestAnsweredEndpointIsRecordedOnlyWhereNothingElseApplies(t *testing.T) {
+	stubNonInteractive(t)
+	setPinCache(t)
+	stubLoopbackVMs(t, nil)
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1:50052": pinB})
+	conn := &grpcclient.AgentConnection{Addr: "127.0.0.1:50052"}
+	orig := observeDeviceIdentityFn
+	observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity {
+		return observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}
+	}
+	t.Cleanup(func() { observeDeviceIdentityFn = orig })
+
+	if err := enforceDevicePinAt("127.0.0.1:50051", "127.0.0.1:50051", conn); err != nil {
+		t.Fatalf("a first use at :50051 was refused over another endpoint's pin: %v", err)
+	}
+	pins := readPins()
+	if pins["127.0.0.1:50051"].AssetID != "42" || pins["127.0.0.1:50052"].AssetID != "43" {
+		t.Fatalf("pins = %+v, want :50051=42 and :50052's own pin (43) untouched", pins)
+	}
+
+	readPins = writePinTestConfig(t, map[string]config.DevicePin{})
+	if err := enforceDevicePinAt("127.0.0.1:50051", "", conn); err != nil {
+		t.Fatal(err)
+	}
+	if pins := readPins(); len(pins) != 1 || pins["127.0.0.1:50051"].AssetID != "42" {
+		t.Fatalf("pins = %+v, want only :50051 — a substituted connection answered nowhere that was dialled", pins)
+	}
+}
+
+// R25 (C2, parked A1/A5): a FIRST connection typed at a running VM's mTLS
+// forward, 127.0.0.1:A+1, is dialled at the VM's agent forward A and keyed
+// vm:<name>, so it records both forwards like any connection to the VM.
+// Keyed as the endpoint A+1 instead, it moved (or adopted) the legacy bare pin
+// onto A+1 alone, and once the VM stopped, another local account binding A was
+// accepted where main refused it.
+func TestTypedMTLSForwardOfARunningVMConnectsAsTheVM(t *testing.T) {
+	orgOnly := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443"}
+	for _, tc := range []struct {
+		name string
+		pins map[string]config.DevicePin
+	}{
+		{"legacy bare pin (A1)", map[string]config.DevicePin{"127.0.0.1": pinA}},
+		{"legacy org-only bare pin (A5)", map[string]config.DevicePin{"127.0.0.1": orgOnly}},
+		{"fresh user", map[string]config.DevicePin{}},
+	} {
+		for _, door := range []string{"connectToAgent", "resolveTarget"} {
+			t.Run(tc.name+"/"+door, func(t *testing.T) {
+				restoreDeviceGlobals(t)
+				stubNonInteractive(t)
+				setPinCache(t)
+				readPins := writePinTestConfig(t, tc.pins)
+				const agent, mtls = "127.0.0.1:50051", "127.0.0.1:50052"
+				obs42 := observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}
+
+				stubLoopbackVMs(t, map[int]string{50051: "dev"})
+				var target dialTarget
+				var err error
+				if door == "connectToAgent" {
+					var conn *grpcclient.AgentConnection
+					conn, target, err = connectTypedAnsweringAtMTLS(t, mtls, obs42)
+					if conn != nil {
+						conn.Close()
+					}
+				} else {
+					target, err = resolveTypedAnsweringAtMTLS(t, mtls, obs42)
+				}
+				if err != nil {
+					t.Fatalf("the running VM was refused: %v", err)
+				}
+				if target.Addr != agent || target.PinKey != "vm:dev" {
+					t.Errorf("typed %s dialled %q under %q, want %s under vm:dev", mtls, target.Addr, target.PinKey, agent)
+				}
+				pins := readPins()
+				if pins["vm:dev"].AssetID != "42" || pins[agent].AssetID != "42" || pins[mtls].AssetID != "42" {
+					t.Errorf("pins = %+v, want vm:dev and both forwards naming asset 42", pins)
+				}
+
+				stubLoopbackVMs(t, nil) // the VM stops
+				for _, addr := range []string{agent, mtls} {
+					key := pinKeyForAddr(addr)
+					if target := newDialTarget(key, addr); !target.pinned() || target.Expected == nil || target.Expected.EntityID != "42" {
+						t.Errorf("stopped VM's %s: dial target %+v, want Expected 42 and the plaintext rung blocked", addr, target)
+					}
+					// Unprovisioned first: an accepted asset 99 would be
+					// recorded as a first use and then refuse it for the
+					// wrong reason.
+					for _, obs := range []observedDeviceIdentity{{}, {mTLS: true, orgID: 7, assetID: "99"}} {
+						if err := enforceDeviceIdentity(key, obs); !errors.Is(err, errDeviceIdentityRefused) {
+							t.Errorf("stopped VM's %s answered as %+v: got %v, want a refusal", addr, obs, err)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+// resolveTypedAnsweringAtMTLS is connectTypedAnsweringAtMTLS through
+// resolveTarget's direct path.
+func resolveTypedAnsweringAtMTLS(t *testing.T, addr string, obs observedDeviceIdentity) (dialTarget, error) {
+	t.Helper()
+	var dialled dialTarget
+	origLadder, origObserve, origDiscover := dialAgentLadderFn, observeDeviceIdentityFn, discoverLANDevices
+	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		dialled = target
+		return &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: mtlsAnswerAddr(t, target.Addr), IsMTLS: obs.mTLS,
+			AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}}}, nil, nil
+	}
+	observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity { return obs }
+	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	defer func() {
+		dialAgentLadderFn, observeDeviceIdentityFn, discoverLANDevices = origLadder, origObserve, origDiscover
+	}()
+	deviceFlag = addr
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sel, err := resolveTarget(ctx, SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive(), DisableSessionBroker())
+	if sel != nil {
+		sel.Close()
+	}
+	return dialled, err
+}
+
+// R25: the reconnect path (waitForAgentRestart → connectWithAutoTLS), and
+// every other direct dial through connectWithAutoTLS, dials a running VM's
+// mTLS forward as the VM too — never under the endpoint key, whose ladder
+// would also try A+2, which QEMU does not forward.
+func TestDirectDialOfARunningVMsMTLSForwardIsKeyedAsTheVM(t *testing.T) {
+	setPinCache(t)
+	stubLoopbackVMs(t, map[int]string{50051: "dev"})
+	setPinConfig(t, map[string]config.DevicePin{"vm:dev": pinA, "127.0.0.1:50052": pinB})
+	var targets []dialTarget
+	origLadder := dialAgentLadderFn
+	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		targets = append(targets, target)
+		return nil, nil, errors.New("agent restarting")
+	}
+	t.Cleanup(func() { dialAgentLadderFn = origLadder })
+
+	_, _ = connectWithAutoTLS(context.Background(), "127.0.0.1:50052")
+	if len(targets) != 1 {
+		t.Fatalf("ladder dialled %d times, want 1", len(targets))
+	}
+	got := targets[0]
+	if got.Addr != "127.0.0.1:50051" || got.PinKey != "vm:dev" || got.Expected == nil || got.Expected.EntityID != "42" {
+		t.Fatalf("dial target = %+v, want 127.0.0.1:50051 under vm:dev (asset 42)", got)
+	}
+
+	// Anything else is left alone: a port no VM forwards, the agent port
+	// itself, and spellings other than the literal forward address.
+	for _, addr := range []string{"127.0.0.1:50061", "127.0.0.1:50051", "localhost:50052", "127.0.0.2:50052", "10.0.0.5:50052"} {
+		if got := vmForwardDialAddr(addr); got != addr {
+			t.Errorf("vmForwardDialAddr(%q) = %q, want it unchanged", addr, got)
+		}
+	}
+	if got := dialPinKeyForDevice("127.0.0.1:50052"); got != "vm:dev" {
+		t.Errorf("dialPinKeyForDevice(127.0.0.1:50052) = %q, want vm:dev (the key its dial is checked under)", got)
+	}
+}
+
+// R27(1): a reconnect answered by a device that is refused must say so at
+// once. Retrying only asks the same wrong device again until the deadline, and
+// then reports "timed out waiting for agent to restart" instead of the refusal
+// and the unpin that resolves it.
+func TestWaitForAgentRestartReturnsAnIdentityRefusalImmediately(t *testing.T) {
+	calls := 0
+	origLadder := dialAgentLadderFn
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+		calls++
+		return nil, nil, refuseDevicePin(devicePinDiagnostic{hostname: "127.0.0.1:50052", heading: "Connection blocked."})
+	}
+	t.Cleanup(func() { dialAgentLadderFn = origLadder })
+	stubLoopbackVMs(t, nil)
+	setPinCache(t)
+	setPinConfig(t, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	_, err := waitForAgentRestart(ctx, "127.0.0.1:50052")
+	if !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("waitForAgentRestart = %v, want the identity refusal", err)
+	}
+	if calls != 1 {
+		t.Fatalf("ladder dialled %d times after a refusal, want 1", calls)
+	}
+}
+
+// R27(1): an agent that is simply not back yet is still waited for.
+func TestWaitForAgentRestartStillRetriesAnAgentThatIsNotBackYet(t *testing.T) {
+	calls := 0
+	origLadder := dialAgentLadderFn
+	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		calls++
+		if calls == 1 {
+			return nil, nil, &noAuthenticatedEndpointError{msg: "nothing answered"}
+		}
+		return &grpcclient.AgentConnection{Addr: target.Addr,
+			AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}}}, nil, nil
+	}
+	t.Cleanup(func() { dialAgentLadderFn = origLadder })
+	stubLoopbackVMs(t, nil)
+	setPinCache(t)
+	setPinConfig(t, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	conn, err := waitForAgentRestart(ctx, "127.0.0.1:50052")
+	if err != nil {
+		t.Fatalf("waitForAgentRestart = %v, want the agent once it answers", err)
+	}
+	conn.Close()
+	if calls != 2 {
+		t.Fatalf("ladder dialled %d times, want 2", calls)
+	}
+}
+
+// R27(2), I2: VM b runs on the port where VM a left endpoint pins. A typed
+// connection is keyed vm:b, and so must its reconnect after an agent update
+// be: it goes through the VM's own path, not through conn.Addr — the mTLS
+// forward, whose stale pin names VM a and would refuse b until a timeout.
+func TestTypedVMConnectionReconnectsThroughTheVM(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	setPinCache(t)
+	stale := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"}
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"vm:a": stale, "127.0.0.1:50051": stale, "127.0.0.1:50052": stale,
+	})
+	stubLoopbackVMs(t, map[int]string{50051: "b"})
+	obs43 := observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "43"}
+
+	conn, _, err := connectTypedAnsweringAtMTLS(t, "127.0.0.1:50051", obs43)
+	if err != nil {
+		t.Fatalf("typed connect to VM b: %v", err)
+	}
+	defer conn.Close()
+	if conn.SimulatorName != "b" {
+		t.Fatalf("conn.SimulatorName = %q, want b: the connection was judged as vm:b", conn.SimulatorName)
+	}
+	targets, simulatorPath, err := reconnectAfterUpdate(t, conn, obs43)
+	if err != nil {
+		t.Fatalf("reconnect to VM b: %v", err)
+	}
+	if !reflect.DeepEqual(simulatorPath, []string{"b"}) {
+		t.Fatalf("reconnect took the simulator path for %q, want [b]", simulatorPath)
+	}
+	if len(targets) == 0 || targets[0].PinKey != "vm:b" || targets[0].Addr != "127.0.0.1:50051" ||
+		targets[0].Expected == nil || targets[0].Expected.EntityID != "43" {
+		t.Fatalf("reconnect targets = %+v, want 127.0.0.1:50051 under vm:b (asset 43)", targets)
+	}
+	pins := readPins()
+	if pins["vm:b"].AssetID != "43" || pins["127.0.0.1:50051"].AssetID != "42" || pins["127.0.0.1:50052"].AssetID != "42" {
+		t.Fatalf("pins = %+v, want vm:b=43 and VM a's endpoint pins untouched (never overwritten)", pins)
+	}
+}
+
+// R27(3): `wendy device unpin vm:<name>` — the recipe for replacing a VM —
+// also clears the endpoint pins its connections filed at 127.0.0.1, but only
+// those naming the same device; and `unpin 127.0.0.1:PORT` still clears a
+// stale endpoint pin while no VM runs there.
+func TestUnpinVMClearsItsSameIdentityEndpointPins(t *testing.T) {
+	stubLoopbackVMs(t, nil)
+	setPinCache(t)
+	orgOnly := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443"}
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"vm:a":            pinA,
+		"127.0.0.1:50051": pinA,
+		"127.0.0.1:50052": pinA,
+		"127.0.0.1:50061": pinB, // another device
+		"localhost:50051": pinA, // another address spelling: not a VM forward
+		"127.0.0.1":       pinA, // a bare legacy pin: not an endpoint
+		"vm:b":            orgOnly,
+		"127.0.0.1:50071": orgOnly,
+	})
+	out := runUnpin(t, "vm:a")
+	pins := readPins()
+	for _, gone := range []string{"vm:a", "127.0.0.1:50051", "127.0.0.1:50052"} {
+		if _, ok := pins[gone]; ok {
+			t.Errorf("unpin vm:a left %s", gone)
+		}
+		if !strings.Contains(out, `"`+gone+`"`) {
+			t.Errorf("unpin vm:a did not report clearing %s:\n%s", gone, out)
+		}
+	}
+	for _, kept := range []string{"127.0.0.1:50061", "localhost:50051", "127.0.0.1", "vm:b", "127.0.0.1:50071"} {
+		if _, ok := pins[kept]; !ok {
+			t.Errorf("unpin vm:a cleared %s, which it does not govern", kept)
+		}
+	}
+
+	// An org-only VM pin names no device, so no endpoint is "the same".
+	runUnpin(t, "vm:b")
+	if _, ok := readPins()["127.0.0.1:50071"]; !ok {
+		t.Error("unpin vm:b (org-only) cleared an org-only endpoint pin")
+	}
+
+	// A stale endpoint pin with no VM running there is cleared by address.
+	runUnpin(t, "127.0.0.1:50061")
+	if _, ok := readPins()["127.0.0.1:50061"]; ok {
+		t.Error("unpin 127.0.0.1:50061 left the stale endpoint pin")
+	}
+}
+
+// R24: which endpoints a connection records beside its own key. Only a VM key
+// or a port-qualified loopback key records any; the answered endpoint is added
+// only when it is another port-qualified loopback key (never vm:<name>, never
+// a non-loopback host); a substituted connection records none.
+func TestEndpointPinKeys(t *testing.T) {
+	stubLoopbackVMs(t, map[int]string{50051: "dev"})
+	for _, tc := range []struct {
+		key, dialled, answered string
+		want                   []string
+	}{
+		{"127.0.0.1:50061", "127.0.0.1:50061", "127.0.0.1:50062", []string{"127.0.0.1:50062"}},
+		{"localhost:50061", "localhost:50061", "[::1]:50062", []string{"[::1]:50062"}},
+		{"localhost:50061", "localhost:50061", "127.0.0.1:50062", []string{"127.0.0.1:50062"}},
+		// Answered where it was dialled: nothing beside the key itself.
+		{"127.0.0.1:50061", "127.0.0.1:50061", "127.0.0.1:50061", nil},
+		// A substituted connection answered nowhere that was dialled.
+		{"127.0.0.1:50061", "", "127.0.0.1:50062", nil},
+		// An answering port that keys as a running VM is never filed.
+		{"localhost:50050", "localhost:50050", "127.0.0.1:50051", nil},
+		// Non-loopback keys, and bare hosts, record nothing extra.
+		{"rpi5.local", "rpi5.local:50051", "10.0.0.5:50052", nil},
+		{"rpi5.local", "rpi5.local:50051", "127.0.0.1:50052", nil},
+		{"10.0.0.5", "10.0.0.5:50051", "10.0.0.5:50052", nil},
+		{"127.0.0.1", "127.0.0.1:50061", "127.0.0.1:50062", nil},
+		// A VM: both forwards, the answered one not repeated.
+		{"vm:dev", "127.0.0.1:50051", "127.0.0.1:50052", []string{"127.0.0.1:50051", "127.0.0.1:50052"}},
+		// A VM the store cannot place: the address dialled and the one that answered.
+		{"vm:other", "127.0.0.1:50071", "127.0.0.1:50072", []string{"127.0.0.1:50071", "127.0.0.1:50072"}},
+		{"vm:dev", "", "127.0.0.1:50052", nil},
+	} {
+		if got := endpointPinKeys(tc.key, tc.dialled, tc.answered); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("endpointPinKeys(%q, %q, %q) = %q, want %q", tc.key, tc.dialled, tc.answered, got, tc.want)
+		}
+	}
+}
+
+// R25: a port that is itself a running VM's agent port keys as that VM, even
+// when it is also the port after another VM's.
+func TestVMForwardDialAddrLeavesAnotherVMsAgentPortAlone(t *testing.T) {
+	stubLoopbackVMs(t, map[int]string{50051: "a", 50052: "b"})
+	if got := vmForwardDialAddr("127.0.0.1:50052"); got != "127.0.0.1:50052" {
+		t.Fatalf("vmForwardDialAddr(127.0.0.1:50052) = %q, want it left as VM b's agent port", got)
+	}
+	if key := pinKeyForAddr(vmForwardDialAddr("127.0.0.1:50052")); key != "vm:b" {
+		t.Fatalf("key = %q, want vm:b", key)
+	}
+}
+
+// R27(3): the endpoint pins go only with the vm:<name> pin itself. When a
+// cloud pin under another of the VM's names governs instead, naming another
+// device, the unpin leaves vm:<name> (it names a different device than the
+// one being unpinned), and so leaves the endpoint pins naming it too.
+func TestUnpinVMKeepsEndpointPinsWhenItKeepsTheVMPin(t *testing.T) {
+	stubLoopbackVMs(t, nil)
+	cloud99 := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "99", Source: config.PinSourceCloud}
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"vm:a": pinA, "a-alias": cloud99, "127.0.0.1:50051": pinA,
+	})
+	setPinCache(t, discoverycache.Entry{ID: "vm-a", DisplayName: "a-alias", Hostname: "vm:a"})
+	runUnpin(t, "vm:a")
+	pins := readPins()
+	if _, ok := pins["a-alias"]; ok {
+		t.Fatalf("pins = %+v: the governing alias pin was not cleared (test precondition)", pins)
+	}
+	if pins["vm:a"].AssetID != "42" || pins["127.0.0.1:50051"].AssetID != "42" {
+		t.Fatalf("pins = %+v, want vm:a and its endpoint pin both kept", pins)
 	}
 }

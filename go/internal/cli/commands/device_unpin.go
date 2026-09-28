@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"io"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -210,6 +211,12 @@ func clearPinsGoverning(cfg *config.Config, pinKey string) []clearedPin {
 	// Resolving it through the same lookupPin the dial path uses is what keeps
 	// the refusal and its escape hatch talking about the same pin.
 	governing, governingKey, pinned := lookupPin(cfg, pinKey)
+	// A VM's own pin, read before the loop below clears it: its connections
+	// also filed that identity at the VM's 127.0.0.1 forwards.
+	vmPin, vmPinned := config.DevicePin{}, false
+	if strings.HasPrefix(pinKey, vmDeviceIDPrefix) {
+		vmPin, vmPinned = cfg.DevicePinFor(pinKey)
+	}
 
 	var cleared []clearedPin
 	var identityKeys []string
@@ -232,12 +239,50 @@ func clearPinsGoverning(cfg *config.Config, pinKey string) []clearedPin {
 			identityKeys = append(identityKeys, identity)
 		}
 	}
+	// Only when the VM's own pin was one of those cleared.
+	if _, kept := cfg.DevicePinFor(pinKey); vmPinned && !kept {
+		cleared = append(cleared, clearVMEndpointPins(cfg, vmPin)...)
+	}
 
 	if key := cachedIdentityKey(pinKey); key != "" && (!pinned || key == configPinIdentityKey(governing)) {
 		identityKeys = append(identityKeys, key)
 	}
 
 	return append(cleared, removeSPKIPins(identityKeys)...)
+}
+
+// clearVMEndpointPins drops the 127.0.0.1:PORT pins that name the same device
+// as vmPin, a VM's vm:<name> pin that an unpin (or set-default) is clearing,
+// and returns what it removed. Every connection to the VM files its identity
+// at the VM's forwarded endpoints (see recordEndpointPin), and those pins
+// outlive the VM — replacing it, or putting another VM on its port, must not
+// leave them behind to refuse the replacement at that address.
+//
+// Only a pin naming the same (org, asset) goes: never one naming another
+// device, and never an org-only one, which names no device. A pin filed under
+// another loopback spelling (localhost:PORT, [::1]:PORT) or the bare host is
+// not the VM's — its forwards listen on 127.0.0.1 only — and is left alone.
+// Its SPKI entry is the VM pin's own, which the caller already clears.
+func clearVMEndpointPins(cfg *config.Config, vmPin config.DevicePin) []clearedPin {
+	identity := configPinIdentityKey(vmPin)
+	if identity == "" {
+		return nil
+	}
+	var keys []string
+	for key, pin := range cfg.DevicePins {
+		host, port, err := net.SplitHostPort(key)
+		if err != nil || host != vmForwardHost || port == "" || !sameConfigPinIdentity(pin, vmPin) {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	cleared := make([]clearedPin, 0, len(keys))
+	for _, key := range keys {
+		cfg.ClearDevicePin(key)
+		cleared = append(cleared, clearedPin{store: clearedConfigPin, key: key, identity: identity})
+	}
+	return cleared
 }
 
 // configPinIdentityKey is the SPKI store key a config pin names, or "" for a

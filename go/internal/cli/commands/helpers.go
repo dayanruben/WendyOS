@@ -910,6 +910,8 @@ func resolveDeviceAddress() (addr string, pinKey string, isDefault bool, err err
 	if _, _, splitErr := net.SplitHostPort(hostname); splitErr != nil {
 		addr = hostPort(hostname, defaultAgentPort)
 	}
+	// A running VM's mTLS forward is dialled, and keyed, as the VM.
+	addr = vmForwardDialAddr(addr)
 	return addr, pinKeyForAddr(addr), isDefault, nil
 }
 
@@ -1245,14 +1247,16 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 		// upload an agent binary, which must never happen against a device whose
 		// identity we are about to reject.
 		//
-		// The dialled endpoint goes with it: when 127.0.0.1:PORT is a running
-		// VM's forward, the VM's forwarded ports may be pinned beside
-		// vm:<name> (see vmEndpointPinKeys). A substituted connection never
-		// reached them.
+		// The dialled endpoint goes with it: a loopback connection also pins
+		// the endpoint that answered it (the mTLS port a reconnect after an
+		// agent update dials), and a running VM's forwarded ports beside
+		// vm:<name> (see endpointPinKeys). A substituted connection reached
+		// none of them.
 		if pinErr := enforceDevicePinAt(pinKey, dialled, conn); pinErr != nil {
 			conn.Close()
 			return nil, pinErr
 		}
+		markTypedVMConnection(conn, pinKey, dialled)
 		if !cfg.suppressProvisioningHint {
 			suggestProvisioning(conn)
 		}
@@ -1348,6 +1352,23 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 		}
 	}
 	return conn, dialled, false, nil
+}
+
+// markTypedVMConnection names the VM behind a direct connection judged under a
+// VM's key — a typed 127.0.0.1 address of a running VM's forward — so the
+// connection is handled as the vm:<name> alias's is: a reconnect after an
+// agent update goes through connectSimulatorAgent (by name, re-aimed at the
+// VM's agent forward and pin-checked as the VM) rather than re-dialling
+// conn.Addr, and the VM-aware steps (userVMForConnection, a managed robot's
+// app config) treat it as that VM. dialled "" (a substituted connection) is
+// never marked; a vm:<name> key never takes one (see usbDirectFallback).
+func markTypedVMConnection(conn *grpcclient.AgentConnection, pinKey, dialled string) {
+	if conn == nil || dialled == "" {
+		return
+	}
+	if name, ok := strings.CutPrefix(pinKey, vmDeviceIDPrefix); ok && name != "" {
+		conn.SimulatorName = name
+	}
 }
 
 // connectFromSelectedDevice converts a SelectedDevice from the picker into a
@@ -2043,6 +2064,12 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string, ex
 	}
 
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
+	// A direct dial of a running VM's mTLS forward — a reconnect's conn.Addr,
+	// or any other caller's — goes to the VM's agent forward under vm:<name>,
+	// never under the endpoint key, whose ladder would also try a port QEMU
+	// does not forward. Front doors apply it first, so their own pin check
+	// uses the same key.
+	plaintextAddr = vmForwardDialAddr(plaintextAddr)
 	originalAddr := plaintextAddr
 	// The pin key is the host the caller was ASKED to reach, captured before
 	// any resolution, cache lookup, or retry can substitute an address for it.
@@ -2907,7 +2934,8 @@ func performAgentUpdate(ctx context.Context, conn *grpcclient.AgentConnection, o
 }
 
 // waitForAgentRestart polls addr with connectWithAutoTLS until the agent answers
-// GetAgentVersion or 60 s elapse. Returns a fresh connection on success. This
+// GetAgentVersion or 60 s elapse, and gives up at once if a different device
+// answers (an identity refusal). Returns a fresh connection on success. This
 // flat 60 s already covers the Mac agent's slower unzip/codesign-verify/relaunch
 // restart (see agentRestartTimeoutFor in device.go for the equivalent OS-aware
 // timeout used by `device update`'s own restart wait), so no OS-specific
@@ -2923,6 +2951,12 @@ func waitForAgentRestart(ctx context.Context, addr string) (*grpcclient.AgentCon
 		}
 		conn, err := connectWithAutoTLS(ctx, addr)
 		if err != nil {
+			// A different device answered. Asking it again until the deadline
+			// would only bury the refusal — and the unpin it names — under
+			// "timed out waiting for agent to restart".
+			if errors.Is(err, errDeviceIdentityRefused) {
+				return nil, err
+			}
 			time.Sleep(time.Second)
 			continue
 		}
@@ -3313,6 +3347,9 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		if _, _, splitErr := net.SplitHostPort(device); splitErr != nil {
 			addr = hostPort(device, defaultAgentPort)
 		}
+		// A running VM's mTLS forward is dialled, and keyed, as the VM — the
+		// same address resolveDeviceAddress gives connectToAgent.
+		addr = vmForwardDialAddr(addr)
 		conn, brokerHit := (*grpcclient.AgentConnection)(nil), false
 		if !cfg.disableSessionBroker {
 			conn, brokerHit = connectPinnedSession(ctx, addr)
@@ -3370,11 +3407,14 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		// Same pin key as connectToAgent's: the host of the address dialled, via
 		// the same pinKeyForAddr the ladder uses. resolveTarget reaches devices
 		// connectToAgent never sees, and an unchecked path is the whole attack.
-		// Same dialled endpoint too, for a VM's forward (see vmEndpointPinKeys).
-		if pinErr := enforceDevicePinAt(pinKeyForAddr(addr), addr, conn); pinErr != nil {
+		// Same dialled endpoint too, for the loopback endpoints a connection
+		// also pins (see endpointPinKeys).
+		pinKey := pinKeyForAddr(addr)
+		if pinErr := enforceDevicePinAt(pinKey, addr, conn); pinErr != nil {
 			conn.Close()
 			return nil, pinErr
 		}
+		markTypedVMConnection(conn, pinKey, addr)
 		if !cfg.suppressUpdateCheck {
 			var updateErr error
 			conn, updateErr = checkAndOfferUpdateFn(ctx, conn)
