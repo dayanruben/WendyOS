@@ -60,7 +60,7 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	}
 	target, err := s.runTarget(req)
 	if err != nil {
-		return errResult(errCodeInvalidArgument, err.Error()), nil
+		return s.runTargetErrResult(req, err), nil
 	}
 	timeout, err := ros2Int(req, "timeout_seconds", 300, 1, 3600)
 	if err != nil {
@@ -125,7 +125,7 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 		"readiness": "not_checked",
 	}
 	if runErr != nil || runCtx.Err() != nil {
-		code := errCodeInternal
+		code := runFailureCode(output)
 		if runCtx.Err() != nil {
 			code = errCodeTimeout
 		}
