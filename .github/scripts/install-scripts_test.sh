@@ -308,9 +308,10 @@ if [ "$(/usr/bin/id -u)" -ne 0 ]; then
 fi
 
 # --- Test P: the same no-TTY installs under POSIX-mode shells ---
-# `curl … | sh` runs the installer with whatever sh is: dash on Debian/Ubuntu
-# (the script then re-execs itself under bash), but bash itself on Fedora/RHEL
-# and macOS, where it runs in POSIX mode. In POSIX mode a failed redirection on
+# `sh cli.sh` (and `curl … | sh`) run the installer with whatever sh is: dash
+# on Debian/Ubuntu, where a script run from a file re-execs itself under bash
+# (piped, it can't — see Test W), but bash itself on Fedora/RHEL and macOS,
+# where it runs in POSIX mode. In POSIX mode a failed redirection on
 # a special builtin (`: </dev/tty`) exits the whole script, so every terminal
 # probe (confirm, can_elevate, the tour check) must survive there. The POSIX
 # case uses the bash running this suite: macOS's /bin/bash 3.2 predates the rule.
@@ -483,5 +484,27 @@ absent "pkgshadow.apt.no_false_success" "$(cat "$OUT")" "Installed successfully!
 contains "pkgshadow.apt.new_version" "$(cat "$OUT")" "wendy version NEW-apt"
 absent "pkgshadow.apt.no_old_version" "$(cat "$OUT")" "2026.01.01-OLD"
 contains "pkgshadow.apt.rm_hint" "$(cat "$OUT")" "rm $FAKE_HOME/.local/bin/wendy"
+
+# --- Test W: piped into dash, as `curl … | sh` runs on Debian/Ubuntu ---
+# Read from a pipe the script can't re-exec itself under bash ($0 is just the
+# shell's name), which used to fail with "cannot execute binary file" (exit
+# 126). It must say to pipe it into bash instead. From a file it still re-execs.
+if command -v dash >/dev/null 2>&1; then
+  for script in "$CLI" "$AGENT"; do
+    name="$(basename "$script")"
+    OUT="$(mktemp)"
+    rc=0; (cd "$(mktemp -d)" && no_tty env PATH="$BASE_PATH" dash -s -- -y <"$script" >"$OUT" 2>&1) || rc=$?
+    check "dash_pipe.${name}.exit" "1" "$rc"
+    contains "dash_pipe.${name}.says_bash" "$(cat "$OUT")" "curl -fsSL https://install.wendy.dev/${name} | bash"
+    check "dash_pipe.${name}.one_line" "1" "$(wc -l < "$OUT" | tr -d ' ')"
+  done
+
+  make_stubs Linux x86_64
+  D="$(mktemp -d)"; setup_net "$D"; serve_cli_release "$D" linux amd64
+  FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"; DEST="$(mktemp -d)"
+  rc=0; SH=dash run_no_tty "$OUT" "$CLI" -y -d "$DEST" || rc=$?
+  check "dash_file.exit" "0" "$rc"
+  check "dash_file.binary" "yes" "$([ -x "$DEST/wendy" ] && echo yes || echo no)"
+fi
 
 exit $fail

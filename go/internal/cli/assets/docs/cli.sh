@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 
 # Re-exec under bash if invoked via sh or zsh (pipefail and [[ ]] require bash).
+# Read from a pipe (`curl … | sh`, where sh is dash on Debian/Ubuntu) there is
+# no file to re-exec — $0 is just the shell's name — so say how to run it.
 if [ -z "${BASH_VERSION:-}" ]; then
-  exec bash "$0" "$@"
+  if [ -f "$0" ]; then
+    exec bash "$0" "$@"
+  fi
+  echo "This installer needs bash: curl -fsSL https://install.wendy.dev/cli.sh | bash" >&2
+  exit 1
 fi
 
 set -euo pipefail
