@@ -39,6 +39,7 @@ type tomlLine struct {
 	trivia     bool     // blank or comment-only line outside any value
 	cont       bool     // continues a multi-line value begun on an earlier line
 	inString   bool     // starts inside a multi-line string
+	comment    int      // src offset of the '#' of a comment ending a value line, or -1
 }
 
 // tomlKeyValue is one key = value line to write; value is already rendered.
@@ -65,14 +66,16 @@ func scanTOMLLines(src []byte) []tomlLine {
 			end += start + 1
 		}
 		text := strings.TrimRight(string(src[start:end]), "\r\n")
-		if start == 0 {
+		textStart := start
+		if start == 0 && strings.HasPrefix(text, "\ufeff") {
 			// A UTF-8 byte order mark is not part of the first line's
 			// content; its bytes are still copied with the line.
-			text = strings.TrimPrefix(text, "\ufeff")
+			text = text[len("\ufeff"):]
+			textStart += len("\ufeff")
 		}
 		trimmed := strings.TrimLeft(text, " \t")
 		clean := !inMLBasic && !inMLLit && depth == 0
-		ln := tomlLine{start: start, end: end, cont: !clean, inString: inMLBasic || inMLLit}
+		ln := tomlLine{start: start, end: end, cont: !clean, inString: inMLBasic || inMLLit, comment: -1}
 		switch {
 		case clean && (trimmed == "" || strings.HasPrefix(trimmed, "#")):
 			ln.trivia = true
@@ -83,7 +86,11 @@ func scanTOMLLines(src []byte) []tomlLine {
 			if clean {
 				ln.table, ln.key = table, parseTOMLKeyPath(trimmed, '=')
 			}
-			inMLBasic, inMLLit, depth = scanTOMLValueLine(text, inMLBasic, inMLLit, depth)
+			var comment int
+			inMLBasic, inMLLit, depth, comment = scanTOMLValueLine(text, inMLBasic, inMLLit, depth)
+			if comment >= 0 {
+				ln.comment = textStart + comment
+			}
 		}
 		lines = append(lines, ln)
 		start = end
@@ -92,8 +99,9 @@ func scanTOMLLines(src []byte) []tomlLine {
 }
 
 // scanTOMLValueLine advances the string/bracket state across one line that is
-// not a table header.
-func scanTOMLValueLine(text string, inMLBasic, inMLLit bool, depth int) (bool, bool, int) {
+// not a table header. It also returns the offset of the '#' that starts a
+// comment on the line, or -1.
+func scanTOMLValueLine(text string, inMLBasic, inMLLit bool, depth int) (bool, bool, int, int) {
 	for i := 0; i < len(text); i++ {
 		switch {
 		case inMLBasic:
@@ -124,7 +132,7 @@ func scanTOMLValueLine(text string, inMLBasic, inMLLit bool, depth int) (bool, b
 			for i++; i < len(text) && text[i] != '\''; i++ {
 			}
 		case text[i] == '#':
-			return inMLBasic, inMLLit, depth
+			return inMLBasic, inMLLit, depth, i
 		case text[i] == '[' || text[i] == '{':
 			depth++
 		case text[i] == ']' || text[i] == '}':
@@ -133,7 +141,7 @@ func scanTOMLValueLine(text string, inMLBasic, inMLLit bool, depth int) (bool, b
 			}
 		}
 	}
-	return inMLBasic, inMLLit, depth
+	return inMLBasic, inMLLit, depth, -1
 }
 
 // tomlExtraQuotes returns how many of the (at most two) bytes that follow a
@@ -251,11 +259,12 @@ func tomlNewline(src []byte) string {
 // When the table has a [header], each key line (with any continuation lines of
 // a multi-line value) is replaced in place, and missing keys are inserted after
 // the last owned key present, or right after the header. Every other line —
-// other keys of the table, comments, sub-tables — is copied unchanged, and
-// comment lines inside a replaced multi-line value are kept right after the
-// new key line, so no comment line is ever deleted. A comment at the end of a
-// replaced key line goes with it. Without a header, the whole table is
-// appended to the end of src.
+// other keys of the table, comments, sub-tables — is copied unchanged. No
+// comment is ever deleted: a comment at the end of a replaced key line stays
+// at the end of the new line, and the comments of a replaced multi-line value
+// follow it, comment lines verbatim and end-of-line comments as comment lines
+// of their own. Without a header, the whole table is appended to the end of
+// src.
 func upsertTOMLTableKeys(src []byte, lines []tomlLine, path []string, kvs []tomlKeyValue) []byte {
 	nl := tomlNewline(src)
 	header := -1
@@ -307,27 +316,51 @@ func upsertTOMLTableKeys(src []byte, lines []tomlLine, path []string, kvs []toml
 		}
 	}
 	var out bytes.Buffer
-	writeKey := func(kv tomlKeyValue) {
+	writeKey := func(kv tomlKeyValue, comment string) {
 		if out.Len() > 0 && !bytes.HasSuffix(out.Bytes(), []byte("\n")) {
 			out.WriteString(nl) // the previous line was the last, unterminated one
 		}
-		out.WriteString(kv.key + " = " + kv.value + nl)
+		out.WriteString(kv.key + " = " + kv.value + comment + nl)
+	}
+	commentText := func(ln tomlLine) string {
+		return strings.TrimRight(string(src[ln.comment:ln.end]), "\r\n")
 	}
 	for i := 0; ; {
 		if i == insertAt {
 			for _, kv := range missing {
-				writeKey(kv)
+				writeKey(kv, "")
 			}
 		}
 		if i >= len(lines) {
 			break
 		}
 		if kv, ok := starts[i]; ok {
-			writeKey(kv)
+			var comment string
+			if ln := lines[i]; ln.comment >= 0 {
+				sep := ln.comment // keep the spacing before the '#'
+				for sep > ln.start && (src[sep-1] == ' ' || src[sep-1] == '\t') {
+					sep--
+				}
+				comment = string(src[sep:ln.comment]) + commentText(ln)
+				if sep == ln.comment {
+					comment = " " + comment
+				}
+			}
+			writeKey(kv, comment)
 			end := spans[kv.key][1]
 			for _, ln := range lines[i+1 : end] {
-				if text := src[ln.start:ln.end]; !ln.inString && bytes.HasPrefix(bytes.TrimLeft(text, " \t"), []byte("#")) {
-					out.Write(text)
+				if ln.comment < 0 {
+					continue
+				}
+				text := src[ln.start:ln.end]
+				indent := text[:len(text)-len(bytes.TrimLeft(text, " \t"))]
+				switch {
+				case !ln.inString && ln.start+len(indent) == ln.comment:
+					out.Write(text) // a comment line: keep it verbatim
+				case ln.inString:
+					out.WriteString(commentText(ln) + nl) // its indentation was string content
+				default:
+					out.WriteString(string(indent) + commentText(ln) + nl)
 				}
 			}
 			i = end

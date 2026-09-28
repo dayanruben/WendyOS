@@ -138,7 +138,7 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 			want: "[mcp_servers.wendy]\n" +
 				"# pinned by me\n" +
 				"env = { HTTPS_PROXY = \"http://proxy.local:3128\" }\n" +
-				wendyCommandLine +
+				"command = \"/opt/wendy/bin/wendy\"  # old\n" +
 				"enabled_tools = [\"run\", \"device_list\"]\n" +
 				"\"args\" = [\"mcp\", \"serve\", \"--old\"]\n" +
 				"tool_timeout_sec = 120\n",
@@ -225,6 +225,46 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 			want: wendyTable +
 				"  # why: see ticket 123\n" +
 				"startup_timeout_sec = 30\n",
+		},
+		{
+			// A comment at the end of a replaced key line stays on the new
+			// line; those on its continuation lines become comment lines.
+			name: "end-of-line comments of a replaced multi-line value are kept",
+			in: "[mcp_servers.wendy]\n" +
+				"command = \"/opt/wendy/bin/wendy\"\n" +
+				"args = [ # why\n" +
+				"  \"stdio\", # ticket 1\n" +
+				"] # closing\n" +
+				"startup_timeout_sec = 30\n",
+			want: "[mcp_servers.wendy]\n" +
+				"command = \"/opt/wendy/bin/wendy\"\n" +
+				"args = [\"mcp\", \"serve\"] # why\n" +
+				"  # ticket 1\n" +
+				"# closing\n" +
+				"startup_timeout_sec = 30\n",
+		},
+		{
+			name: "end-of-line comments are kept with CRLF line endings",
+			in: "[mcp_servers.wendy]\r\n" +
+				"command = \"/opt/wendy/bin/wendy\"\r\n" +
+				"args = [ # why\r\n" +
+				"\t\"stdio\", # t\r\n" +
+				"]\r\n",
+			want: "[mcp_servers.wendy]\r\n" +
+				"command = \"/opt/wendy/bin/wendy\"\r\n" +
+				"args = [\"mcp\", \"serve\"] # why\r\n" +
+				"\t# t\r\n",
+		},
+		{
+			name: "a comment after the end of a replaced multi-line string is kept",
+			in: "[mcp_servers.wendy]\n" +
+				"command = \"\"\"/old/wendy\n" +
+				"\"\"\"  # set by hand\n" +
+				"args = [\"mcp\", \"serve\"]\n",
+			want: "[mcp_servers.wendy]\n" +
+				wendyCommandLine +
+				"# set by hand\n" +
+				wendyArgsLine,
 		},
 		{
 			name: "comment-like lines inside a replaced multi-line string are string content",
@@ -539,28 +579,168 @@ func FuzzUpsertCodexMCPServer(f *testing.F) {
 		"[mcp_servers.wendy]\nargs = [\"\"\"mcp\"\"\"\", \"serve\"]\n# keep me\n",
 		"[mcp_servers.wendy]\nargs = [\n  \"x\",\n  # c\n]\n",
 		"\ufeff[mcp_servers.wendy]\ncommand = \"x\"\n",
+		"[mcp_servers.wendy]\ncommand = \"/opt/wendy/bin/wendy\"\nargs = [ # why\n  \"stdio\", # ticket 1\n] # closing\n",
 	} {
 		f.Add(seed)
 	}
-	f.Fuzz(func(t *testing.T, in string) {
-		out, err := upsertCodexMCPServer([]byte(in), "mcp_servers", "wendy", testWendyBin, testWendyArgs)
-		if err != nil {
+	f.Fuzz(checkUpsertInvariants)
+}
+
+// Structured inputs reach deeper than byte-level mutation: realistic Codex
+// config fragments, optionally behind a BOM (bit 7 of the first selector)
+// and with CRLF line endings (bit 6).
+func FuzzUpsertCodexMCPServer_Structured(f *testing.F) {
+	frags := []string{
+		"[mcp_servers.wendy]\n",
+		"[mcp_servers.wendy.env]\n",
+		"[mcp_servers.other]\n",
+		"[other]\n",
+		"command = \"/old\"\n",
+		"command = \"\"\"\n# in string\n/old\"\"\"\"\n",
+		"command = '''\n# in lit\n/old''''\n",
+		"args = [\n",
+		"]\n",
+		"] # tail\n",
+		"\"mcp\",\n",
+		"\"serve\",\n",
+		"'--device', \"pi\",\n",
+		"# comment A\n",
+		"  # comment B\n",
+		"\"\"\"x\"\"\"\"\",\n",
+		"'''y'''',\n",
+		"\"\"\"\n# not comment\n\"\"\",\n",
+		"args = [\"mcp\", \"serve\", \"--device\", \"x\"]\n",
+		"args = [\"stdio\"] # old\n",
+		"args = \"mcp serve\"\n",
+		"x = 1\n",
+		"\n",
+		"notes = \"\"\"a\"\"\"\"\" # c\n",
+		"args = [ # open\n",
+		"\"stdio\", # item\n",
+		"k = [\n",
+		"\"#\",\n",
+		"'[mcp_servers.wendy]',\n",
+	}
+	f.Add([]byte{0, 4, 7, 10, 13, 11, 8, 22, 1, 21})
+	f.Add([]byte{0, 7, 15, 13, 16, 17, 14, 8, 4})
+	f.Add([]byte{0, 4, 24, 25, 12, 9, 13})
+	f.Add([]byte{0xc0, 4, 19, 1, 21})
+	f.Fuzz(func(t *testing.T, sel []byte) {
+		if len(sel) > 40 {
 			return
 		}
-		have := map[string]int{}
-		for _, l := range strings.Split(string(out), "\n") {
-			have[strings.TrimRight(l, "\r")]++
+		var b strings.Builder
+		for i, s := range sel {
+			if i == 0 && s&0x80 != 0 {
+				b.WriteString("\ufeff")
+			}
+			b.WriteString(frags[int(s&0x3f)%len(frags)])
 		}
-		for _, c := range tomlCommentLines(in) {
-			if have[c]--; have[c] < 0 {
-				t.Fatalf("comment line %q was deleted\n--- in ---\n%q\n--- out ---\n%q", c, in, out)
+		in := b.String()
+		if len(sel) > 0 && sel[0]&0x40 != 0 {
+			in = strings.ReplaceAll(in, "\n", "\r\n")
+		}
+		checkUpsertInvariants(t, in)
+	})
+}
+
+// checkUpsertInvariants asserts what must hold for any input the editor
+// accepts: the output is stable on a re-run, keeps every comment (whole
+// comment lines verbatim, end-of-line comments at the end of some line) and a
+// BOM, and keeps args that already start with "mcp serve".
+func checkUpsertInvariants(t *testing.T, in string) {
+	out, err := upsertCodexMCPServer([]byte(in), "mcp_servers", "wendy", testWendyBin, testWendyArgs)
+	if err != nil {
+		return
+	}
+	outLines := strings.Split(string(out), "\n")
+	have := map[string]int{}
+	for i, l := range outLines {
+		outLines[i] = strings.TrimRight(l, "\r")
+		have[outLines[i]]++
+	}
+	for _, c := range tomlCommentLines(in) {
+		if have[c]--; have[c] < 0 {
+			t.Fatalf("comment line %q was deleted\n--- in ---\n%q\n--- out ---\n%q", c, in, out)
+		}
+	}
+	need := map[string]int{}
+	for _, c := range tomlComments(in) {
+		need[c]++
+	}
+	for c, n := range need {
+		got := 0
+		for _, l := range outLines {
+			if strings.HasSuffix(l, c) {
+				got++
 			}
 		}
-		again, err := upsertCodexMCPServer(out, "mcp_servers", "wendy", testWendyBin, testWendyArgs)
-		if err != nil || string(again) != string(out) {
-			t.Fatalf("accepted output is not stable (err=%v)\n--- in ---\n%q\n--- out ---\n%q\n--- again ---\n%q", err, in, out, again)
+		if got < n {
+			t.Fatalf("comment %q was deleted\n--- in ---\n%q\n--- out ---\n%q", c, in, out)
 		}
-	})
+	}
+	if strings.HasPrefix(in, "\ufeff") && !strings.HasPrefix(string(out), "\ufeff") {
+		t.Fatalf("BOM lost\n--- in ---\n%q\n--- out ---\n%q", in, out)
+	}
+	var before, after map[string]any
+	if _, err := toml.Decode(in, &before); err == nil {
+		if _, err := toml.Decode(string(out), &after); err != nil {
+			t.Fatalf("accepted output does not decode: %v", err)
+		}
+		be, _ := tomlEntry(before, "mcp_servers", "wendy")
+		ae, _ := tomlEntry(after, "mcp_servers", "wendy")
+		if be != nil && mcpArgsStartWith(be["args"], testWendyArgs) {
+			b, _ := canonicalTOML(map[string]any{"v": be["args"]})
+			a, _ := canonicalTOML(map[string]any{"v": ae["args"]})
+			if a != b {
+				t.Fatalf("args starting with mcp serve were changed\n--- in ---\n%q\n--- out ---\n%q", in, out)
+			}
+		}
+	}
+	again, err := upsertCodexMCPServer(out, "mcp_servers", "wendy", testWendyBin, testWendyArgs)
+	if err != nil || string(again) != string(out) {
+		t.Fatalf("accepted output is not stable (err=%v)\n--- in ---\n%q\n--- out ---\n%q\n--- again ---\n%q", err, in, out, again)
+	}
+}
+
+// tomlComments returns every comment in src, from its '#' to the end of the
+// line, found without the editor's scanner: a '#' starts a comment when
+// inserting a character right after it leaves the decoded document unchanged
+// (inside a string or key, the insertion would change it). Inputs with many
+// '#' are skipped to keep fuzzing fast.
+func tomlComments(src string) []string {
+	if strings.Count(src, "#") > 40 {
+		return nil
+	}
+	orig, ok := decodeCanonical(src)
+	if !ok {
+		return nil
+	}
+	var comments []string
+	for p := 0; p < len(src); p++ {
+		if src[p] != '#' {
+			continue
+		}
+		if c, ok := decodeCanonical(src[:p+1] + "x" + src[p+1:]); !ok || c != orig {
+			continue
+		}
+		end := strings.IndexByte(src[p:], '\n')
+		if end < 0 {
+			end = len(src) - p
+		}
+		comments = append(comments, strings.TrimRight(src[p:p+end], "\r"))
+	}
+	return comments
+}
+
+// decodeCanonical decodes s and renders it canonically for comparison.
+func decodeCanonical(s string) (string, bool) {
+	var doc map[string]any
+	if _, err := toml.Decode(s, &doc); err != nil {
+		return "", false
+	}
+	c, err := canonicalTOML(doc)
+	return c, err == nil
 }
 
 // tomlCommentLines returns the comment-only lines of src, found without the
@@ -568,15 +748,7 @@ func FuzzUpsertCodexMCPServer(f *testing.F) {
 // leaves the decoded document unchanged (inside a multi-line string, the
 // change would alter the string).
 func tomlCommentLines(src string) []string {
-	decode := func(s string) (string, bool) {
-		var doc map[string]any
-		if _, err := toml.Decode(s, &doc); err != nil {
-			return "", false
-		}
-		c, err := canonicalTOML(doc)
-		return c, err == nil
-	}
-	orig, ok := decode(src)
+	orig, ok := decodeCanonical(src)
 	if !ok {
 		return nil
 	}
@@ -588,7 +760,7 @@ func tomlCommentLines(src string) []string {
 			continue
 		}
 		changed := strings.Join(lines[:i], "") + text + "x" + l[len(text):] + strings.Join(lines[i+1:], "")
-		if c, ok := decode(changed); ok && c == orig {
+		if c, ok := decodeCanonical(changed); ok && c == orig {
 			comments = append(comments, text)
 		}
 	}
