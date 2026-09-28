@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -317,5 +318,38 @@ func TestRunAlwaysDetaches(t *testing.T) {
 		} else if !slices.Contains(got, "--detach") {
 			t.Fatalf("args %v: CLI not detached: %v", tc.args, got)
 		}
+	}
+}
+
+// device_list reports cloud devices by name, but the spawned CLI resolves an
+// explicit device directly (no cloud fallback). The schema says so, and a
+// failed bare name points the agent at cloud_connect.
+func TestRunPointsCloudDeviceNamesAtCloudConnect(t *testing.T) {
+	desc := startedProtocolServer(t).ListTools()["run"].Tool.InputSchema.Properties["device"].(map[string]any)["description"].(string)
+	for _, want := range []string{"host:port", "vm:NAME", "cloud://", "cloud_connect"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("device description %q does not mention %s", desc, want)
+		}
+	}
+	project := runProject(t)
+	for device, hint := range map[string]bool{"hopeful-glider": true, "robot.local:50051": false, "vm:test": false, "cloud://c:443/org/1/asset/2": false} {
+		s := New(&config.Config{}, nil)
+		s.runCommandFn = func(context.Context, []string, commandTarget, int) (string, bool, error) {
+			return "✗ name resolver error: produced zero addresses", false, errors.New("exit status 1")
+		}
+		r, _ := s.handleRun(context.Background(), callToolReq("run", map[string]any{"project_path": project, "device": device}))
+		next, _ := structuredMap(t, r)["suggested_next_step"].(string)
+		if got := strings.Contains(next, fmt.Sprintf("cloud_connect(device_name=%q)", device)); got != hint {
+			t.Errorf("device %q: cloud_connect hint = %v, want %v (%q)", device, got, hint, next)
+		}
+	}
+	// A credential failure is not a resolution problem.
+	s := New(&config.Config{}, nil)
+	s.runCommandFn = func(context.Context, []string, commandTarget, int) (string, bool, error) {
+		return "✗ not logged in; run 'wendy auth login' first", false, errors.New("exit status 1")
+	}
+	r, _ := s.handleRun(context.Background(), callToolReq("run", map[string]any{"project_path": project, "device": "hopeful-glider"}))
+	if next, _ := structuredMap(t, r)["suggested_next_step"].(string); next != "" {
+		t.Errorf("auth failure got a cloud_connect hint: %s", next)
 	}
 }

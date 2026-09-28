@@ -152,6 +152,9 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 		if output == "" && runErr != nil {
 			result["output"] = runErr.Error()
 		}
+		if next := runFailureNextStep(target, code); next != "" {
+			result["suggested_next_step"] = next
+		}
 		r := okResult(result)
 		r.IsError = true
 		return r, nil

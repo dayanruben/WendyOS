@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // runNoCloudFallbackEnv tells the spawned `wendy run` not to answer a failed
@@ -64,4 +65,16 @@ func runTargetIdentity(target commandTarget) string {
 		return target.Selector
 	}
 	return target.Device
+}
+
+// runFailureNextStep points a failed explicit bare device name at
+// cloud_connect. device_list reports cloud devices by name, but the spawned
+// CLI resolves an explicit device only directly (it never falls back to the
+// cloud), so a cloud name fails there with a resolution error.
+func runFailureNextStep(target commandTarget, code errorCode) string {
+	device := target.Device
+	if target.Transport != "selector" || code != errCodeInternal || strings.Contains(device, ":") {
+		return ""
+	}
+	return fmt.Sprintf("If the error above is a connection or name-resolution failure and %q is a cloud device (a device_list row with source \"cloud\"), call cloud_connect(device_name=%q), then run again without device. For a LAN device, pass its host:port address from device_list.", device, device)
 }
