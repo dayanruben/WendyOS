@@ -430,4 +430,58 @@ contains "tty.pkg.installed" "$(cat "$SUDO_LOG")" "apt-get install -y wendy"
 absent "tty.pkg.no_nonint_probe" "$(cat "$SUDO_LOG")" "-n true"
 absent "tty.pkg.no_standalone" "$out" "standalone"
 
+# --- Test V: a package-manager install shadowed by an older `wendy` earlier on PATH ---
+# The no-TTY fallback above leaves a standalone ~/.local/bin/wendy behind, and
+# on Ubuntu ~/.local/bin precedes /usr/bin. A later brew/apt install used to
+# print "Installed successfully!" with that OLD binary's version.
+old_local_wendy() { # old_local_wendy HOME: an unmanaged old binary in HOME/.local/bin
+  mkdir -p "$1/.local/bin"
+  printf '#!/bin/sh\necho "wendy version 2026.01.01-OLD"\n' > "$1/.local/bin/wendy"; chmod +x "$1/.local/bin/wendy"
+}
+
+# Homebrew: `brew --prefix`/bin/wendy is what was installed.
+make_stubs Darwin arm64
+PFX="$(mktemp -d)"
+cat > "$STUB/brew" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  help) exit 1;;
+  --prefix) echo "$PFX";;
+  install) mkdir -p "$PFX/bin"; printf '#!/bin/sh\necho "wendy version NEW-brew"\n' > "$PFX/bin/wendy"; chmod +x "$PFX/bin/wendy";;
+esac
+exit 0
+EOF
+chmod +x "$STUB/brew"
+D="$(mktemp -d)"; setup_net "$D"; FAKE_HOME="$(mktemp -d)"; old_local_wendy "$FAKE_HOME"; OUT="$(mktemp)"
+rc=0; no_tty env PATH="$FAKE_HOME/.local/bin:$PFX/bin:$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" bash "$CLI" -y </dev/null >"$OUT" 2>&1 || rc=$?
+check "pkgshadow.brew.exit" "0" "$rc"
+absent "pkgshadow.brew.no_false_success" "$(cat "$OUT")" "Installed successfully!"
+contains "pkgshadow.brew.new_version" "$(cat "$OUT")" "wendy version NEW-brew"
+absent "pkgshadow.brew.no_old_version" "$(cat "$OUT")" "2026.01.01-OLD"
+contains "pkgshadow.brew.names_old" "$(cat "$OUT")" "on your PATH is $FAKE_HOME/.local/bin/wendy"
+contains "pkgshadow.brew.rm_hint" "$(cat "$OUT")" "rm $FAKE_HOME/.local/bin/wendy"
+
+# Same brew install, nothing shadowing it: a plain success with its version.
+D="$(mktemp -d)"; setup_net "$D"; FAKE_HOME="$(mktemp -d)"; OUT="$(mktemp)"
+rc=0; no_tty env PATH="$PFX/bin:$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" bash "$CLI" -y </dev/null >"$OUT" 2>&1 || rc=$?
+check "pkgshadow.brew_clean.exit" "0" "$rc"
+contains "pkgshadow.brew_clean.success" "$(cat "$OUT")" "Installed successfully!"
+contains "pkgshadow.brew_clean.version" "$(cat "$OUT")" "wendy version NEW-brew"
+
+# APT (passwordless sudo): `dpkg -L wendy` says where the package put it.
+make_stubs Linux x86_64
+sudo_that_works
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/apt-get"; chmod +x "$STUB/apt-get"
+PKGBIN="$(mktemp -d)/usr/bin"; mkdir -p "$PKGBIN"
+printf '#!/bin/sh\necho "wendy version NEW-apt"\n' > "$PKGBIN/wendy"; chmod +x "$PKGBIN/wendy"
+printf '#!/bin/sh\n[ "$1" = "-L" ] && [ "$2" = "wendy" ] && printf "/.\\n%s\\n%s/wendy\\n" "%s" "%s"\n' "$PKGBIN" "$PKGBIN" "$PKGBIN" "$PKGBIN" > "$STUB/dpkg"; chmod +x "$STUB/dpkg"
+D="$(mktemp -d)"; setup_net "$D"; echo "fake key" > "$D/repo-signing-key.gpg"
+FAKE_HOME="$(mktemp -d)"; old_local_wendy "$FAKE_HOME"; OUT="$(mktemp)"
+rc=0; no_tty env PATH="$FAKE_HOME/.local/bin:$PKGBIN:$STUB:$BIN:$BASE_PATH" HOME="$FAKE_HOME" bash "$CLI" </dev/null >"$OUT" 2>&1 || rc=$?
+check "pkgshadow.apt.exit" "0" "$rc"
+absent "pkgshadow.apt.no_false_success" "$(cat "$OUT")" "Installed successfully!"
+contains "pkgshadow.apt.new_version" "$(cat "$OUT")" "wendy version NEW-apt"
+absent "pkgshadow.apt.no_old_version" "$(cat "$OUT")" "2026.01.01-OLD"
+contains "pkgshadow.apt.rm_hint" "$(cat "$OUT")" "rm $FAKE_HOME/.local/bin/wendy"
+
 exit $fail

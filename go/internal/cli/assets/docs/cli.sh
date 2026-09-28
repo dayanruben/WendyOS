@@ -14,7 +14,8 @@ HOMEBREW_TAP="wendylabsinc/tap"
 HOMEBREW_FORMULA="wendylabsinc/tap/wendy"
 YES=false
 INSTALL_DIR_EXPLICIT=false
-INSTALLED_BIN="" # set by install_binary: the standalone binary this run installed
+INSTALLED_BIN=""  # the binary this run installed, when known (see Verify)
+INSTALLED_BY_PKG=false # true when a package manager installed it
 
 usage() {
   cat <<EOF
@@ -239,6 +240,26 @@ install_binary() {
   INSTALLED_BIN="${INSTALL_DIR}/${BINARY_NAME}"
 }
 
+# package_bin MANAGER prints where MANAGER (brew, apt, rpm, pacman) put the
+# wendy binary it just installed, or nothing if it can't tell.
+package_bin() {
+  local p=""
+  case "$1" in
+    brew) p="$(brew --prefix 2>/dev/null || true)"; [[ -n "$p" ]] && p="${p}/bin/${BINARY_NAME}" ;;
+    apt) p="$(dpkg -L "$BINARY_NAME" 2>/dev/null | grep "/bin/${BINARY_NAME}\$" | head -1 || true)" ;;
+    rpm) p="$(rpm -ql "$BINARY_NAME" 2>/dev/null | grep "/bin/${BINARY_NAME}\$" | head -1 || true)" ;;
+    pacman) p="$(pacman -Qlq "$BINARY_NAME" 2>/dev/null | grep "/bin/${BINARY_NAME}\$" | head -1 || true)" ;;
+  esac
+  if [[ -n "$p" && -x "$p" ]]; then echo "$p"; fi
+}
+
+# package_installed MANAGER records the binary MANAGER just installed, so the
+# summary reports that one rather than whichever wendy is first on PATH.
+package_installed() {
+  INSTALLED_BIN="$(package_bin "$1")"
+  INSTALLED_BY_PKG=true
+}
+
 # package_remove_hint FILE prints the command that removes FILE when a package
 # manager installed it, or nothing.
 package_remove_hint() {
@@ -312,6 +333,7 @@ if [[ "$OS" == "darwin" ]]; then
     trust_homebrew_tap "$HOMEBREW_TAP"
     trust_homebrew_formula "$HOMEBREW_FORMULA"
     brew install "$HOMEBREW_FORMULA"
+    package_installed brew
   else
     resolve_and_set_version
     ARTIFACT="wendy-cli-darwin-${ARCH}-${VERSION}.tar.gz"
@@ -354,6 +376,7 @@ elif [[ "$OS" == "linux" ]]; then
       | $SUDO tee /etc/apt/sources.list.d/wendy.list >/dev/null
     $SUDO apt-get update
     $SUDO apt-get install -y wendy
+    package_installed apt
 
   elif pkg_manager dnf; then
     echo "DNF detected. Will add the Wendy repository and install wendy."
@@ -369,6 +392,7 @@ gpgcheck=0
 REPO
     $SUDO dnf makecache
     $SUDO dnf install -y wendy
+    package_installed rpm
 
   elif pkg_manager yum; then
     echo "YUM detected. Will add the Wendy repository and install wendy."
@@ -384,6 +408,7 @@ gpgcheck=0
 REPO
     $SUDO yum makecache
     $SUDO yum install -y wendy
+    package_installed rpm
 
   elif pkg_manager pacman; then
     echo "Pacman detected. Will install wendy from the AUR."
@@ -416,6 +441,7 @@ REPO
       cd "$TMPDIR_AUR/wendy"
       $AS_USER makepkg -si --noconfirm
     fi
+    package_installed pacman
 
   else
     if [[ "$PKG_OK" != true ]]; then
@@ -468,8 +494,10 @@ fi
 # --- Verify ---
 echo ""
 if [[ -n "$INSTALLED_BIN" ]]; then
-  # A standalone install: report the binary just installed, and say so when
-  # another `wendy` earlier on PATH (an older install) would run instead.
+  # Report the binary this run installed, and say so when another `wendy`
+  # earlier on PATH (an older install, e.g. a standalone ~/.local/bin/wendy
+  # left by a no-terminal install) would run instead.
+  INSTALLED_DIR="$(dirname "$INSTALLED_BIN")"
   ON_PATH="$(command -v "$BINARY_NAME" 2>/dev/null || true)"
   if [[ -n "$ON_PATH" && "$ON_PATH" -ef "$INSTALLED_BIN" ]]; then
     echo "Installed successfully!"
@@ -482,10 +510,16 @@ if [[ -n "$INSTALLED_BIN" ]]; then
       REMOVE_HINT="$(package_remove_hint "$ON_PATH" || true)"
       if [[ -n "$REMOVE_HINT" ]]; then
         echo "  A package manager installed it; to remove it: ${REMOVE_HINT}"
+      else
+        echo "  To remove it: rm ${ON_PATH}"
       fi
-      echo "Put the new one first on your PATH: export PATH=\"${INSTALL_DIR}:\$PATH\""
+      # A package manager's bin dir is shared with other tools; don't suggest
+      # moving it ahead of everything else.
+      if [[ "$INSTALLED_BY_PKG" != true ]]; then
+        echo "Or put the new one first on your PATH: export PATH=\"${INSTALLED_DIR}:\$PATH\""
+      fi
     else
-      echo "Add it to your PATH: export PATH=\"${INSTALL_DIR}:\$PATH\""
+      echo "Add it to your PATH: export PATH=\"${INSTALLED_DIR}:\$PATH\""
     fi
   fi
 elif command -v "$BINARY_NAME" &>/dev/null; then
