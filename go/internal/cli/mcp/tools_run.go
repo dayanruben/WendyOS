@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -118,6 +119,9 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	}
 	tok := progressToken(req)
 	reportProgress(ctx, tok, 0, 0, "building and deploying to "+target.Device)
+	if tok != nil {
+		runCtx = withRunProgress(runCtx, newRunProgress(func(progress float64, message string) { reportProgress(ctx, tok, progress, 0, message) }))
+	}
 	output, truncated, runErr := runner(runCtx, args, target, maxBytes)
 	s.refreshContainerMCPTools()
 	result := map[string]any{
@@ -186,7 +190,11 @@ func executeRunCommand(ctx context.Context, args []string, target commandTarget,
 	// Bound pipe cleanup if a descendant build process outlives the CLI.
 	cmd.WaitDelay = 2 * time.Second
 	tail := &runTail{limit: limit}
-	cmd.Stdout, cmd.Stderr = tail, tail
+	var out io.Writer = tail
+	if progress := runProgressFrom(ctx); progress != nil {
+		out = io.MultiWriter(tail, progress)
+	}
+	cmd.Stdout, cmd.Stderr = out, out
 	err = cmd.Run()
 	data := tail.data
 	for len(data) > 0 && !utf8.RuneStart(data[0]) {
