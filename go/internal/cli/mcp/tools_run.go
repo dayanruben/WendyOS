@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -130,12 +131,14 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	}
 	if runErr != nil || runCtx.Err() != nil {
 		code := runFailureCode(output)
-		if runCtx.Err() != nil {
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 			code = errCodeTimeout
+		} else if runCtx.Err() != nil {
+			code = errCodeCancelled
 		}
 		result["error_code"] = string(code)
 		result["status"] = "failed"
-		result["message"] = "Deployment did not complete. Inspect the output and device state before retrying; a timed-out command may already have created or started the container."
+		result["message"] = "Deployment did not complete. Inspect the output and device state before retrying; a timed-out or cancelled command may already have created or started the container."
 		if output == "" && runErr != nil {
 			result["output"] = runErr.Error()
 		}
@@ -183,7 +186,11 @@ func executeRunCommand(ctx context.Context, args []string, target commandTarget,
 	if err != nil {
 		return "", false, err
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	cmd := exec.Command(bin, args...)
+	configureRunProcess(cmd)
 	if target.Selector != "" && target.Transport == "cloud" {
 		cmd.Env = runEnvironment(os.Environ(), target)
 	}
@@ -195,7 +202,19 @@ func executeRunCommand(ctx context.Context, args []string, target commandTarget,
 		out = io.MultiWriter(tail, progress)
 	}
 	cmd.Stdout, cmd.Stderr = out, out
-	err = cmd.Run()
+	if err = cmd.Start(); err != nil {
+		return "", false, err
+	}
+	release := stopRunOnCancel(ctx, cmd)
+	err = cmd.Wait()
+	release()
+	if ctx.Err() != nil {
+		// Reap build descendants (docker, buildx, swift) the CLI left behind.
+		_ = signalRunProcess(cmd, len(runStopGrace))
+	} else if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		// The CLI succeeded; a descendant merely kept the output pipe open.
+		err = nil
+	}
 	data := tail.data
 	for len(data) > 0 && !utf8.RuneStart(data[0]) {
 		data = data[1:]

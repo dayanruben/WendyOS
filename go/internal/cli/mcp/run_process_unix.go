@@ -1,0 +1,33 @@
+//go:build !windows
+
+package mcp
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"syscall"
+)
+
+// runStopSignals are the escalating signals for stopRunOnCancel's stages.
+var runStopSignals = [...]syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL}
+
+// configureRunProcess starts the CLI in its own process group so a stop
+// signal also reaches the docker, buildx or swift processes it spawns.
+func configureRunProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+// signalRunProcess sends stage's stop signal (the last one for any later
+// stage) to the run's process group.
+func signalRunProcess(cmd *exec.Cmd, stage int) error {
+	if cmd.Process == nil {
+		return os.ErrProcessDone
+	}
+	signal := runStopSignals[min(stage, len(runStopSignals)-1)]
+	if err := syscall.Kill(-cmd.Process.Pid, signal); errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	} else {
+		return err
+	}
+}

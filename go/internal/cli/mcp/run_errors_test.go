@@ -186,3 +186,23 @@ func TestRunRefusesInsideDeviceContainer(t *testing.T) {
 		t.Fatalf("got %v %v", r, err)
 	}
 }
+
+// A cancelled request (client cancellation or MCP shutdown) is reported
+// distinctly from a timeout.
+func TestRunCancellationIsNotReportedAsTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := New(&config.Config{}, nil)
+	s.runCommandFn = func(runCtx context.Context, _ []string, _ commandTarget, _ int) (string, bool, error) {
+		cancel()
+		<-runCtx.Done()
+		return "#3 building", false, runCtx.Err()
+	}
+	r, err := s.handleRun(ctx, callToolReq("run", map[string]any{"project_path": runProject(t), "device": "vm:test"}))
+	if err != nil || !r.IsError {
+		t.Fatalf("want tool error: %v %v", r, err)
+	}
+	if out := structuredMap(t, r); out["error_code"] != string(errCodeCancelled) || out["output"] != "#3 building" {
+		t.Fatalf("got %v", out)
+	}
+}

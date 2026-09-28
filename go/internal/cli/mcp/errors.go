@@ -19,6 +19,7 @@ const (
 	errCodeMultipleSessions  errorCode = "MULTIPLE_SESSIONS"
 	errCodeNotFound          errorCode = "NOT_FOUND"
 	errCodeTimeout           errorCode = "TIMEOUT"
+	errCodeCancelled         errorCode = "CANCELLED"
 	errCodeUnsupported       errorCode = "UNSUPPORTED"
 	errCodeInternal          errorCode = "INTERNAL"
 )
