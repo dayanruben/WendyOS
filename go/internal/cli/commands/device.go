@@ -1344,6 +1344,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	var minSeverity int32
 	var level string
 	var tail int32
+	var noFollow bool
 
 	cmd := &cobra.Command{
 		Use:   "logs [app]",
@@ -1352,6 +1353,8 @@ func newDeviceLogsCmd() *cobra.Command {
 			"Pass an app name (positionally or with --app) to see only that app's\n" +
 			"logs. Without a filter, logs from every container and the agent itself\n" +
 			"are streamed, which can include agent lifecycle messages.\n\n" +
+			"Pass --no-follow (usually with --tail N) to print the recent logs the\n" +
+			"device replays and exit instead of following new output.\n\n" +
 			"To inspect the device kernel ring buffer (dmesg), use `wendy device os-logs`.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1401,7 +1404,11 @@ func newDeviceLogsCmd() *cobra.Command {
 			if tail > 0 {
 				req.LastN = &tail
 			}
-			stream, err := conn.TelemetryService.StreamLogs(ctx, req)
+			// Cancelled when RunE returns so a --no-follow exit also stops the
+			// background receive (see consumeLogStream).
+			streamCtx, cancelStream := context.WithCancel(ctx)
+			defer cancelStream()
+			stream, err := conn.TelemetryService.StreamLogs(streamCtx, req)
 			if err != nil {
 				return fmt.Errorf("starting log stream: %w", err)
 			}
@@ -1419,28 +1426,22 @@ func newDeviceLogsCmd() *cobra.Command {
 				case serviceName != "":
 					target = serviceName
 				}
-				if tail > 0 {
+				if noFollow {
+					cliLogln("Fetching recent logs from %s...", target)
+				} else if tail > 0 {
 					cliLogln("Streaming logs from %s — replaying up to %d recent, then live. Press Ctrl-C to stop.", target, tail)
 				} else {
 					cliLogln("Streaming logs from %s. Waiting for new logs — press Ctrl-C to stop.", target)
 				}
 			}
 
-			liveSeparatorPrinted := tail == 0
+			liveSeparatorPrinted := tail == 0 || noFollow
 			seenHistory := false
 
-			for {
-				resp, err := stream.Recv()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					return fmt.Errorf("receiving logs: %w", err)
-				}
-
+			return consumeLogStream(streamCtx, stream, !noFollow, func(resp *agentpb.StreamLogsResponse) {
 				logs := resp.GetLogs()
 				if logs == nil {
-					continue
+					return
 				}
 
 				// Track whether any history was received.
@@ -1468,9 +1469,7 @@ func newDeviceLogsCmd() *cobra.Command {
 						}
 					}
 				}
-			}
-
-			return nil
+			})
 		},
 	}
 
@@ -1479,6 +1478,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
 	cmd.Flags().Int32Var(&tail, "tail", 0, "Request the last N stored log batches matching the filters before following new output (default 0)")
+	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Print the logs the device replays (see --tail) and exit instead of following new output")
 
 	return cmd
 }
