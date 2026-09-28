@@ -12,6 +12,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"time"
+)
+
+// Seams for the Windows-only branches below, which the Linux and macOS test
+// runners cannot otherwise reach.
+var (
+	renameFn = os.Rename
+	hostOS   = runtime.GOOS
 )
 
 // Write atomically writes data to path: write to a temp file in the same
@@ -52,10 +61,17 @@ func Write(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	tmpClosed = true
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := replaceFile(tmpName, path); err != nil {
 		return err
 	}
 	removeOnFail = false
+
+	// Windows cannot fsync a directory: os.Open hands back a read-only handle
+	// and FlushFileBuffers needs write access, so the sync below would fail
+	// every write. NTFS journals the rename's metadata on its own.
+	if hostOS == "windows" {
+		return nil
+	}
 
 	// fsync the directory so the rename is durable on power loss. Open/close
 	// failures are reported too: skipping the fsync silently would drop the
@@ -73,4 +89,20 @@ func Write(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("close dir after fsync: %w", closeErr)
 	}
 	return nil
+}
+
+// replaceFile renames tmp over path. On Windows the rename is refused while
+// another process has path open without delete sharing — a wendy CLI reading
+// config.json holds it for microseconds — so retry briefly there instead of
+// failing the write.
+func replaceFile(tmp, path string) error {
+	err := renameFn(tmp, path)
+	if err == nil || hostOS != "windows" {
+		return err
+	}
+	for attempt := 1; attempt <= 5 && err != nil; attempt++ {
+		time.Sleep(time.Duration(attempt) * 10 * time.Millisecond)
+		err = renameFn(tmp, path)
+	}
+	return err
 }
