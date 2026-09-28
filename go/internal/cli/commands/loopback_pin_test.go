@@ -12,6 +12,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -50,21 +51,24 @@ func TestPinKeyDerivationKeysLoopbackPerEndpoint(t *testing.T) {
 		"[::1]:50151":              "[::1]:50151",
 		"127.0.0.2:50151":          "127.0.0.2:50151",
 		"[::ffff:127.0.0.1]:50151": "[::ffff:127.0.0.1]:50151",
-		"127.0.0.1.:50151":         "vm:dev",
-		"127.0.0.1:50051":          "127.0.0.1:50051",
-		"localhost:50051":          "localhost:50051",
-		"LOCALHOST.:50051":         "localhost:50051",
-		"[::1]:50051":              "[::1]:50051",
-		"127.0.0.1":                "127.0.0.1",
-		"vm:dev":                   "vm:dev",
-		"sim":                      "vm:sim",
+		// Only the literal text 127.0.0.1 is the forward: a trailing dot is
+		// looked up as a DNS name, and padding is not an address at all.
+		"127.0.0.1.:50151": "127.0.0.1:50151",
+		" 127.0.0.1:50151": "127.0.0.1:50151",
+		"127.0.0.1:50051":  "127.0.0.1:50051",
+		"localhost:50051":  "localhost:50051",
+		"LOCALHOST.:50051": "localhost:50051",
+		"[::1]:50051":      "[::1]:50051",
+		"127.0.0.1":        "127.0.0.1",
+		"vm:dev":           "vm:dev",
+		"sim":              "vm:sim",
 	} {
 		if got := pinKeyForAddr(addr); got != want {
 			t.Errorf("pinKeyForAddr(%q) = %q, want %q", addr, got, want)
 		}
 	}
 	calls = 0
-	for _, addr := range []string{"localhost:50151", "[::1]:50151", "127.0.0.2:50151"} {
+	for _, addr := range []string{"localhost:50151", "[::1]:50151", "127.0.0.2:50151", "127.0.0.1.:50151", " 127.0.0.1:50151"} {
 		pinKeyForAddr(addr)
 	}
 	if calls != 0 {
@@ -266,8 +270,35 @@ func TestEnforceDeviceIdentityAdoptsAnOrgOnlyLegacyLoopbackPin(t *testing.T) {
 	if pins["127.0.0.1:50051"].AssetID != "42" {
 		t.Fatalf("endpoint pin = %+v, want the observed asset adopted", pins["127.0.0.1:50051"])
 	}
-	if _, ok := pins["127.0.0.1"]; ok {
-		t.Error("the adopted legacy pin was left behind")
+	// An org-only pin names no device, so this device cannot show it is the
+	// one the pin protects elsewhere: it keeps governing every other port.
+	if pin, ok := pins["127.0.0.1"]; !ok || pin.OrgID != 7 || pin.AssetID != "" {
+		t.Errorf("the org-only legacy pin = %+v (present %v), want it kept as it was", pin, ok)
+	}
+}
+
+// R19, the reviewer's sequence: adopting an org-only legacy pin at one port
+// must not leave another port unpinned.
+func TestAdoptingAnOrgOnlyLegacyPinKeepsOtherPortsPinned(t *testing.T) {
+	stubNonInteractive(t)
+	setPinCache(t)
+	stubLoopbackVMs(t, nil)
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": {OrgID: 7, CloudGRPC: "grpc.a.sh:443"}})
+	if err := enforceDeviceIdentity("127.0.0.1:50061", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "43"}); err != nil {
+		t.Fatal(err)
+	}
+	pins := readPins()
+	if pins["127.0.0.1:50061"].AssetID != "43" {
+		t.Fatalf("pins = %+v, want 127.0.0.1:50061 pinned to asset 43", pins)
+	}
+	if _, ok := pins["127.0.0.1"]; !ok {
+		t.Fatal("the org-only bare pin was cleared by a device at another port")
+	}
+	if target := newDialTarget(pinKeyForAddr("127.0.0.1:50051"), "127.0.0.1:50051"); !target.pinned() {
+		t.Fatalf("127.0.0.1:50051 lost its pin, so the plaintext rung is open: %+v", target)
+	}
+	if err := enforceDeviceIdentity("127.0.0.1:50051", observedDeviceIdentity{}); !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("an unprovisioned answer at 127.0.0.1:50051: got %v, want a refusal", err)
 	}
 }
 
@@ -326,10 +357,14 @@ func TestSetDefaultOnBareLoopbackClearsTheEndpointPin(t *testing.T) {
 		return nil, nil, errors.New("device offline in test")
 	}
 	// A literal IP skips name resolution, so the connect reaches the
-	// provisioned-mTLS hint's LAN browse; keep that off the network too.
+	// provisioned-mTLS hint's LAN browse and, once the dial fails, the
+	// USB-direct fallback; keep both off the network too.
 	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	origUSB := usbDirectCandidatesFn
+	usbDirectCandidatesFn = func() []discovery.USBDirectCandidate { return nil }
 	t.Cleanup(func() {
 		osLookupHostFn, lanBrowseFn, dialAgentLadderFn, discoverLANDevices = origLookup, origBrowse, origLadder, origDiscover
+		usbDirectCandidatesFn = origUSB
 	})
 
 	cmd := newDeviceSetDefaultCmd()
@@ -522,7 +557,8 @@ func TestVMEndpointPinRetiresOnlySameIdentityBarePins(t *testing.T) {
 func TestVMEndpointKeyIsOnlyTheIPv4Forward(t *testing.T) {
 	for _, tc := range []struct{ key, addr, want string }{
 		{"vm:dev", "127.0.0.1:50051", "127.0.0.1:50051"},
-		{"vm:dev", "127.0.0.1.:50051", "127.0.0.1:50051"},
+		{"vm:dev", "127.0.0.1.:50051", ""},
+		{"vm:dev", " 127.0.0.1:50051", ""},
 		{"vm:dev", "localhost:50051", ""},
 		{"vm:dev", "[::1]:50051", ""},
 		{"vm:dev", "127.0.0.2:50051", ""},
@@ -629,5 +665,157 @@ func TestEveryVMFrontDoorPinsItsEndpoint(t *testing.T) {
 				t.Fatalf("pins = %+v, want vm:dev and 127.0.0.1:50151 both naming asset 42", pins)
 			}
 		})
+	}
+}
+
+// R17, OPEN 1: an mTLS VM whose certificate names no asset still pins its
+// endpoint when nothing else governs it, so an unprovisioned answer there is
+// refused once the VM stops — as the bare 127.0.0.1 key refused it.
+func TestAnAssetlessVMStillPinsItsEndpoint(t *testing.T) {
+	stubNonInteractive(t)
+	setPinCache(t)
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{})
+	const addr = "127.0.0.1:50051"
+	stubLoopbackVMs(t, map[int]string{50051: "dev"})
+	if err := connectAsVMAt(addr, observedDeviceIdentity{mTLS: true, orgID: 7}); err != nil {
+		t.Fatal(err)
+	}
+	pins := readPins()
+	if pins["vm:dev"].OrgID != 7 || pins[addr].OrgID != 7 {
+		t.Fatalf("pins = %+v, want vm:dev and %s both pinned to org 7", pins, addr)
+	}
+	stubLoopbackVMs(t, nil) // the VM stops
+	if target := newDialTarget(pinKeyForAddr(addr), addr); !target.pinned() {
+		t.Fatalf("the stopped VM's endpoint is unpinned: %+v", target)
+	}
+	if err := enforceDeviceIdentity(pinKeyForAddr(addr), observedDeviceIdentity{}); !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("an unprovisioned answer on the stopped VM's endpoint: got %v, want a refusal", err)
+	}
+}
+
+// R17, OPEN 2: an identity only ever verified under vm:<name> must not become
+// the endpoint's own pin where a legacy pin governs that endpoint — it would
+// outrank the pin the old CLI applied there.
+func TestVMEndpointIsNotFiledWhereALegacyPinGoverns(t *testing.T) {
+	stubNonInteractive(t)
+	setPinCache(t)
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA})
+	const addr = "127.0.0.1:50061"
+	stubLoopbackVMs(t, map[int]string{50061: "dev2"})
+	if err := connectAsVMAt(addr, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}); err != nil {
+		t.Fatalf("vm:dev2 is judged under its own key: %v", err)
+	}
+	pins := readPins()
+	if _, ok := pins[addr]; ok {
+		t.Fatalf("pins = %+v: the endpoint got its own pin over the legacy pin that governs it", pins)
+	}
+	if pins["vm:dev2"].AssetID != "99" || pins["127.0.0.1"].AssetID != "42" {
+		t.Fatalf("pins = %+v, want vm:dev2=99 and the bare 42 kept", pins)
+	}
+	stubLoopbackVMs(t, nil) // the VM stops
+	target := newDialTarget(pinKeyForAddr(addr), addr)
+	if target.PinnedKey != "127.0.0.1" || target.Expected == nil || target.Expected.EntityID != "42" {
+		t.Fatalf("stopped VM's endpoint is not governed by the bare pin: %+v", target)
+	}
+	if err := enforceDeviceIdentity(pinKeyForAddr(addr), observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}); !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("asset 99 at %s under the bare 42 pin: got %v, want a refusal", addr, err)
+	}
+}
+
+// R18, OPEN 3: a VM is never on USB. A typed address keyed as vm:<name> whose
+// ladder fails must not fall back to a USB gadget that merely reports that
+// name — it would be judged under a key that consults no loopback pin.
+func TestNoUSBFallbackForAVMKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		obs  observedDeviceIdentity
+	}{
+		{"same-org gadget", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}},
+		{"unprovisioned gadget", observedDeviceIdentity{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreDeviceGlobals(t)
+			stubNonInteractive(t)
+			setPinCache(t)
+			stubLoopbackVMs(t, map[int]string{50051: "dev"})
+			legacy := map[string]config.DevicePin{"127.0.0.1": pinA}
+			readPins := writePinTestConfig(t, legacy)
+
+			origLadder, origObserve, origDiscover := dialAgentLadderFn, observeDeviceIdentityFn, discoverLANDevices
+			origCands, origPreDial, origConnect := usbDirectCandidatesFn, usbDirectPreDialFn, usbDirectConnectFn
+			dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+				return nil, nil, errors.New("VM agent still booting")
+			}
+			observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity { return tc.obs }
+			discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+			usbDirectCandidatesFn = func() []discovery.USBDirectCandidate {
+				t.Error("the USB-direct fallback was consulted for a vm: key")
+				return []discovery.USBDirectCandidate{{Interface: "gadget", Zone: "gadget"}}
+			}
+			usbDirectPreDialFn = func(context.Context, discovery.USBDirectCandidate) bool { return true }
+			usbDirectConnectFn = func(context.Context, string) (*grpcclient.AgentConnection, error) {
+				return &grpcclient.AgentConnection{Host: "fe80::5741:1", AgentService: &fakeAgentVersionClient{
+					resp: &agentpb.GetAgentVersionResponse{Hostname: "vm:dev"}}}, nil
+			}
+			t.Cleanup(func() {
+				dialAgentLadderFn, observeDeviceIdentityFn, discoverLANDevices = origLadder, origObserve, origDiscover
+				usbDirectCandidatesFn, usbDirectPreDialFn, usbDirectConnectFn = origCands, origPreDial, origConnect
+			})
+
+			deviceFlag = "127.0.0.1:50051"
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			conn, err := connectToAgent(ctx, SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive(), DisableSessionBroker())
+			if conn != nil {
+				conn.Close()
+				t.Fatal("a USB gadget reporting vm:dev was accepted for 127.0.0.1:50051")
+			}
+			if err == nil {
+				t.Fatal("no error for an unreachable VM")
+			}
+			if pins := readPins(); !reflect.DeepEqual(pins, legacy) {
+				t.Fatalf("pins = %+v, want only the legacy pin", pins)
+			}
+		})
+	}
+}
+
+// R18: a connection the USB-direct fallback substituted is not the dialled
+// endpoint, so it can never be recorded as one.
+func TestUSBFallbackConnectionIsNotTheDialledEndpoint(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	setPinCache(t)
+	writePinTestConfig(t, map[string]config.DevicePin{})
+	origLookup, origBrowse, origLadder, origDiscover := osLookupHostFn, lanBrowseFn, dialAgentLadderFn, discoverLANDevices
+	origCands, origPreDial, origConnect := usbDirectCandidatesFn, usbDirectPreDialFn, usbDirectConnectFn
+	osLookupHostFn = func(context.Context, string) ([]string, error) { return nil, errors.New("no resolver in test") }
+	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+		return nil, nil, errors.New("device offline in test")
+	}
+	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	usbDirectCandidatesFn = func() []discovery.USBDirectCandidate {
+		return []discovery.USBDirectCandidate{{Interface: "gadget", Zone: "gadget"}}
+	}
+	usbDirectPreDialFn = func(context.Context, discovery.USBDirectCandidate) bool { return true }
+	usbDirectConnectFn = func(context.Context, string) (*grpcclient.AgentConnection, error) {
+		return &grpcclient.AgentConnection{Host: "fe80::5741:1", AgentService: &fakeAgentVersionClient{
+			resp: &agentpb.GetAgentVersionResponse{Hostname: "wendy-thor.local"}}}, nil
+	}
+	t.Cleanup(func() {
+		osLookupHostFn, lanBrowseFn, dialAgentLadderFn, discoverLANDevices = origLookup, origBrowse, origLadder, origDiscover
+		usbDirectCandidatesFn, usbDirectPreDialFn, usbDirectConnectFn = origCands, origPreDial, origConnect
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, dialled, finished, err := connectToAgentDirect(ctx, resolveConfig{nonInteractive: true}, "wendy-thor", "wendy-thor.local:50051", false)
+	if err != nil || finished || conn == nil {
+		t.Fatalf("connectToAgentDirect = (%v, finished %v, %v), want the USB connection", conn, finished, err)
+	}
+	conn.Close()
+	if dialled != "" {
+		t.Fatalf("a USB-fallback connection reports dialled endpoint %q, want none", dialled)
 	}
 }

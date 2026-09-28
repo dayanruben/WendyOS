@@ -218,11 +218,16 @@ func decideFallbackAction(updateErr error, changed bool, refusal error) fallback
 // clear.
 //
 // Only a certificate that names its asset identifies one device, so only such
-// a connection reorganises pins: it moves a passing bare-host pin onto
-// hostname, retires bare loopback pins naming the same device, and pins a
-// VM's forwarded endpoint (endpoint, from vmEndpointPinKey) beside its
-// vm:<name> key. An asset-less match proves an organisation, which every
-// same-org device shares, so it is accepted and changes nothing else.
+// a connection moves or retires pins: a passing bare-host pin is filed under
+// hostname, and the bare pin is then cleared if it names a device (an
+// org-only pin names none, so this device cannot show it is the one the pin
+// protects on other ports — it stays); and a bare pin of the host reached that
+// names the same device is retired. An asset-less match proves an
+// organisation, which every same-org device shares, so it moves nothing.
+//
+// Last, any accepted mTLS judgement under a VM's vm:<name> key pins the VM's
+// forwarded endpoint (endpoint, from vmEndpointPinKey) where nothing else
+// governs it — see recordVMEndpointPin.
 func applyDeviceIdentity(cfg *config.Config, hostname, endpoint string, obs observedDeviceIdentity) (changed bool, refusal error) {
 	pinKey := identityPinKey(cfg, hostname)
 	if !obs.mTLS {
@@ -265,15 +270,16 @@ func applyDeviceIdentity(cfg *config.Config, hostname, endpoint string, obs obse
 				obs.orgID, displayCloud(cloud), assetSuffix(obs.assetID)),
 		})
 	}
-	if !identified {
-		return changed, nil
+	if identified {
+		if legacy, ok := cfg.DevicePinFor(pinKey); ok && pinKey != hostname && configPinIdentityKey(legacy) != "" {
+			cfg.ClearDevicePin(pinKey)
+		}
+		if retireLegacyLoopbackPins(cfg, hostname) {
+			changed = true
+		}
 	}
-	if pinKey != hostname {
-		cfg.ClearDevicePin(pinKey)
-	}
-	if retireLegacyLoopbackPins(cfg, hostname) {
-		changed = true
-	}
+	// After the retire step, so an endpoint whose bare pin was just retired
+	// counts as ungoverned.
 	if recordVMEndpointPin(cfg, hostname, endpoint) {
 		changed = true
 	}
@@ -282,11 +288,15 @@ func applyDeviceIdentity(cfg *config.Config, hostname, endpoint string, obs obse
 
 // recordVMEndpointPin pins endpoint — a VM's forwarded 127.0.0.1:PORT — to the
 // identity just accepted under the VM's vm:<name> key, so the endpoint stays
-// pinned while the VM is stopped (see vmEndpointPinKey). It only ever adds: an
-// endpoint with a pin of its own keeps it, whatever device that names, and
-// nothing here can refuse — the vm:<name> judgement governs this connection.
-// The legacy bare-host pin an endpoint may still fall back to is not its own,
-// so it does not stop the endpoint being pinned.
+// pinned while the VM is stopped (see vmEndpointPinKey), for a certificate
+// with or without an asset id.
+//
+// It is purely additive: it pins an endpoint only when nothing governs it —
+// neither a pin of its own nor a legacy bare-host pin it falls back to
+// (identityPinKey) — that is, only where the endpoint would otherwise be a
+// first use. The identity was verified under vm:<name>, not at the endpoint,
+// so it must never outrank a pin that already applies there; and nothing here
+// can refuse — the vm:<name> judgement governs this connection.
 func recordVMEndpointPin(cfg *config.Config, key, endpoint string) bool {
 	if endpoint == "" || !strings.HasPrefix(key, vmDeviceIDPrefix) {
 		return false
@@ -295,7 +305,7 @@ func recordVMEndpointPin(cfg *config.Config, key, endpoint string) bool {
 	if !ok {
 		return false
 	}
-	if _, own := cfg.DevicePinFor(endpoint); own {
+	if _, governed := cfg.DevicePinFor(identityPinKey(cfg, endpoint)); governed {
 		return false
 	}
 	cfg.SetDevicePin(endpoint, pin.OrgID, pin.CloudGRPC, pin.AssetID, pin.Principal)

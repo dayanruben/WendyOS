@@ -248,15 +248,16 @@ Prefer `--device vm:<name>` (or save it with `wendy device set-default
 vm:<name>`) over a literal loopback address. The alias follows the VM's current
 port and keeps enrolled-device trust pins separate for each VM. A literal
 `127.0.0.1:<port>` that is a running VM's forwarded port is pinned under that
-VM's `vm:<name>` key too, and the address itself is pinned to the same
-identity, so it stays protected while the VM is stopped. Every other loopback
-address — another port, `localhost`, `::1` — is pinned per address and port
-(`localhost:50051`), so two VMs or port forwards never share a pin. A pin saved
-under plain `127.0.0.1` or `localhost` by an older CLI keeps applying to every
-port of that address until the device it names connects through it again, when
-it moves to that address and port. If you replace an enrolled VM
-intentionally, clear only its pin with `wendy device unpin vm:<name>` before
-connecting to the replacement.
+VM's `vm:<name>` key too. Unless an older pin already covers the address, the
+address itself is pinned to the same identity, so it stays protected while
+the VM is stopped. Every other loopback address — another port, `localhost`,
+`::1` — is pinned per address and port (`localhost:50051`), so two VMs or port
+forwards never share a pin. A pin saved under plain `127.0.0.1` or `localhost`
+by an older CLI keeps applying to every port of that address. Once the device
+it names connects through that address again, the pin moves to that address
+and port; a pin that names only an organization, not a device, stays where it
+is. If you replace an enrolled VM intentionally, clear only its pin with
+`wendy device unpin vm:<name>` before connecting to the replacement.
 
 The agent's port is often already in use on a development machine. Move the
 host side of the forward:

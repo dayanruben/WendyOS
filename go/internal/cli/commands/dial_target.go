@@ -180,20 +180,22 @@ func governingPin(pinKey string) (config.DevicePin, string, bool) {
 // Loopback is the one exception, because there the host names no device:
 // every local VM and every port forward answers on it. A loopback address is
 // keyed per endpoint, by its normalised host and port (localhost:50051,
-// 127.0.0.1:50051), with one refinement: 127.0.0.1 — the one address QEMU's
-// user-mode forward binds — on the forwarded port of a running local VM is
-// keyed as that VM, vm:<name>, the key its alias already uses. No other
-// loopback spelling is: localhost can resolve to ::1 first, and ::1,
-// 127.0.0.x and IPv4-mapped addresses are other sockets, which something
-// other than the VM can answer on.
+// 127.0.0.1:50051), with one refinement: the literal text 127.0.0.1 — the one
+// address QEMU's user-mode forward binds — on the forwarded port of a running
+// local VM is keyed as that VM, vm:<name>, the key its alias already uses.
+// Nothing else is: localhost can resolve to ::1 first; ::1, 127.0.0.x and
+// IPv4-mapped addresses are other sockets, which something other than the VM
+// can answer on; and "127.0.0.1." or a padded " 127.0.0.1" is not dialled as
+// that address at all (the resolver looks it up as a name).
 //
 // No loopback key is ever empty, so the plaintext-downgrade guard stays armed;
 // pins older CLIs filed under the bare host are not orphaned (pinCandidateKeys
 // still consults them for a port-qualified key, and enforceDeviceIdentity
 // moves one onto its endpoint once the device it names is the one answering);
-// and a VM's endpoint is pinned beside its vm:<name> key (see
-// vmEndpointPinKey), so it stays pinned while the VM is stopped. Non-loopback
-// hosts are unchanged: one device per host, whatever the port.
+// and a VM's endpoint is pinned beside its vm:<name> key where nothing else
+// governs it (see vmEndpointPinKey), so it stays pinned while the VM is
+// stopped. Non-loopback hosts are unchanged: one device per host, whatever
+// the port.
 func pinKeyForAddr(addr string) string {
 	// SplitHostPort accepts non-numeric service names, so vm:dev would
 	// otherwise become just "vm" when set-default/unpin derives its key.
@@ -207,15 +209,17 @@ func pinKeyForAddr(addr string) string {
 	if !isLoopbackHost(host) {
 		return host
 	}
-	host = normalizeLoopbackHost(host)
 	p, convErr := strconv.Atoi(port)
-	if convErr != nil {
-		return net.JoinHostPort(host, port)
-	}
-	if host == vmForwardHost {
+	// Compared as typed, before normalisation: only the literal address
+	// reaches the forward.
+	if convErr == nil && host == vmForwardHost {
 		if name, ok := loopbackVMNameFn(p); ok {
 			return vmDeviceIDPrefix + name
 		}
+	}
+	host = normalizeLoopbackHost(host)
+	if convErr != nil {
+		return net.JoinHostPort(host, port)
 	}
 	return net.JoinHostPort(host, strconv.Itoa(p))
 }
@@ -289,21 +293,23 @@ func legacyLoopbackPinKey(key string) string {
 	return normalizeLoopbackHost(host)
 }
 
-// vmEndpointPinKey is the endpoint a connection judged under pinKey must also
-// be pinned under: the 127.0.0.1:PORT it was dialled at, when pinKey is a
-// VM's vm:<name> key. "" for any other key, any other loopback spelling
-// (QEMU's forward answers on vmForwardHost only), and an unknown dial address.
+// vmEndpointPinKey is the endpoint a connection judged under pinKey may also
+// be pinned under (see recordVMEndpointPin): the 127.0.0.1:PORT it was
+// dialled at, when pinKey is a VM's vm:<name> key. "" for any other key, any
+// address other than the literal vmForwardHost (QEMU's forward answers there
+// only), and an unknown dial address — including a connection some fallback
+// substituted for the dial.
 //
 // 127.0.0.1:PORT is keyed as the VM only while the VM runs (pinKeyForAddr).
-// Once it stops, the same address is keyed per endpoint, and without a pin of
-// its own there anything that binds the port would be a first use — where the
-// bare "127.0.0.1" key older CLIs used would have refused it.
+// Once it stops, the same address is keyed per endpoint, and without a pin
+// there anything that binds the port would be a first use — where the bare
+// "127.0.0.1" key older CLIs used would have refused it.
 func vmEndpointPinKey(pinKey, dialAddr string) string {
 	if !strings.HasPrefix(pinKey, vmDeviceIDPrefix) {
 		return ""
 	}
 	host, port, err := net.SplitHostPort(dialAddr)
-	if err != nil || normalizeLoopbackHost(host) != vmForwardHost {
+	if err != nil || host != vmForwardHost {
 		return ""
 	}
 	p, err := strconv.Atoi(port)

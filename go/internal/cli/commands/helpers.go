@@ -1211,6 +1211,9 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 		// and a broker only one of them can use leaves every command on the
 		// other paying the full post-quantum handshake per invocation.
 		conn, brokerHit := (*grpcclient.AgentConnection)(nil), false
+		// dialled is the endpoint conn actually reached: addr, unless a
+		// fallback substituted another connection ("" then).
+		dialled := addr
 		if !cfg.disableSessionBroker {
 			conn, brokerHit = connectPinnedSession(ctx, addr)
 		}
@@ -1223,7 +1226,7 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 			}
 		} else {
 			var finished bool
-			conn, finished, err = connectToAgentDirect(ctx, cfg, hostname, addr, isDefault)
+			conn, dialled, finished, err = connectToAgentDirect(ctx, cfg, hostname, addr, isDefault)
 			if err != nil || finished {
 				// finished: default-device recovery resolved the target through
 				// the picker, whose path enforces its own pin and must not be
@@ -1242,9 +1245,10 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 		// upload an agent binary, which must never happen against a device whose
 		// identity we are about to reject.
 		//
-		// addr goes with it: when 127.0.0.1:PORT is a running VM's forward, its
-		// endpoint is pinned beside vm:<name> (see vmEndpointPinKey).
-		if pinErr := enforceDevicePinAt(pinKey, addr, conn); pinErr != nil {
+		// The dialled endpoint goes with it: when 127.0.0.1:PORT is a running
+		// VM's forward, it may be pinned beside vm:<name> (see
+		// vmEndpointPinKey). A substituted connection never reached it.
+		if pinErr := enforceDevicePinAt(pinKey, dialled, conn); pinErr != nil {
 			conn.Close()
 			return nil, pinErr
 		}
@@ -1282,14 +1286,17 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 // reports that the result is final: default-device recovery resolved the
 // target through the picker (whose path enforces its own pin), so the caller
 // must return it untouched instead of running the named-device pin, update,
-// and broker-seed steps.
-func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr string, isDefault bool) (_ *grpcclient.AgentConnection, finished bool, _ error) {
+// and broker-seed steps. dialled is the endpoint the connection reached —
+// addr for the ladder and its retries, "" when the USB-direct fallback
+// substituted a connection that never touched addr.
+func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr string, isDefault bool) (_ *grpcclient.AgentConnection, dialled string, finished bool, _ error) {
 	startedAt := time.Now()
+	dialled = addr
 	provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
 	conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 	if connErr != nil {
 		if errors.Is(connErr, ErrUserCancelled) {
-			return nil, false, connErr
+			return nil, "", false, connErr
 		}
 		// A cross-org mismatch is a credentials problem, not a reachability
 		// one: surface it directly rather than routing it into clock-skew
@@ -1297,7 +1304,7 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 		// resolve "you have no credentials for this device's org").
 		var orgMismatch orgMismatchDeviceError
 		if errors.As(connErr, &orgMismatch) {
-			return nil, false, connErr
+			return nil, "", false, connErr
 		}
 		retriedConn, connErr, retried := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
 			return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
@@ -1316,29 +1323,30 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 			})
 			if !ok {
-				return nil, false, connErr
+				return nil, "", false, connErr
 			}
 			conn = refreshedConn
 		} else if usbConn, ok := usbDirectFallback(ctx, hostname); ok {
 			// The stored address is unreachable but the same device (verified
-			// by hostname) is on USB — use it directly.
-			conn = usbConn
+			// by hostname) is on USB — use it directly. It is not the endpoint
+			// that was asked for, so it is never recorded as one.
+			conn, dialled = usbConn, ""
 		} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 			// Default device is unreachable — offer interactive recovery.
 			hostname, _, _ := net.SplitHostPort(addr)
 			target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
 			if recErr != nil {
-				return nil, true, recErr
+				return nil, "", true, recErr
 			}
 			picked, pickErr := connectFromSelectedDevice(target, cfg)
-			return picked, true, pickErr
+			return picked, "", true, pickErr
 		} else if isDefault {
-			return nil, false, defaultDeviceUnreachableError(hostname, connErr)
+			return nil, "", false, defaultDeviceUnreachableError(hostname, connErr)
 		} else {
-			return nil, false, connErr
+			return nil, "", false, connErr
 		}
 	}
-	return conn, false, nil
+	return conn, dialled, false, nil
 }
 
 // connectFromSelectedDevice converts a SelectedDevice from the picker into a
