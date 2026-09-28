@@ -100,11 +100,11 @@ func TestAddMCPToJSONConfig_KeepsUserKeysInWendyEntry(t *testing.T) {
 			name: "user keys kept, stale args replaced",
 			in: `{"numStartups": 3, "mcpServers": {
   "github": {"command": "npx"},
-  "wendy": {"type": "stdio", "command": "/old/wendy", "args": ["serve", "--old"], "env": {"WENDY_DEVICE": "pi.local"}}
+  "wendy": {"type": "stdio", "command": "/old/wendy", "args": ["serve", "--old"], "env": {"HTTPS_PROXY": "http://proxy.local:3128"}}
 }}`,
 			want: `{"numStartups": 3, "mcpServers": {
   "github": {"command": "npx"},
-  "wendy": {"type": "stdio", "command": "/new/wendy", "args": ["mcp", "serve"], "env": {"WENDY_DEVICE": "pi.local"}}
+  "wendy": {"type": "stdio", "command": "/new/wendy", "args": ["mcp", "serve"], "env": {"HTTPS_PROXY": "http://proxy.local:3128"}}
 }}`,
 		},
 		{
@@ -136,6 +136,43 @@ func TestAddMCPToJSONConfig_KeepsUserKeysInWendyEntry(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := json.Unmarshal([]byte(tt.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("got:\n%s", data)
+			}
+		})
+	}
+}
+
+// A wendy entry that is not an object (a hand-edit gone wrong) is replaced by
+// a working one instead of failing setup or keeping the broken value.
+func TestAddMCPToJSONConfig_NonObjectWendyEntry(t *testing.T) {
+	for name, wendy := range map[string]string{
+		"string": `"broken"`,
+		"array":  `["mcp", "serve"]`,
+		"null":   `null`,
+		"number": `42`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "mcp.json")
+			in := `{"mcpServers": {"github": {"command": "npx"}, "wendy": ` + wendy + `}}`
+			if err := os.WriteFile(path, []byte(in), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			entry := map[string]any{"type": "stdio", "command": "/new/wendy", "args": []string{"mcp", "serve"}}
+			if err := addMCPToJSONConfig(path, "mcpServers", "wendy", entry); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want map[string]any
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(`{"mcpServers": {"github": {"command": "npx"}, "wendy": {"type": "stdio", "command": "/new/wendy", "args": ["mcp", "serve"]}}}`), &want); err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(got, want) {

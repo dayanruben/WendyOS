@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -17,6 +19,20 @@ const (
 	usbSetupUnsupported usbSetupMode = iota // not Linux: nothing to configure
 	usbSetupDirect                          // already root: run in-process
 	usbSetupSudo                            // re-exec the hidden __usb-setup helper under sudo
+)
+
+// Seams for tests, so every path of `wendy device usb-setup` runs on any OS
+// without root or sudo: the platform, the effective uid, the in-process setup
+// and the sudo re-exec.
+var (
+	usbSetupGOOS      = runtime.GOOS
+	usbSetupEUID      = os.Geteuid
+	usbSetupRunDirect = runUSBSetup
+	usbSetupRunSudo   = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		sudo := exec.CommandContext(ctx, "sudo", args...)
+		sudo.Stdin, sudo.Stdout, sudo.Stderr = stdin, stdout, stderr
+		return sudo.Run()
+	}
 )
 
 // usbSetupModeFor decides how usb-setup runs for the given platform and
@@ -68,11 +84,11 @@ func newDeviceUSBSetupCmd() *cobra.Command {
 		PersistentPreRunE:  func(*cobra.Command, []string) error { return nil },
 		PersistentPostRunE: func(*cobra.Command, []string) error { return nil },
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			switch usbSetupModeFor(runtime.GOOS, os.Geteuid()) {
+			switch usbSetupModeFor(usbSetupGOOS, usbSetupEUID()) {
 			case usbSetupUnsupported:
-				return fmt.Errorf("`wendy device usb-setup` is only needed on Linux; on %s the USB-C link needs no host setup — run `wendy discover`", runtime.GOOS)
+				return fmt.Errorf("`wendy device usb-setup` is only needed on Linux; on %s the USB-C link needs no host setup — run `wendy discover`", usbSetupGOOS)
 			case usbSetupDirect:
-				return runUSBSetup(cmd.Context(), iface, cmd.OutOrStdout())
+				return usbSetupRunDirect(cmd.Context(), iface, cmd.OutOrStdout())
 			}
 			self, err := os.Executable()
 			if err != nil {
@@ -82,9 +98,7 @@ func newDeviceUSBSetupCmd() *cobra.Command {
 			if interactive {
 				fmt.Fprintln(cmd.ErrOrStderr(), "You may be prompted for your password (sudo is required).")
 			}
-			sudo := exec.CommandContext(cmd.Context(), "sudo", usbSetupSudoArgs(self, iface, interactive)...)
-			sudo.Stdin, sudo.Stdout, sudo.Stderr = os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr()
-			if err := sudo.Run(); err != nil {
+			if err := usbSetupRunSudo(cmd.Context(), usbSetupSudoArgs(self, iface, interactive), os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
 				if !interactive {
 					// sudo -n fails the same way whether it needed a password or
 					// the helper itself failed; both messages are printed above.

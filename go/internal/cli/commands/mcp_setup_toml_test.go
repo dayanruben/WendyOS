@@ -92,7 +92,7 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 				"model = \"gpt-5-mini\"\n",
 		},
 		{
-			// A WENDY_DEVICE or timeout the user set must survive every
+			// An env var or timeout the user set must survive every
 			// setup run and the silent refresh after each CLI upgrade.
 			name: "user keys and sub-tables of the wendy entry are kept; mcp serve args kept as written",
 			in: "[mcp_servers.wendy]\n" +
@@ -105,7 +105,7 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 				"startup_timeout_sec = 30\n" +
 				"\n" +
 				"[mcp_servers.wendy.env]\n" +
-				"WENDY_DEVICE = \"my-pi.local\"\n" +
+				"HTTPS_PROXY = \"http://proxy.local:3128\"\n" +
 				"command = \"an env var, not the server command\"\n" +
 				"\n" +
 				"[mcp_servers.other]\n" +
@@ -120,7 +120,7 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 				"startup_timeout_sec = 30\n" +
 				"\n" +
 				"[mcp_servers.wendy.env]\n" +
-				"WENDY_DEVICE = \"my-pi.local\"\n" +
+				"HTTPS_PROXY = \"http://proxy.local:3128\"\n" +
 				"command = \"an env var, not the server command\"\n" +
 				"\n" +
 				"[mcp_servers.other]\n" +
@@ -130,14 +130,14 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 			name: "user keys around the owned keys stay in place",
 			in: "[mcp_servers.wendy]\n" +
 				"# pinned by me\n" +
-				"env = { WENDY_DEVICE = \"pi.local\" }\n" +
+				"env = { HTTPS_PROXY = \"http://proxy.local:3128\" }\n" +
 				"command = \"/old/wendy\"  # old\n" +
 				"enabled_tools = [\"run\", \"device_list\"]\n" +
 				"\"args\" = [\"mcp\", \"serve\", \"--old\"]\n" +
 				"tool_timeout_sec = 120\n",
 			want: "[mcp_servers.wendy]\n" +
 				"# pinned by me\n" +
-				"env = { WENDY_DEVICE = \"pi.local\" }\n" +
+				"env = { HTTPS_PROXY = \"http://proxy.local:3128\" }\n" +
 				wendyCommandLine +
 				"enabled_tools = [\"run\", \"device_list\"]\n" +
 				"\"args\" = [\"mcp\", \"serve\", \"--old\"]\n" +
@@ -270,12 +270,12 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 				"startup_timeout_sec = 30\n" +
 				"\n" +
 				"[mcp_servers.wendy.env]\n" +
-				"WENDY_DEVICE = \"pi.local\"\n",
+				"HTTPS_PROXY = \"http://proxy.local:3128\"\n",
 			want: wendyTable +
 				"startup_timeout_sec = 30\n" +
 				"\n" +
 				"[mcp_servers.wendy.env]\n" +
-				"WENDY_DEVICE = \"pi.local\"\n",
+				"HTTPS_PROXY = \"http://proxy.local:3128\"\n",
 		},
 		{
 			name: "header without a trailing newline",
@@ -285,9 +285,9 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 		{
 			name: "only a wendy sub-table: the table is appended and the sub-table kept",
 			in: "[mcp_servers.wendy.env]\n" +
-				"WENDY_DEVICE = \"pi.local\"\n",
+				"HTTPS_PROXY = \"http://proxy.local:3128\"\n",
 			want: "[mcp_servers.wendy.env]\n" +
-				"WENDY_DEVICE = \"pi.local\"\n" +
+				"HTTPS_PROXY = \"http://proxy.local:3128\"\n" +
 				"\n" +
 				wendyTable,
 		},
@@ -296,11 +296,11 @@ func TestUpsertCodexMCPServer_Golden(t *testing.T) {
 			in: "[mcp_servers.wendy]\n" +
 				"args = ['mcp', 'serve']   # mine\n" +
 				"command = '/opt/wendy/bin/wendy'\n" +
-				"env = { WENDY_DEVICE = \"pi.local\" }\n",
+				"env = { HTTPS_PROXY = \"http://proxy.local:3128\" }\n",
 			want: "[mcp_servers.wendy]\n" +
 				"args = ['mcp', 'serve']   # mine\n" +
 				"command = '/opt/wendy/bin/wendy'\n" +
-				"env = { WENDY_DEVICE = \"pi.local\" }\n",
+				"env = { HTTPS_PROXY = \"http://proxy.local:3128\" }\n",
 		},
 		{
 			name: "brackets inside strings and multi-line values are not headers",

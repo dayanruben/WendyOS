@@ -1,14 +1,17 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // The hidden "__usb-setup" subcommand is the privileged half of the USB-C
@@ -137,30 +140,67 @@ func TestDocumentedUSBSetupCommandsResolve(t *testing.T) {
 
 // `sudo wendy device usb-setup` runs as root. It must not run the root
 // command's init (config, analytics, MCP refresh), which would write
-// root-owned files into a $HOME that sudo preserved.
+// root-owned files into a $HOME that sudo preserved. Every path runs here on
+// any OS: the platform, uid, in-process setup and sudo re-exec are injected.
 func TestDeviceUSBSetupCmd_SkipsRootInit(t *testing.T) {
-	root := NewRootCmd()
-	cmd, _, err := root.Find([]string{"device", "usb-setup"})
+	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmd.PersistentPreRunE == nil || cmd.PersistentPostRunE == nil {
-		t.Fatal("usb-setup must override the root command's persistent hooks")
+	var direct, sudo [][]string
+	oldGOOS, oldEUID, oldDirect, oldSudo, oldInteractive := usbSetupGOOS, usbSetupEUID, usbSetupRunDirect, usbSetupRunSudo, isInteractiveTerminalFn
+	t.Cleanup(func() {
+		usbSetupGOOS, usbSetupEUID, usbSetupRunDirect, usbSetupRunSudo, isInteractiveTerminalFn = oldGOOS, oldEUID, oldDirect, oldSudo, oldInteractive
+	})
+	usbSetupRunDirect = func(_ context.Context, iface string, _ io.Writer) error {
+		direct = append(direct, []string{iface})
+		return nil
 	}
-	if runtime.GOOS == "linux" {
-		t.Skip("running usb-setup on Linux would invoke sudo")
+	sudoErr := error(nil)
+	usbSetupRunSudo = func(_ context.Context, args []string, _ io.Reader, _, _ io.Writer) error {
+		sudo = append(sudo, args)
+		return sudoErr
 	}
-	cfgDir := t.TempDir()
-	t.Setenv("WENDY_CONFIG_DIR", cfgDir)
-	t.Setenv("HOME", t.TempDir())
-	root.SetArgs([]string{"device", "usb-setup"})
-	root.SetOut(io.Discard)
-	root.SetErr(io.Discard)
-	err = root.Execute()
-	if err == nil || !strings.Contains(err.Error(), "only needed on Linux") {
-		t.Fatalf("err = %v, want the Linux-only error", err)
+	isInteractiveTerminalFn = func() bool { return false }
+
+	run := func(goos string, euid int) error {
+		t.Helper()
+		usbSetupGOOS, usbSetupEUID = goos, func() int { return euid }
+		cfgDir := t.TempDir()
+		t.Setenv("WENDY_CONFIG_DIR", cfgDir)
+		t.Setenv("HOME", t.TempDir())
+		root := NewRootCmd()
+		root.PersistentPreRunE = func(*cobra.Command, []string) error {
+			t.Error("the root command's init ran")
+			return nil
+		}
+		root.PersistentPostRunE = func(*cobra.Command, []string) error {
+			t.Error("the root command's post-run ran")
+			return nil
+		}
+		root.SetArgs([]string{"device", "usb-setup", "--iface", "usb0"})
+		root.SetOut(io.Discard)
+		root.SetErr(io.Discard)
+		err := root.Execute()
+		if entries, _ := os.ReadDir(cfgDir); len(entries) != 0 {
+			t.Errorf("%s/euid %d wrote %v to the config dir", goos, euid, entries)
+		}
+		return err
 	}
-	if entries, _ := os.ReadDir(cfgDir); len(entries) != 0 {
-		t.Fatalf("root init ran and wrote %v", entries)
+
+	if err := run("darwin", 501); err == nil || !strings.Contains(err.Error(), "only needed on Linux") {
+		t.Errorf("darwin: err = %v, want the Linux-only error", err)
+	}
+	if err := run("linux", 0); err != nil || len(direct) != 1 || direct[0][0] != "usb0" || len(sudo) != 0 {
+		t.Errorf("linux as root: err = %v, direct = %v, sudo = %v; want one in-process run for usb0", err, direct, sudo)
+	}
+	direct = nil
+	if err := run("linux", 1000); err != nil || len(direct) != 0 || len(sudo) != 1 ||
+		strings.Join(sudo[0], " ") != "-n "+self+" __usb-setup --iface usb0" {
+		t.Errorf("linux as user: err = %v, direct = %v, sudo = %v; want one `sudo -n <self> __usb-setup --iface usb0`", err, direct, sudo)
+	}
+	sudoErr = errors.New("exit status 1")
+	if err := run("linux", 1000); err == nil || !strings.Contains(err.Error(), "without a terminal sudo cannot ask for a password") {
+		t.Errorf("linux as user, sudo failing without a terminal: err = %v", err)
 	}
 }
