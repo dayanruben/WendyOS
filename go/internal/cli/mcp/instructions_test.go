@@ -134,3 +134,13 @@ func TestGuideDescribesConnectedTargetRun(t *testing.T) {
 		}
 	}
 }
+
+func TestGuideListsEveryErrorCode(t *testing.T) {
+	_, section, _ := strings.Cut(guideText, "## Result shape & error codes")
+	section, _, _ = strings.Cut(section, "\n## ")
+	for _, code := range allErrorCodes {
+		if !strings.Contains(section, string(code)) {
+			t.Errorf("guide error-code list is missing %s", code)
+		}
+	}
+}
