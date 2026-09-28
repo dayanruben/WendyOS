@@ -12,10 +12,17 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 )
 
 const pinFileName = "known_devices.json"
+
+// storeLockTimeout bounds how long a flush waits for another process's flush.
+// Flushes run inside TLS handshakes, so this stays short; a timeout is a
+// non-blocking persistence error like any other failed write.
+const storeLockTimeout = 2 * time.Second
 
 // PinnedDevice records the last-seen SPKI fingerprint for a device identity.
 type PinnedDevice struct {
@@ -56,28 +63,43 @@ func (e *PinMismatchError) BlockingPinRejection() {}
 var _ certs.BlockingPinError = (*PinMismatchError)(nil)
 
 // Store is a file-backed map from device identity key to PinnedDevice.
-// It is not safe for concurrent use across multiple processes.
+//
+// Several processes may share the file: flush re-reads it under a lock and
+// overlays only the keys this Store changed, so each process's pins and
+// removals survive the others'. A Store itself is not safe for concurrent use
+// by multiple goroutines.
 type Store struct {
 	path    string
 	devices map[string]PinnedDevice
+	// dirty holds the keys this Store set or removed since it last flushed.
+	dirty map[string]bool
 }
 
 // Open loads the pin store from dir/known_devices.json, creating it if absent.
 func Open(dir string) (*Store, error) {
 	path := filepath.Join(dir, pinFileName)
-	s := &Store{path: path, devices: make(map[string]PinnedDevice)}
+	devices, err := readPinFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{path: path, devices: devices, dirty: make(map[string]bool)}, nil
+}
+
+// readPinFile returns the pins stored at path. A missing file is empty; so is
+// a corrupt one — start fresh rather than block all connections.
+func readPinFile(path string) (map[string]PinnedDevice, error) {
+	devices := make(map[string]PinnedDevice)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return s, nil
+			return devices, nil
 		}
 		return nil, fmt.Errorf("reading pin store: %w", err)
 	}
-	if err := json.Unmarshal(data, &s.devices); err != nil {
-		// Corrupt file: start fresh rather than block all connections.
-		s.devices = make(map[string]PinnedDevice)
+	if err := json.Unmarshal(data, &devices); err != nil || devices == nil {
+		return make(map[string]PinnedDevice), nil
 	}
-	return s, nil
+	return devices, nil
 }
 
 // CheckAndUpdate checks the stored pin for the device identified by leaf's
@@ -123,6 +145,7 @@ func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error
 			if prior, hadLegacy := s.devices[legacy]; hadLegacy {
 				s.devices[key] = prior
 				delete(s.devices, legacy)
+				s.dirty[legacy] = true
 				renamed = true
 			}
 		}
@@ -155,6 +178,7 @@ func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error
 	if unchanged {
 		return nil
 	}
+	s.dirty[key] = true
 	return s.flush()
 }
 
@@ -175,17 +199,58 @@ func (s *Store) Remove(key string) error {
 		return nil
 	}
 	delete(s.devices, key)
+	s.dirty[key] = true
 	return s.flush()
 }
 
+// flush merges this Store's changes into the file under a lock shared by every
+// wendy process, then replaces the file atomically (0600). Keys this Store did
+// not change keep whatever is on disk now, so another process's new pin or
+// unpin is never reverted by a snapshot this Store loaded earlier; the merged
+// result becomes this Store's view. LastSeen refreshes of unchanged entries
+// are in-memory only and may be dropped here — nothing reads them.
+//
+// Before writing, it probes the file for write permission (like
+// config.writeConfigFile) and fails without touching it if that probe fails.
+// A rename replaces a file regardless of that file's own permissions — only
+// the containing directory's permissions matter — so without this probe a
+// flush would silently override a known_devices.json the user deliberately
+// made read-only.
 func (s *Store) flush() error {
-	data, err := json.MarshalIndent(s.devices, "", "  ")
+	release, err := flock.Acquire(s.path+".lock", storeLockTimeout)
+	if err != nil {
+		return fmt.Errorf("locking pin store: %w", err)
+	}
+	defer release()
+
+	if f, err := os.OpenFile(s.path, os.O_WRONLY, 0); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("writing pin store: %w", err)
+		}
+	} else {
+		_ = f.Close()
+	}
+
+	merged, err := readPinFile(s.path)
+	if err != nil {
+		return err
+	}
+	for key := range s.dirty {
+		if d, ok := s.devices[key]; ok {
+			merged[key] = d
+		} else {
+			delete(merged, key)
+		}
+	}
+	data, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling pin store: %w", err)
 	}
-	if err := os.WriteFile(s.path, data, 0o600); err != nil {
+	if err := atomicfile.WritePreservingOwner(s.path, data, 0o600); err != nil {
 		return fmt.Errorf("writing pin store: %w", err)
 	}
+	s.devices = merged
+	s.dirty = make(map[string]bool)
 	return nil
 }
 
