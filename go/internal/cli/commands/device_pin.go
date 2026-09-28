@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 )
 
 // cloudGRPCForOrg returns the cloud gRPC endpoint of the auth session that owns
@@ -109,7 +111,7 @@ func enforceDeviceIdentity(hostname string, obs observedDeviceIdentity) error {
 	judged := false
 	// Under the config lock so a pin recorded here cannot be reverted by, or
 	// revert, another wendy process's concurrent write.
-	_ = config.Update(func(cfg *config.Config) (bool, error) {
+	updateErr := config.Update(func(cfg *config.Config) (bool, error) {
 		judged = true
 		changed, err := applyDeviceIdentity(cfg, hostname, obs)
 		refusal = err
@@ -126,8 +128,63 @@ func enforceDeviceIdentity(hostname string, obs observedDeviceIdentity) error {
 	if err != nil {
 		return nil
 	}
-	_, refusal = applyDeviceIdentity(cfg, hostname, obs)
+	changed, refusal := applyDeviceIdentity(cfg, hostname, obs)
+	switch decideFallbackAction(updateErr, changed, refusal) {
+	case fallbackWarnUnrecorded:
+		// Another wendy process holds config.lock — hung, or just busy. Writing
+		// without the lock risks reverting that process's own change, so this
+		// verdict is judged but never recorded here. Say so: without a warning,
+		// the next connection to hostname would silently treat this as a first
+		// use (or a swap) all over again.
+		fmt.Fprintf(os.Stderr, "wendy: device identity for %q was not recorded: another wendy process holds the config lock (%v)\n", hostname, updateErr)
+	case fallbackSaveUnlocked:
+		// The lock file itself could not be opened or created (a read-only or
+		// foreign-owned config dir), or Update's own Load failed after taking
+		// the lock. No process can be holding a lock that could not even be
+		// opened, so this is exactly main's pre-lock behaviour: an unlocked
+		// best-effort save that can lose to a concurrent writer but never
+		// accepts anything. Skipping it here would silently reopen the
+		// trust-on-first-use window main did not have.
+		_ = config.Save(cfg)
+	}
 	return refusal
+}
+
+// fallbackAction is what enforceDeviceIdentity's read-only fallback does with
+// a verdict config.Update could not reach.
+type fallbackAction int
+
+const (
+	// fallbackNothing covers a refusal (already returned as-is; nothing to
+	// save) and a verdict with nothing to record at all.
+	fallbackNothing fallbackAction = iota
+	// fallbackWarnUnrecorded is a verdict that would have written a pin, lost
+	// because another wendy process holds config.lock.
+	fallbackWarnUnrecorded
+	// fallbackSaveUnlocked is a verdict that would have written a pin, tried
+	// unlocked because the lock itself could not be taken by anyone.
+	fallbackSaveUnlocked
+)
+
+// decideFallbackAction chooses what enforceDeviceIdentity's read-only fallback
+// does with applyDeviceIdentity's verdict, given the error config.Update
+// returned before it could reach that verdict. It is pure so the branch that
+// distinguishes "another process holds the lock" from "the lock could not be
+// taken at all" is testable without a real 10s lock-contention wait: the
+// timeout shape itself is covered by config's own
+// TestUpdateGivesUpWhileAnotherProcessHoldsTheLock.
+//
+// changed && refusal == nil is the only case with anything to lose — a
+// refusal is returned exactly as it would have been under the lock, and
+// "nothing to save" needs nothing done either way.
+func decideFallbackAction(updateErr error, changed bool, refusal error) fallbackAction {
+	if !changed || refusal != nil {
+		return fallbackNothing
+	}
+	if errors.Is(updateErr, flock.ErrTimeout) {
+		return fallbackWarnUnrecorded
+	}
+	return fallbackSaveUnlocked
 }
 
 // applyDeviceIdentity is enforceDeviceIdentity's decision, made against cfg and

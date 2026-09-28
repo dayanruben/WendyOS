@@ -186,6 +186,9 @@ func TestUpdateGivesUpWhileAnotherProcessHoldsTheLock(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "config.lock") {
 		t.Fatalf("Update = %v, want an error naming config.lock", err)
 	}
+	if !errors.Is(err, flock.ErrTimeout) {
+		t.Fatalf("Update = %v, want errors.Is(err, flock.ErrTimeout) so callers can tell a timeout from any other lock failure", err)
+	}
 	if called {
 		t.Fatal("Update ran fn without holding the lock")
 	}

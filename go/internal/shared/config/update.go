@@ -36,7 +36,7 @@ func Update(fn func(cfg *Config) (changed bool, err error)) error {
 	release, err := flock.Acquire(lockPath, updateLockTimeout)
 	if err != nil {
 		if errors.Is(err, flock.ErrTimeout) {
-			return fmt.Errorf("another wendy process has held %s for over %s; retry once it finishes", lockPath, updateLockTimeout)
+			return fmt.Errorf("%w: another wendy process has held %s for over %s; retry once it finishes", flock.ErrTimeout, lockPath, updateLockTimeout)
 		}
 		return fmt.Errorf("locking %s: %w", lockPath, err)
 	}
