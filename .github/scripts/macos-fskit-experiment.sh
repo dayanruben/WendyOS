@@ -3,11 +3,12 @@
 # using a raw disk image in place of an SD card. Throwaway experiment for the
 # SD reflash hang; runs on a disposable CI runner only (it toggles Spotlight).
 #
-# Usage: macos-fskit-experiment.sh <index|repro|fix-marker|fix-mdutil> <outdir>
+# Usage: macos-fskit-experiment.sh <index|repro|fix-marker> <outdir>
 #   index       does .metadata_never_index / `mdutil -i off` survive a re-attach?
-#   repro       re-flash a mounted, indexed card: does unmount or write hang?
-#   fix-marker  repro, with the marker baked into the card
-#   fix-mdutil  repro, turning indexing off right before the unmount
+#   repro       re-flash a mounted card while Spotlight indexes it: does
+#               unmount or write hang?
+#   fix-marker  repro on a card that already carries the marker (a card the
+#               fixed CLI flashed), so Spotlight is left to honour it
 #
 # Bash 3.2 compatible (the macOS system bash).
 # Logs are written as the runner user, and `set -- $mps` splits on purpose.
@@ -73,9 +74,24 @@ attach() {
 	hdiutil attach -imagekey diskimage-class=CRawDiskImage "$@" | awk 'NR==1{print $1}'
 }
 
+DETACHES=0
+
+# detach DISK; rc 124 = hung, anything else non-zero = refused (e.g. busy).
 detach() {
-	run_bounded 30 "$WORK/detach.log" hdiutil detach "$1" ||
-		run_bounded 30 "$WORK/detach-force.log" hdiutil detach -force "$1"
+	DETACHES=$((DETACHES + 1))
+	local log="$OUT/detach-$DETACHES.log" rc
+	run_bounded 30 "$log" hdiutil detach "$1"
+	rc=$?
+	[ $rc -eq 0 ] && return 0
+	diagnose "$log.fail"
+	run_bounded 30 "$log.force" hdiutil detach -force "$1"
+}
+
+# force_index MP... makes Spotlight index the volumes now: the runner does not
+# index disk images on its own, and without indexing there is nothing to hang.
+force_index() {
+	sudo -n mdutil -i on "$@" >>"$OUT/force-index.log" 2>&1
+	sudo -n mdutil -E "$@" >>"$OUT/force-index.log" 2>&1
 }
 
 # vol_dev DISK NAME prints the slice holding the volume named NAME.
@@ -143,7 +159,8 @@ exp_index() {
 		mps=$(wait_mounted "$disk") || { note "- $variant: volumes never mounted"; continue; }
 		set -- $mps
 		b=$1 c=$2
-		note "- $variant, first attach: BOOT '$(index_state "$b")', mount: $(mount | grep " on $b " | sed 's/.*(//')"
+		force_index "$b" "$c"
+		note "- $variant, first attach (indexing forced on): BOOT '$(index_state "$b")', mount: $(mount | grep " on $b " | sed 's/.*(//')"
 		case $variant in
 		marker) touch "$b/.metadata_never_index" "$c/.metadata_never_index" ;;
 		mdutil) sudo mdutil -i off "$b" "$c" >>"$OUT/index-mdutil.log" 2>&1 ;;
@@ -179,12 +196,9 @@ exp_reflash() {
 		disk=$(attach "$img")
 		mps=$(wait_mounted "$disk") || { note "| $i | - | - | never mounted | - |"; detach "$disk"; continue; }
 		set -- $mps
+		[ "$prep" = marker ] || force_index "$1" "$2"
 		sleep "$delay"
 		prepres=-
-		if [ "$prep" = mdutil ]; then
-			run_bounded 15 "$OUT/prep-$i.log" sudo -n mdutil -i off "$1" "$2"
-			prepres=$(outcome $?)
-		fi
 		run_bounded 90 "$OUT/unmount-$i.log" sudo -n diskutil unmountDisk "$disk"
 		rc=$?
 		unmount=$(outcome $rc)
@@ -198,9 +212,11 @@ exp_reflash() {
 		write=$(outcome $rc)
 		[ $rc -eq 0 ] && write="ok ($((SECONDS - t0))s)"
 		note "| $i | ${delay}s | $prepres | $unmount | $write |"
-		if ! detach "$disk"; then
+		detach "$disk"
+		rc=$?
+		if [ $rc -ne 0 ]; then
 			note ""
-			note "- detach hung after iteration $i; the driver is wedged, stopping here"
+			note "- detach after iteration $i: $( [ $rc -eq 124 ] && echo "HUNG (driver wedged)" || echo "refused even with -force (rc=$rc)"); stopping here, see detach-$DETACHES.log*"
 			break
 		fi
 	done
@@ -212,8 +228,7 @@ case $MODE in
 index) exp_index ;;
 repro) exp_reflash none ;;
 fix-marker) exp_reflash marker ;;
-fix-mdutil) exp_reflash mdutil ;;
 *) echo "unknown mode $MODE" >&2; exit 2 ;;
 esac
-cp "$WORK"/*.log "$OUT/" 2>/dev/null
+cp "$WORK"/*.log "$WORK"/*.hang "$OUT/" 2>/dev/null
 exit 0

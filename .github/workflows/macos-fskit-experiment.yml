@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/macos-fskit-experiment.yml
       - .github/scripts/macos-fskit-experiment.sh
+      - go/internal/cli/commands/**
   workflow_dispatch: {}
 
 permissions:
@@ -21,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [index, repro, fix-marker, fix-mdutil]
+        mode: [index, repro, fix-marker]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -41,3 +42,52 @@ jobs:
           name: fskit-${{ matrix.mode }}
           path: ${{ runner.temp }}/out
           retention-days: 7
+
+  cli-darwin:
+    name: cli-darwin
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install libusb
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          brew list libusb >/dev/null 2>&1 || brew install libusb
+
+      - name: Vet and unit-test the flash code
+        working-directory: go
+        run: |
+          go vet ./internal/cli/commands
+          go test ./internal/cli/commands -count=1
+
+      - name: Marker code against a disk image
+        working-directory: go
+        env:
+          WENDY_E2E_DISKIMAGE: "1"
+        run: |
+          sudo mdutil -a -i on
+          go test ./internal/cli/commands -count=1 -run 'DiskImage' -v
+
+      - name: Build test binary
+        env:
+          VERSION: reflash-test-${{ github.sha }}
+        run: |
+          mkdir -p wendy-cli-darwin-arm64
+          go/scripts/build-wendy.sh "../wendy-cli-darwin-arm64/wendy"
+
+      - name: Upload test binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: wendy-cli-darwin-arm64
+          path: wendy-cli-darwin-arm64
+          retention-days: 14
