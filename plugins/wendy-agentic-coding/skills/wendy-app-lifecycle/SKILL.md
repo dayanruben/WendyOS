@@ -16,7 +16,7 @@ Avoid Bubble Tea pickers and dashboards unless the user explicitly wants an inte
 - `--yes` for `wendy run` when it may need to create `wendy.json` or accept prompts.
 - Explicit app names for `device apps start|stop|remove`.
 - Explicit cleanup flags for destructive commands.
-- A timeout or background process when intentionally streaming logs.
+- `device logs --no-follow --tail <N>` for a finite diagnostic sample; a timeout or background process only when intentionally following live logs.
 
 `--json` is a global flag. Prefer putting it near the root command:
 
@@ -106,13 +106,13 @@ wendy --json device logs --app <app-id> --service <service-name> --level warn --
 wendy --json device logs --app <app-id> --min-severity 9 --device <hostname>
 ```
 
-`device logs` is a stream. When an agent needs a bounded sample, run it with a timeout:
+For an agent-controlled bounded sample on a current agent, use:
 
 ```bash
-timeout 20s wendy --json device logs --app <app-id> --device <hostname>
+wendy --json device logs --app <app-id> --tail 50 --no-follow --device <hostname>
 ```
 
-On macOS where GNU `timeout` may not exist, use a shell/background pattern or the surrounding agent tool timeout instead of leaving the stream open.
+Omit `--no-follow` only when continuous live output is needed. Older agents do not understand finite replay; update the agent if the command reports that it continued into live logs. On macOS, GNU `timeout` may not be installed.
 
 For structured telemetry streams:
 
