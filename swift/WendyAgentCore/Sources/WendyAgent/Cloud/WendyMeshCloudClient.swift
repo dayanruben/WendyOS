@@ -18,7 +18,7 @@ public struct WendyCloudDevice: Equatable, Identifiable, Sendable {
 }
 
 public enum WendyCloudDirectory {
-    public static func listOnlineDevices(
+    public static func listDevices(
         cloudGRPC: String,
         credentials: WendyCloudCredentials
     ) async throws -> [WendyCloudDevice] {
