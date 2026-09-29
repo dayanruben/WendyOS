@@ -64,8 +64,8 @@ public struct WendyMeshDirectory: Codable, Equatable, Sendable {
     public let devices: [WendyMeshDevice]
 
     public init(devices: [WendyMeshDevice]) {
-        // Every process derives the same compact address index from the v2 UUID roster. The
-        // UUID remains the relay identity; the index exists only inside this directory snapshot.
+        // UUID directories derive compact snapshot-local indices. All-numeric legacy directories
+        // retain their asset IDs as indices so existing device-<id> hostnames keep routing.
         self.devices = devices.sorted {
             if $0.assetID == $1.assetID { return $0.name < $1.name }
             return $0.assetID < $1.assetID
@@ -78,18 +78,38 @@ public struct WendyMeshDirectory: Codable, Equatable, Sendable {
         else {
             return nil
         }
+        if usesLegacyNumericIDs {
+            return devices.first { Int32($0.assetID) == addressIndex }
+        }
         let offset = Int(addressIndex - WendyMeshAddressPlan.minimumAddressIndex)
         guard devices.indices.contains(offset) else { return nil }
         return devices[offset]
     }
 
     public func addressIndex(forAssetID assetID: String) -> Int32? {
+        if usesLegacyNumericIDs {
+            guard let addressIndex = Int32(assetID),
+                addressIndex >= WendyMeshAddressPlan.minimumAddressIndex,
+                addressIndex <= WendyMeshAddressPlan.maximumAddressIndex,
+                devices.contains(where: { $0.assetID == assetID })
+            else {
+                return nil
+            }
+            return addressIndex
+        }
         guard let offset = devices.firstIndex(where: { $0.assetID == assetID }),
             offset < Int(WendyMeshAddressPlan.maximumAddressIndex)
         else {
             return nil
         }
         return Int32(offset) + WendyMeshAddressPlan.minimumAddressIndex
+    }
+
+    private var usesLegacyNumericIDs: Bool {
+        devices.allSatisfy { device in
+            guard let id = Int64(device.assetID) else { return false }
+            return id > 0
+        }
     }
 
     public static func encode(_ directory: WendyMeshDirectory) throws -> Data {
@@ -104,9 +124,9 @@ public struct WendyMeshDirectory: Codable, Equatable, Sendable {
     }
 }
 
-/// Deterministic mesh VIP scheme for directory-local address indices: index N maps to
-/// `10.99.(N >> 8).(N & 0xff)`. Cloud asset identifiers remain UUID strings and are never
-/// truncated into this 16-bit address space.
+/// Deterministic mesh VIP scheme: index N maps to `10.99.(N >> 8).(N & 0xff)`.
+/// UUID asset identifiers use directory-local indices and are never truncated into this space;
+/// legacy numeric directories retain their established asset-ID index.
 public enum WendyMeshAddressPlan {
     public static let serviceCIDR = "10.99.0.0/16"
     public static let minimumAddressIndex: Int32 = 1
