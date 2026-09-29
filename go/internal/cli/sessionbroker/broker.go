@@ -544,9 +544,11 @@ func (a *activity) noteUpstreamError(upstream *grpc.ClientConn, err error) {
 // rpcCompression carries the grpc-encoding an inbound RPC arrived with from
 // the stats layer — the only place grpc-go exposes it — to the proxy handler,
 // which mirrors it onto the upstream call. Without that mirror the proxy
-// silently decompresses: chunk pushes open WriteChunks with gzip specifically
-// because raw chunk payloads have stalled USB-NCM links (see chunkpush.go),
-// and a broker in the middle must keep that property on the real device link.
+// silently decompresses: chunk pushes pick gzip or uncompressed per link and
+// device (see chunkUploadConfigFor in chunkcompression.go) specifically
+// because raw chunk payloads have stalled USB-NCM links (see chunkpush.go
+// and chunkupload.Watch's stall watchdog), and a broker in the middle must
+// keep whichever encoding was chosen on the real device link.
 //
 // TagRPC attaches the holder and HandleRPC's InHeader fills it on the same
 // goroutine that then invokes the handler (grpc-go's server does both before

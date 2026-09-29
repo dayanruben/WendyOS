@@ -40,7 +40,7 @@ const (
 	// streams against a four-core device). In the agent's build host, one
 	// process can deliver to several devices at once, and those deliveries
 	// share this same budget rather than each getting their own. A
-	// per-connection budget is deferred to PR 2.
+	// per-connection budget is deferred to a follow-up.
 	maxConcurrentStreams = 8
 )
 
@@ -66,6 +66,9 @@ type Options struct {
 	// OnSent, when set, is called with each chunk's length once its Send
 	// returns. It is called from several goroutines at once.
 	OnSent func(n int)
+	// Activity, when set, records stream opens and progress for a stall
+	// watchdog (see Watch). One Activity is shared by every layer of a push.
+	Activity *Activity
 }
 
 // Plan returns the chunks in refs whose hashes are in missing, each hash once,
@@ -149,6 +152,8 @@ func sendBatch(ctx context.Context, cs agentpb.WendyContainerServiceClient, src 
 	if err != nil {
 		return fmt.Errorf("opening chunk upload for layer %s: %w", opts.Layer, err)
 	}
+	opts.Activity.opened()
+	defer opts.Activity.closed()
 	for i := start; i < end; i++ {
 		ref := plan[i]
 		// A fresh buffer per message: gRPC may still hold the previous one
@@ -173,6 +178,7 @@ func sendBatch(ctx context.Context, cs agentpb.WendyContainerServiceClient, src 
 			}
 			return fmt.Errorf("sending chunk %d/%d for layer %s: %w", i+1, len(plan), opts.Layer, err)
 		}
+		opts.Activity.progressed()
 		if opts.OnSent != nil {
 			opts.OnSent(len(buf))
 		}
@@ -180,5 +186,6 @@ func sendBatch(ctx context.Context, cs agentpb.WendyContainerServiceClient, src 
 	if _, err := wc.CloseAndRecv(); err != nil {
 		return fmt.Errorf("confirming chunks %d-%d of %d for layer %s: %w", start+1, end, len(plan), opts.Layer, err)
 	}
+	opts.Activity.progressed()
 	return nil
 }

@@ -3593,7 +3593,9 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	// fresh connection (WDY-2433), and everything from here on — RunContainer,
 	// its response stream, and the post-start hook — must ride that live
 	// connection rather than the one that just dropped.
-	pushConn, headers, err := pushLayersResumingTunnelDrops(ctx, conn, layers, prepareFor)
+	// gzip or none per link and device; see chooseChunkUploadConfig.
+	uploadCfg := chunkUploadConfigFor(ctx, conn)
+	pushConn, headers, err := pushLayersResumingTunnelDrops(ctx, conn, layers, prepareFor, uploadCfg)
 	if pushConn != conn {
 		defer pushConn.Close()
 	}
