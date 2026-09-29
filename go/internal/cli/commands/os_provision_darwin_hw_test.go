@@ -141,7 +141,7 @@ func TestHW_WriteConfigPartition(t *testing.T) {
 
 	// clock_floor is written LAST by writeConfigFilesTo, so its presence proves
 	// the whole payload landed rather than a prefix of it.
-	for _, name := range []string{"wendy-agent", "wendy.conf", "provisioning.json", "clock_floor"} {
+	for _, name := range []string{"wendy-agent", "wendy.conf", "acme-enrollment.json", "clock_floor"} {
 		size, err := hwStatSize(m, name)
 		if err != nil {
 			t.Errorf("%s missing from config partition: %v", name, err)
@@ -197,14 +197,14 @@ func TestHW_WriteConfigPartition(t *testing.T) {
 		t.Logf("  wendy.conf parses back to %d networks, primary=%s", len(parsed), parsed[0].SSID)
 	}
 
-	prov, err := hwReadFile(m, "provisioning.json")
+	prov, err := hwReadFile(m, "acme-enrollment.json")
 	if err != nil {
-		t.Fatalf("reading back provisioning.json: %v", err)
+		t.Fatalf("reading back acme-enrollment.json: %v", err)
 	}
 	if !bytes.Equal(prov, provJSON) {
-		t.Errorf("provisioning.json content differs:\ngot:  %s\nwant: %s", prov, provJSON)
+		t.Errorf("acme-enrollment.json content differs:\ngot:  %s\nwant: %s", prov, provJSON)
 	} else {
-		t.Log("  provisioning.json verified byte-for-byte")
+		t.Log("  acme-enrollment.json verified byte-for-byte")
 	}
 }
 

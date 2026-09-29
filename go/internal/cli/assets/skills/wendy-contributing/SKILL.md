@@ -64,11 +64,11 @@ wendy vm create dev --image wendyos-image-vm-arm64-wendyos.rootfs.wic --disk 16
 wendy vm start dev
 
 # Deploy a test app first (required for container tests)
-cd wendy-agent/Examples/HelloWorld
+cd Examples/HelloWorld
 wendy run --json --device localhost:50051  # --json for non-interactive output
 
 # Run E2E tests with fast path (CRITICAL for performance)
-cd wendy-agent/E2ETests
+cd swift/WendyE2ETests
 E2E_USE_EXISTING_VM=true swift test
 ```
 

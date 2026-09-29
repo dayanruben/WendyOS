@@ -61,7 +61,6 @@ All environment variables are read at startup. Restart the agent after changing 
 | `WENDY_BROKER_URL` | _(derived from cloud host)_ | WebSocket URL for the cloud tunnel broker |
 | `WENDY_OTEL_PORT` | `4317` | Port for the OTEL gRPC receiver |
 | `WENDY_OTEL_HTTP_PORT` | `4318` | Port for the OTEL HTTP/protobuf receiver |
-| `WENDY_NETWORK_MANAGER` | `auto` | Network manager preference: `auto`, `connman`, `networkmanager`, `force-connman`, `force-networkmanager` |
 | `WENDY_MTLS_ORG_ENFORCEMENT` | `strict` | mTLS client organization enforcement on the device's mTLS gate: `off` (no org check), `grace` (reject any client cert whose organization differs from the device's own org, but allow legacy certs that carry no org identity), `strict` (as `grace`, and additionally reject certs that carry no org identity). Unrecognized values also default to `strict`. See note below. |
 
 ### `WENDY_MTLS_ORG_ENFORCEMENT` migration
@@ -84,7 +83,7 @@ The agent runs different gRPC servers depending on provisioning state:
 | `50052` (default, `agentPort + 1`) | mTLS gRPC | After the device is provisioned |
 | `4317` | OTEL gRPC | Always |
 | `4318` | OTEL HTTP | Always |
-| `/run/wendy/agent.sock` | Plaintext gRPC (unix socket) | Always; gated by `admin` entitlement mount |
+| `/var/lib/wendy/agent-control/agent.sock` | Plaintext gRPC (unix socket) | Always; gated by `admin` entitlement mount. Appears inside an entitled container as `/run/wendy/agent/agent.sock` (`WENDY_AGENT_SOCKET`) |
 
 Once a device is provisioned, the plaintext port is shut down with `GracefulStop()`. The local unix socket serves the full gRPC API with no authentication; access is gated by the `admin` entitlement which bind-mounts the socket into entitled containers only. If you are connecting to a provisioned device and getting connection-refused errors on port 50051, check whether the device is already provisioned (look for certificates in `WENDY_CONFIG_PATH`).
 
@@ -171,13 +170,15 @@ The agent continues to work without it, but Bluetooth container isolation is deg
 
 ### Network manager not detected
 
-The agent auto-detects ConnMan or NetworkManager at startup. If neither is found, WiFi management RPCs fail. Check:
+The Go `wendy-agent` drives WiFi through `nmcli` only — it does not auto-detect
+between ConnMan and NetworkManager, and it ignores `WENDY_NETWORK_MANAGER`
+(that variable is a Swift-agent feature). If `nmcli` is not on the agent's
+`PATH`, every WiFi management RPC fails with `Unavailable: WiFi management is
+not available (nmcli not found)`. Check:
 
 ```sh
-WENDY_NETWORK_MANAGER=auto ./wendy-agent 2>&1 | grep -i "network manager"
+which nmcli && nmcli general status
 ```
-
-Explicitly set `WENDY_NETWORK_MANAGER=connman` or `WENDY_NETWORK_MANAGER=networkmanager` to skip auto-detection.
 
 ### Device not visible via `wendy discover`
 

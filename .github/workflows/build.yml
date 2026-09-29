@@ -267,9 +267,7 @@ jobs:
 
   build-go-macos:
     name: ${{ matrix.artifact-name }}
-    runs-on:
-      group: wendy-developer
-      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
+    runs-on: macos-26
     needs: [determine-version]
     # Attest SLSA build provenance in the job that produces the archive, so the
     # provenance reflects the actual build environment (not a downstream job).
@@ -282,7 +280,7 @@ jobs:
         include:
           # Intel (amd64) macOS is not built: the CLI links libusb via cgo
           # (github.com/google/gousb), and cross-compiling x86_64 on the arm64
-          # macos-15 runner fails to link the arm64-only Homebrew libusb.
+          # macos-26 runner fails to link the arm64-only Homebrew libusb.
           - artifact-name: wendy-cli-darwin-arm64
             goarch: arm64
     steps:
@@ -343,9 +341,7 @@ jobs:
 
   build-agent-macos-app:
     name: wendy-agent-macos-app
-    runs-on:
-      group: wendy-developer
-      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
+    runs-on: macos-26
     timeout-minutes: 45
     needs: [determine-version]
     steps:

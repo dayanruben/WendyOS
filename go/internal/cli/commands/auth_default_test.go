@@ -116,9 +116,9 @@ func sharedEndpointConfig() *config.Config {
 	}}
 }
 
-// Regression: `wendy auth use 75` used to persist only the (shared) endpoint,
-// so resolution silently returned org 9 — the first login. It must persist the
-// org too, and resolution must then return the selected org's session.
+// `wendy auth use 75` (legacy org-id selector) selects org 75's context on a
+// shared endpoint and makes it current; resolution then returns that session,
+// not the first login (org 9).
 func TestAuthUsePersistsOrgDefault(t *testing.T) {
 	load := seedConfig(t, sharedEndpointConfig())
 
@@ -129,11 +129,8 @@ func TestAuthUsePersistsOrgDefault(t *testing.T) {
 	}
 
 	cfg := load()
-	if cfg.DefaultCloudGRPC != "prod:443" {
-		t.Errorf("DefaultCloudGRPC = %q, want prod:443", cfg.DefaultCloudGRPC)
-	}
-	if cfg.DefaultOrgID != 75 {
-		t.Errorf("DefaultOrgID = %d, want 75", cfg.DefaultOrgID)
+	if cfg.CurrentContext != "org-75" {
+		t.Errorf("CurrentContext = %q, want org-75", cfg.CurrentContext)
 	}
 	auth, err := config.ResolveAuth(cfg, "", nil)
 	if err != nil {
@@ -144,10 +141,23 @@ func TestAuthUsePersistsOrgDefault(t *testing.T) {
 	}
 }
 
-func TestAuthDefaultClearClearsBothFields(t *testing.T) {
+// `wendy auth use <name>` selects a context by its name.
+func TestAuthUseByContextName(t *testing.T) {
+	load := seedConfig(t, sharedEndpointConfig())
+
+	cmd := newAuthUseCmd()
+	cmd.SetArgs([]string{"org-75"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("auth use org-75: %v", err)
+	}
+	if cfg := load(); cfg.CurrentContext != "org-75" {
+		t.Fatalf("CurrentContext = %q, want org-75", cfg.CurrentContext)
+	}
+}
+
+func TestAuthDefaultClearClearsCurrentContext(t *testing.T) {
 	seeded := sharedEndpointConfig()
-	seeded.DefaultCloudGRPC = "prod:443"
-	seeded.DefaultOrgID = 75
+	seeded.CurrentContext = "org-75"
 	load := seedConfig(t, seeded)
 
 	cmd := newAuthDefaultCmd()
@@ -156,32 +166,25 @@ func TestAuthDefaultClearClearsBothFields(t *testing.T) {
 		t.Fatalf("auth default --clear: %v", err)
 	}
 
-	cfg := load()
-	if cfg.DefaultCloudGRPC != "" || cfg.DefaultOrgID != 0 {
-		t.Fatalf("clear must reset both fields, got grpc=%q org=%d", cfg.DefaultCloudGRPC, cfg.DefaultOrgID)
+	if cfg := load(); cfg.CurrentContext != "" {
+		t.Fatalf("clear must reset the current context, got %q", cfg.CurrentContext)
 	}
 }
 
-// The session picker's 'd' key goes through persistSessionDefault; it must
-// store the org half of the "endpoint::org" key, not just the endpoint.
-func TestPersistSessionDefaultStoresOrg(t *testing.T) {
+// The session picker's 'd' key goes through persistSessionDefault; it must set
+// the current context to the operator-preferred entry for the selected key.
+func TestPersistSessionDefaultSetsContext(t *testing.T) {
 	load := seedConfig(t, sharedEndpointConfig())
 
 	if err := persistSessionDefault("prod:443::75"); err != nil {
 		t.Fatalf("persistSessionDefault: %v", err)
 	}
-	cfg := load()
-	if cfg.DefaultCloudGRPC != "prod:443" || cfg.DefaultOrgID != 75 {
-		t.Fatalf("want prod:443/org 75, got grpc=%q org=%d", cfg.DefaultCloudGRPC, cfg.DefaultOrgID)
+	if cfg := load(); cfg.CurrentContext != "org-75" {
+		t.Fatalf("want current context org-75, got %q", cfg.CurrentContext)
 	}
 
-	// Cert-less sessions have an endpoint-only key; the org resets to 0 so a
-	// stale previous org can't shadow the new default.
-	if err := persistSessionDefault("dev:50051"); err != nil {
-		t.Fatalf("persistSessionDefault (no org): %v", err)
-	}
-	cfg = load()
-	if cfg.DefaultCloudGRPC != "dev:50051" || cfg.DefaultOrgID != 0 {
-		t.Fatalf("want dev:50051/org 0, got grpc=%q org=%d", cfg.DefaultCloudGRPC, cfg.DefaultOrgID)
+	// A key with no matching session is a bug in the caller, not a silent no-op.
+	if err := persistSessionDefault("dev:50051"); err == nil {
+		t.Fatal("persistSessionDefault should error on an unknown key")
 	}
 }

@@ -9,10 +9,17 @@ operator-facing Wendy Notifications in a Wendy Cloud organization.
 
 ## App-facing API (`wendy.system.v1`)
 
-Apps with the `notifications` entitlement call
-`wendy.system.v1.NotificationService` over the Unix socket at
-`$WENDY_SYSTEM_SOCKET` (`/run/wendy/system/system.sock`). WendyKit exposes this
-as `WendyNotification.send(_:)`, so apps normally do not call gRPC directly.
+Apps with the [`notifications` entitlement](../device/entitlements.md#notifications)
+call `wendy.system.v1.NotificationService` over the Unix socket at
+`$WENDY_SYSTEM_SOCKET` (`/run/wendy/system/system.sock`). This creates a
+canonical Wendy Notification in the recipients' Companion inboxes. Cloud then
+attempts APNs delivery; apps do not send an arbitrary APNs payload directly.
+
+WendyKit is currently the only application SDK for this API, and it is
+Swift-only. Apps written in other languages call this gRPC service directly.
+See [Send notifications from a device app](/docs/guides/device-notifications)
+for entitlement and Cloud grant setup, Swift and direct gRPC examples, and
+delivery behavior.
 
 The private socket binds every call to trusted app identity. The request cannot
 supply an app ID, device ID, or organization ID; the agent adds app identity and
@@ -50,7 +57,8 @@ the caller may retry with the same `notification_id`.
 The app-facing and Cloud messages use the same plural selector shape. All three
 fields have union semantics. At most 100 selector entries may be supplied across
 the three lists. Cloud normalizes and deduplicates them, remains authoritative
-for recipient resolution, and resolves at most 10,000 recipients.
+for recipient resolution, and resolves at most 100 recipients for a device-app
+send.
 
 | Field | Type | Description |
 |---|---|---|
@@ -69,6 +77,14 @@ receives one Notification.
 
 Recipient totals are intentionally omitted because team and role counts can disclose
 organization membership.
+
+Device-app sources may create 10 accepted Notifications per minute, and the
+agent also smooths bursts locally. Repeated rate-limit violations can quarantine
+that app/device source for 15 minutes.
+Device-originated deep links are restricted to the source device;
+`wendy://devices/current/live` is the portable form. For device-originated APNs
+alerts, Cloud uses `Wendy · <Cloud app name>` as the banner title while retaining
+the supplied title on the stored Notification.
 
 ## `Notification` message
 
@@ -104,9 +120,11 @@ CreateNotification(CreateNotificationRequest) → Notification
 ```
 
 Creates a Notification for one user. This RPC and `CreateNotificationRequest`
-are deprecated in their protobuf descriptors and remain intact in
-`wendycloud.v1` only for existing Dashboard and legacy clients. The migration
-marker removes them from a future side-by-side `wendycloud.v2`, not from v1.
+are deprecated in their protobuf descriptors and remain intact for existing
+Dashboard and legacy clients. `wendycloud.v2` is no longer hypothetical — it is
+vendored at `Proto/wendycloud/v2/` and generated into `go/proto/gen/cloudpb/v2/`
+— and this RPC is still carried there, still marked `deprecated`. The migration
+marker records that it is to be removed from v2, not that it already has been.
 
 ---
 
@@ -207,3 +225,47 @@ MarkAsRead(MarkAsReadRequest) → MarkAsReadResponse
 ```
 
 Marks the requested Notification IDs as read and returns the number marked.
+
+## Campaign notifications and catalog registration
+
+A campaign with `notify.on: event` and `notify.event: <name>` sends an immediate
+notification for the matching event. `notify.on: detection` sends on an inference
+appearance. Omit `notify.webhook` for Wendy Cloud delivery, or supply an HTTP(S)
+endpoint for webhook delivery. `episode_committed` remains manifest intent for
+notification after upload; it is separate from immediate delivery.
+
+Cloud delivery currently requires a legacy enrollment with positive numeric
+organization and asset IDs. Experimental direct-PKI/OIDC enrollments with only
+a SPIFFE principal cannot use this sender: it rejects them before sending with
+`FailedPrecondition`, reported in `inference_status.notification_error`. Use an
+explicit `notify.webhook` for immediate notifications on those devices.
+
+The agent uses its enrolled device credentials and a bounded, nonpersistent
+queue. There are at most three attempts, with 10-second timeouts and the same
+event UUID. `InvalidArgument`, `Unauthenticated`, `PermissionDenied`,
+`FailedPrecondition`, `AlreadyExists`, `Unimplemented`, and `DataLoss` stop
+retries. A mismatched response notification ID is `DataLoss`. Other failures
+are retried with backoff. Errors appear in agent logs and campaign
+`inference_status.notification_error`.
+
+### App catalog API
+
+The v1 `AppService` exposes `UpsertApp`, `GetApp`, `UpdateApp`, `DeleteApp`, and
+`ListApps`. It replaces the former `CreateApp` RPC; clients must regenerate
+against `Proto/cloud/apps.proto`. Mutations and `GetApp` carry both `id` and
+`organization_id`. `UpsertApp` accepts optional `name` and `details`; `UpdateApp`
+also accepts the owner/admin-controlled `can_send_notifications` grant.
+`ListApps` uses `organization_id`, optional `offset`, `limit`, and `filter`,
+returning `apps` and `total`. Pagination is offset-based, not page-token-based.
+Deployment registration uses GetApp first and UpsertApp only when absent, so it
+preserves existing metadata and never automatically grants notifications.
+
+The vendored AppService contract matches Cloud's current v1 server. Earlier
+Companion schemas used different tags for update fields and page-token
+pagination, so those clients must be rebuilt with the current schema. The
+coordinated client ports are [Companion SDK #1](https://github.com/wendylabsinc/wendy-companion-sdk/pull/1)
+and [Companion iOS #223](https://github.com/wendylabsinc/wendy-companion-ios/pull/223).
+The shared wire fixtures cover organization scoping, metadata updates,
+notification grants and offset pagination. These source changes do not upgrade
+installed clients; release the updated clients against the matching Cloud v1
+contract. They do not change Cloud's separate v2 API.

@@ -19,14 +19,14 @@ Wendy Labs has three main components to achieve this mission:
 
 [WendyOS](../wendyos/) is a pre-built OS for specific hardware (NVIDIA Jetson — Orin Nano, AGX Orin, AGX Thor —, Raspberry Pi, ...) that packages all the tools you need to build & run apps.
 
-[Wendy-Agent](../wendy-agent/) is a daemon, akin to Docker, that manages and runs your apps. It also exposes a way to remotely control the machine and upload apps.
+Wendy-Agent is a daemon, akin to Docker, that manages and runs your apps. It also exposes a way to remotely control the machine and upload apps.
 
 [Wendy Cloud](../cloud/) is a tool for managing your Wendy devices, viewing (crash) logs, provisioning updates and more.
 
 ### Agent & CLI
 
-The Agent comes in two flavours, [Linux](../wendy-agent/linux/) and [macOS](../wendy-agent/macos/) for running apps on these platforms respectively.
+The Agent comes in two flavours, Linux and macOS, for running apps on these platforms respectively.
 
-The [Wendy Clients](../clients/) enable your developers to manage these devices, locally through LAN, BLE or over USB.
+The [Wendy CLI](../clients/wendy-cli/) enables your developers to manage these devices, locally through LAN, BLE or over USB.
 
 > **TODO**: We want the Clients to also be able to talk to the cloud, and manage your Wendy devices through that.
