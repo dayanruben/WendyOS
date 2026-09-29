@@ -131,6 +131,38 @@ installed on the target Mac;
 Wendy reports a clear error if `brew` is missing or if `brew bundle` fails. This
 only applies to native Mac deployments.
 
+## Wendy Mesh VPN (beta)
+
+Wendy Agent for Mac includes an opt-in Mesh VPN for private DNS, TCP, UDP, and
+ICMP traffic to enrolled devices. Wendy does not install the System Extension
+or start a VPN connection until you explicitly enable **Wendy Mesh** from the
+menu bar.
+
+Before enabling Mesh, run `wendy auth login` on this Mac and select the intended
+CLI context. On first use, macOS asks you to approve the Wendy Network
+Extension. The menu shows when approval is required, links to the relevant
+System Settings pane, and lets you cancel the pending request. Canceling or
+turning Mesh off prevents an automatic connection later.
+
+<Callout type="warn">
+  Cloud v2 UUID contexts are not supported by the current Mac Mesh relay. Wendy
+  preserves UUID identities but refuses the connection explicitly rather than
+  truncating them or routing them through the legacy integer broker. A current
+  identity-blind Cloud v2 relay client is required before this limitation can
+  be removed.
+</Callout>
+
+Mesh credentials are passed to the Network Extension only when a tunnel starts
+and are not written to the persistent VPN profile. The one-shot handoff still
+uses Swift string storage, which cannot be reliably zeroed after use.
+
+<Callout type="info">
+  Developer ID signing, notarization, and the required Network/System Extension
+  entitlements are necessary for release builds to load the extension on an
+  end-user Mac. Local development builds use monotonically increasing bundle
+  versions so macOS can replace an older installed extension.
+</Callout>
+
 ## What Works
 
 - Apple Silicon Mac targets running macOS 15 or later
@@ -138,6 +170,7 @@ only applies to native Mac deployments.
 - Deploying native SwiftPM macOS apps with `wendy run`
 - Discovering Mac targets over Bonjour/mDNS
 - Setting the Mac as your default Wendy device
+- Opt-in Wendy Mesh VPN for legacy numeric Cloud contexts (beta)
 
 ## Not Supported
 
@@ -147,6 +180,7 @@ only applies to native Mac deployments.
 - Bluetooth, audio, and GPU hardware APIs via Wendy
 - Wendy camera APIs — use native hardware SDKs (AVFoundation, etc.) directly in your app
 - WendyOS OTA updates — update macOS and Wendy Agent through their normal install paths
+- Wendy Mesh VPN with Cloud v2 UUID contexts
 
 ## Troubleshooting
 
@@ -157,3 +191,10 @@ If the CLI cannot connect:
 3. If `wendy discover` doesn't show the Mac, check macOS Local Network permission for the CLI process.
 4. Quit and reopen Wendy Agent from the menu bar.
 5. If you installed both stable and nightly builds, quit both and open only the one you want.
+
+If Wendy Mesh cannot connect:
+
+1. Confirm `wendy auth login` has an active context on this Mac.
+2. If the error reports a UUID organization or tenant, the active context is Cloud v2 and is not supported by the current Mac Mesh relay.
+3. If approval is pending, use the menu link to open System Settings and approve the Wendy Network Extension, or cancel the request from the menu.
+4. Use a signed and notarized build when validating extension installation on an end-user Mac.
