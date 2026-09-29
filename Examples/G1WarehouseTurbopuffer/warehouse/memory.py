@@ -204,6 +204,9 @@ class Memory:
                 raise
             self.calls += 1
             self.error = None
+            if name == "reset":   # a new loop of the show: start the viewer's log afresh
+                self.last = None
+                self.log.clear()
             if answer.operation == "query":
                 self.last = answer
             self.log.appendleft(answer)

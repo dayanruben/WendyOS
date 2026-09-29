@@ -235,6 +235,9 @@ export class WarehouseViewer {
     const rim = new THREE.DirectionalLight('#bcd4f0', 1.2);
     rim.position.set(-4, 6, 4);
     scene.add(rim);
+    const fill = new THREE.DirectionalLight('#e8eef5', 0.9); // lifts the faces that look away from the key
+    fill.position.set(-6, -3, 4);
+    scene.add(fill);
   }
 
   // Floor tape in front of each rack and around the cart, where the robot works.
@@ -278,7 +281,8 @@ export class WarehouseViewer {
       const mesh = new THREE.Mesh(geometry, pick(fixture.name));
       mesh.position.fromArray(fixture.pos);
       mesh.quaternion.fromArray(fixture.quat);
-      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.receiveShadow = true;
+      mesh.castShadow = !fixture.name.endsWith('_top_board'); // like overhead lighting: keep the shelf below lit
       this.scene.add(mesh);
     }
     // Zone signs on top of each rack, facing the aisle, and bay plates under the shelf.
@@ -310,6 +314,7 @@ export class WarehouseViewer {
       });
     }
     this.slots = description.slots;
+    this.layout = description; // zones, rack size and slots, for camera scripts using the director hook
     this.targetMarker = outline([0.3, 0.36, 0.26]);
     this.scene.add(this.targetMarker);
   }
@@ -429,6 +434,7 @@ export class WarehouseViewer {
     const held = b.held ? this.bodies[this.boxIndex(b.held)] : null;
     this.frameInfo = {
       elapsed: t, dt, state: b,
+      time: a.time + (a.epoch === b.epoch ? (b.time - a.time) * k : 0), // since this loop of the show began
       robot: pelvis.position.toArray(),
       heading: new THREE.Euler().setFromQuaternion(pelvis.quaternion, 'ZYX').z,
       held: held ? held.position.toArray() : null,

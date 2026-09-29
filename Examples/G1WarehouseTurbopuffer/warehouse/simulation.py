@@ -44,6 +44,7 @@ class Simulation:
         self._thread: threading.Thread | None = None
         self.speed = realtime_speed
         self.elapsed = 0.0
+        self.loop_start = 0.0   # when the current loop of the show began
         self.epoch = 0
         self.falls = 0
         self.activity = ("Starting", "")
@@ -81,6 +82,7 @@ class Simulation:
         self.location = {f"box_{item.key}": (key, 0) for key, item in SHELVED.items()}
         self.location.update({f"box_{item.key}": ("cart", index) for index, item in enumerate(INBOUND)})
         mujoco.mj_forward(self.model, d)
+        self.loop_start = self.elapsed
         self.epoch += 1
 
     # --- stepping -----------------------------------------------------------------------------
@@ -152,6 +154,7 @@ class Simulation:
         return {
             "epoch": self.epoch,
             "elapsed": round(self.elapsed, 4),
+            "time": round(self.elapsed - self.loop_start, 4),
             "positions": np.round(d.xpos[self.render], 4).reshape(-1).tolist(),
             "quaternions": np.round(d.xquat[self.render][:, [1, 2, 3, 0]], 5).reshape(-1).tolist(),
             "activity": {"title": self.activity[0], "detail": self.activity[1]},
