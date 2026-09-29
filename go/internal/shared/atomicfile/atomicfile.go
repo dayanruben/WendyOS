@@ -17,10 +17,23 @@ import (
 )
 
 // Seams for the Windows-only branches below, which the Linux and macOS test
-// runners cannot otherwise reach.
+// runners cannot otherwise reach: the rename, the platform, and the rename
+// retry's error classifier and clock.
 var (
-	renameFn = os.Rename
-	hostOS   = runtime.GOOS
+	renameFn             = os.Rename
+	hostOS               = runtime.GOOS
+	isRetryableRenameErr = retryableRenameErr
+	sleepFn              = time.Sleep
+	nowFn                = time.Now
+)
+
+// The Windows rename retry follows cmd/go's internal/robustio: keep retrying a
+// transient refusal for up to renameRetryBudget, sleeping a little longer each
+// time.
+const (
+	renameRetryBudget     = 2 * time.Second
+	renameRetryFirstSleep = time.Millisecond
+	renameRetryMaxSleep   = 500 * time.Millisecond
 )
 
 // geteuid and chown are seams so tests can exercise WritePreservingOwner's
@@ -156,17 +169,29 @@ func preserveOwnerHook(tmpName, path string) error {
 }
 
 // replaceFile renames tmp over path. On Windows the rename is refused while
-// another process has path open without delete sharing — a wendy CLI reading
-// config.json holds it for microseconds — so retry briefly there instead of
-// failing the write.
+// another process has path open — Go opens files without FILE_SHARE_DELETE,
+// so a wendy CLI merely reading config.json blocks it — or while an antivirus
+// scanner holds the fresh temp file. Like cmd/go's robustio, retry those
+// transient refusals (retryableRenameErr) with growing sleeps for up to
+// renameRetryBudget instead of failing the write, then return the last error.
+// Elsewhere retryableRenameErr matches nothing, so this is a single rename.
 func replaceFile(tmp, path string) error {
 	err := renameFn(tmp, path)
-	if err == nil || hostOS != "windows" {
+	if err == nil || !isRetryableRenameErr(err) {
 		return err
 	}
-	for attempt := 1; attempt <= 5 && err != nil; attempt++ {
-		time.Sleep(time.Duration(attempt) * 10 * time.Millisecond)
+	deadline := nowFn().Add(renameRetryBudget)
+	sleep := renameRetryFirstSleep
+	for {
+		remaining := deadline.Sub(nowFn())
+		if remaining <= 0 {
+			return err
+		}
+		sleepFn(min(sleep, remaining))
 		err = renameFn(tmp, path)
+		if err == nil || !isRetryableRenameErr(err) {
+			return err
+		}
+		sleep = min(2*sleep, renameRetryMaxSleep)
 	}
-	return err
 }
