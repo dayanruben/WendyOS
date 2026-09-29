@@ -78,7 +78,7 @@ You'll need the storage device connected to your machine, ~8GB+ of free space fo
 3. Choose your device type (e.g. NVIDIA Jetson Orin Nano, Raspberry Pi 5) and confirm
 4. Wait for flashing to finish — this can take several minutes
 
-The **Operating System Cache** panel lets you browse cached images, delete old ones to free space, and reveal the cache directory in your file manager. The cache lives at `~/.wendy/cache` (macOS/Linux) or `%LOCALAPPDATA%\Wendy\cache` (Windows).
+The **Operating System Cache** panel lets you browse cached images, delete old ones to free space, and reveal the cache directory in your file manager. The cache lives under the platform cache directory: `~/Library/Caches/wendy/os-images` (macOS), `~/.cache/wendy/os-images` (Linux, or `$XDG_CACHE_HOME/wendy/os-images`), `%LocalAppData%\wendy\os-images` (Windows). Note this is *not* `~/.wendy`, which holds configuration.
 
 ## Configuring WiFi
 

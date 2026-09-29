@@ -3,14 +3,14 @@ import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
 import SwiftProtobuf
-import WendyCloudGRPC
+import WendyCloudV2GRPC
 
 public struct WendyCloudDevice: Equatable, Identifiable, Sendable {
-    public let id: Int32
+    public let id: String
     public let name: String
-    public let organizationID: Int32
+    public let organizationID: String
 
-    public init(id: Int32, name: String, organizationID: Int32) {
+    public init(id: String, name: String, organizationID: String) {
         self.id = id
         self.name = name
         self.organizationID = organizationID
@@ -18,32 +18,19 @@ public struct WendyCloudDevice: Equatable, Identifiable, Sendable {
 }
 
 public enum WendyCloudDirectory {
-    public static func listOnlineDevices(
+    public static func listDevices(
         cloudGRPC: String,
         credentials: WendyCloudCredentials
     ) async throws -> [WendyCloudDevice] {
-        try await withClient(
-            cloudGRPC: cloudGRPC,
-            credentials: credentials,
-            fullMethod: "wendycloud.v1.AssetService/ListAssets"
-        ) { grpc, metadata in
-            let client = Wendycloud_V1_AssetService.Client(wrapping: grpc)
-            var request = Wendycloud_V1_ListAssetsRequest()
-            request.organizationID = credentials.organizationID
-            request.isComputeDevice = true
-            request.onlineOnly = true
-            return try await client.listAssets(request, metadata: metadata) { response in
-                var devices: [WendyCloudDevice] = []
-                for try await message in response.messages {
-                    devices.append(
-                        WendyCloudDevice(
-                            id: message.asset.id,
-                            name: message.asset.name,
-                            organizationID: message.asset.organizationID
-                        )
-                    )
-                }
-                return devices
+        try await withClient(cloudGRPC: cloudGRPC, credentials: credentials) { grpc in
+            let client = Wendycloud_V2_MeshRosterService.Client(wrapping: grpc)
+            let response = try await client.getMeshRoster(Wendycloud_V2_GetMeshRosterRequest())
+            return response.entries.map {
+                WendyCloudDevice(
+                    id: $0.assetID,
+                    name: $0.name,
+                    organizationID: credentials.organizationID
+                )
             }
         }
     }
@@ -52,7 +39,7 @@ public enum WendyCloudDirectory {
 /// Relays one TCP connection through the Wendy cloud tunnel broker.
 public enum WendyCloudTunnel {
     public static func relay(
-        assetID: Int32,
+        assetID: String,
         host: String,
         port: Int,
         cloudGRPC: String,
@@ -60,13 +47,9 @@ public enum WendyCloudTunnel {
         readFlow: @escaping @Sendable () async throws -> Data?,
         writeFlow: @escaping @Sendable (Data) async throws -> Void
     ) async throws {
-        try await withClient(
-            cloudGRPC: cloudGRPC,
-            credentials: credentials,
-            fullMethod: "wendycloud.v1.TunnelBrokerService/ClientTunnel"
-        ) { grpc, metadata in
-            let client = Wendycloud_V1_TunnelBrokerService.Client(wrapping: grpc)
-            try await client.clientTunnel(metadata: metadata) { writer in
+        try await withClient(cloudGRPC: cloudGRPC, credentials: credentials) { grpc in
+            let client = Wendycloud_V2_TunnelBrokerService.Client(wrapping: grpc)
+            try await client.clientTunnel { writer in
                 try await writer.write(
                     .with {
                         $0.open = .with {
@@ -94,11 +77,11 @@ public actor WendyCloudDatagramSession {
     private static let logger = Logger(label: "sh.wendy.agent.mesh-datagram")
 
     public struct Configuration: Sendable {
-        public let assetID: Int32
+        public let assetID: String
         public let cloudGRPC: String
         public let credentials: WendyCloudCredentials
 
-        public init(assetID: Int32, cloudGRPC: String, credentials: WendyCloudCredentials) {
+        public init(assetID: String, cloudGRPC: String, credentials: WendyCloudCredentials) {
             self.assetID = assetID
             self.cloudGRPC = cloudGRPC
             self.credentials = credentials
@@ -113,14 +96,14 @@ public actor WendyCloudDatagramSession {
         public let agentUnixNanoseconds: UInt64
     }
 
-    private let outbox: AsyncStream<Wendycloud_V1_ClientTunnelMessage>.Continuation
+    private let outbox: AsyncStream<Wendycloud_V2_ClientTunnelMessage>.Continuation
     private var datagramHandlers: [UInt32: @Sendable (Data) -> Void] = [:]
     private var echoHandlers: [UInt32: @Sendable (EchoReply) -> Void] = [:]
     private var closeHandler: (@Sendable () -> Void)?
     private var runTask: Task<Void, Never>?
     private var closed = false
 
-    private init(outbox: AsyncStream<Wendycloud_V1_ClientTunnelMessage>.Continuation) {
+    private init(outbox: AsyncStream<Wendycloud_V2_ClientTunnelMessage>.Continuation) {
         self.outbox = outbox
     }
 
@@ -129,17 +112,16 @@ public actor WendyCloudDatagramSession {
     ) async throws
         -> WendyCloudDatagramSession
     {
-        let (stream, continuation) = AsyncStream<Wendycloud_V1_ClientTunnelMessage>.makeStream()
+        let (stream, continuation) = AsyncStream<Wendycloud_V2_ClientTunnelMessage>.makeStream()
         let session = WendyCloudDatagramSession(outbox: continuation)
         let task = Task {
             do {
                 try await withClient(
                     cloudGRPC: configuration.cloudGRPC,
-                    credentials: configuration.credentials,
-                    fullMethod: "wendycloud.v1.TunnelBrokerService/ClientTunnel"
-                ) { grpc, metadata in
-                    let client = Wendycloud_V1_TunnelBrokerService.Client(wrapping: grpc)
-                    try await client.clientTunnel(metadata: metadata) { writer in
+                    credentials: configuration.credentials
+                ) { grpc in
+                    let client = Wendycloud_V2_TunnelBrokerService.Client(wrapping: grpc)
+                    try await client.clientTunnel { writer in
                         try await writer.write(
                             .with {
                                 $0.open = .with {
@@ -236,7 +218,7 @@ public actor WendyCloudDatagramSession {
         runTask = task
     }
 
-    private func deliver(_ frame: Wendycloud_V1_TunnelData) {
+    private func deliver(_ frame: Wendycloud_V2_TunnelData) {
         if frame.hasDatagram {
             datagramHandlers[frame.datagram.flowID]?(frame.datagram.payload)
         } else if frame.hasIcmpReply {
@@ -319,15 +301,6 @@ func parseCloudEndpoint(_ rawEndpoint: String) throws -> (host: String, port: In
     throw invalidEndpoint("requires brackets around IPv6 literals")
 }
 
-private func clientMetadata(
-    for credentials: WendyCloudCredentials,
-    fullMethod: String
-) throws -> Metadata {
-    // SECURITY: Client-written XFCC headers are never authentication. Cloud Run terminates TLS,
-    // so cloud #565 verifies this method-bound possession proof against the issuance ledger.
-    try LegacyCertificateProofSigner(credentials: credentials).metadata(fullMethod: fullMethod)
-}
-
 private func makeCloudTransport(
     endpoint: String,
     credentials: WendyCloudCredentials
@@ -352,15 +325,10 @@ private func makeCloudTransport(
 private func withClient<Result: Sendable>(
     cloudGRPC: String,
     credentials: WendyCloudCredentials,
-    fullMethod: String,
-    _ body:
-        @Sendable @escaping (
-            GRPCClient<HTTP2ClientTransport.Posix>, Metadata
-        ) async throws -> Result
+    _ body: @Sendable @escaping (GRPCClient<HTTP2ClientTransport.Posix>) async throws -> Result
 ) async throws -> Result {
     let transport = try makeCloudTransport(endpoint: cloudGRPC, credentials: credentials)
-    let metadata = try clientMetadata(for: credentials, fullMethod: fullMethod)
     return try await withGRPCClient(transport: transport) { client in
-        try await body(client, metadata)
+        try await body(client)
     }
 }

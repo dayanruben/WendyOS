@@ -1,89 +1,50 @@
 import Foundation
-import GRPCCore
 import Testing
-import X509
 
 @testable import WendyAgentCore
 
 @Suite("Wendy Mesh")
 struct WendyMeshTests {
-    @Test("device IDs map to stable 10.99/16 addresses")
+    @Test("directory address indices map to stable 10.99/16 addresses")
     func addressPlan() {
         #expect(WendyMeshAddressPlan.addressString(for: 1) == "10.99.0.1")
         #expect(WendyMeshAddressPlan.addressString(for: 513) == "10.99.2.1")
-        #expect(WendyMeshAddressPlan.deviceID(for: "10.99.2.1") == 513)
+        #expect(WendyMeshAddressPlan.addressIndex(for: "10.99.2.1") == 513)
         #expect(WendyMeshAddressPlan.addressString(for: 0) == nil)
-        #expect(WendyMeshAddressPlan.deviceID(for: "10.98.2.1") == nil)
+        #expect(WendyMeshAddressPlan.addressIndex(for: "10.98.2.1") == nil)
     }
 
     @Test("directory and credentials use the extension wire format")
     func configurationCoding() throws {
         let directory = WendyMeshDirectory(devices: [
-            WendyMeshDevice(assetID: 42, name: "camera", organizationID: 7, online: true)
+            WendyMeshDevice(
+                assetID: "f2035af2-dc9f-48f4-a058-ef6e6c504692",
+                name: "camera",
+                organizationID: "df96ad5f-50b8-4499-ad31-5a1d4e593b42",
+                online: true
+            )
         ])
         #expect(try WendyMeshDirectory.decode(WendyMeshDirectory.encode(directory)) == directory)
+        #expect(directory.device(forAddressIndex: 1)?.name == "camera")
+        #expect(
+            directory.addressIndex(forAssetID: "f2035af2-dc9f-48f4-a058-ef6e6c504692") == 1
+        )
 
         let credentials = WendyCloudCredentials(
             pemCertificate: "cert",
             pemCertificateChain: "chain",
             pemPrivateKey: "key",
-            organizationID: 7,
+            organizationID: "df96ad5f-50b8-4499-ad31-5a1d4e593b42",
             userID: "user"
         )
         let object = try #require(
             JSONSerialization.jsonObject(with: JSONEncoder().encode(credentials)) as? [String: Any]
         )
         #expect(object["pem_certificate"] as? String == "cert")
-        #expect(object["organization_id"] as? Int == 7)
+        #expect(
+            object["organization_id"] as? String == "df96ad5f-50b8-4499-ad31-5a1d4e593b42"
+        )
         #expect(credentials.debugDescription == "WendyCloudCredentials(<redacted>)")
-    }
-
-    @Test("certificate proof binds the user identity and RPC method")
-    func certificateProof() throws {
-        let ca = try TestPKI.makeCA()
-        let identity = try TestPKI.makeIdentity(commonName: "proof-test", ca: ca)
-        let credentials = WendyCloudCredentials(
-            pemCertificate: identity.certPEM,
-            pemCertificateChain: ca.pem,
-            pemPrivateKey: identity.keyPEM,
-            organizationID: 7,
-            userID: "user-a"
-        )
-        let metadata = try LegacyCertificateProofSigner(credentials: credentials).metadata(
-            fullMethod: "/wendycloud.v1.TunnelBrokerService/ClientTunnel"
-        )
-        func value(_ key: String) throws -> String {
-            try #require(Array(metadata[stringValues: key]).first)
-        }
-
-        let method = "wendycloud.v1.TunnelBrokerService/ClientTunnel"
-        let uri = try value("x-wendy-certificate-uri")
-        let serial = try value("x-wendy-certificate-serial")
-        let timestamp = try value("x-wendy-certificate-timestamp")
-        let nonce = try value("x-wendy-certificate-nonce")
-        let signature = try #require(base64URLData(try value("x-wendy-certificate-signature")))
-        #expect(uri == "urn:wendy:org:7:user:user-a")
-        #expect(serial.count >= 2)
-        #expect(base64URLData(nonce)?.count == 16)
-
-        let canonical = proofCanonical([method, uri, serial, timestamp, nonce])
-        #expect(
-            identity.certificate.publicKey.isValidSignature(
-                signature,
-                for: canonical,
-                signatureAlgorithm: .ecdsaWithSHA256
-            )
-        )
-        let otherMethod = proofCanonical([
-            "wendycloud.v1.AssetService/ListAssets", uri, serial, timestamp, nonce,
-        ])
-        #expect(
-            !identity.certificate.publicKey.isValidSignature(
-                signature,
-                for: otherMethod,
-                signatureAlgorithm: .ecdsaWithSHA256
-            )
-        )
     }
 
     @Test("mesh DNS answers enrolled device names")
@@ -188,27 +149,6 @@ struct WendyMeshTests {
         #expect(Array(reply[16...19]) == [192, 168, 1, 4])
         #expect(reply[20] == 0)
         #expect(Array(reply.suffix(3)) == [1, 2, 3])
-    }
-
-    private func proofCanonical(_ fields: [String]) -> Data {
-        var result = Data()
-        for field in ["wendy-legacy-certificate-proof/v1"] + fields {
-            let bytes = Array(field.utf8)
-            let length = UInt32(bytes.count)
-            result.append(UInt8((length >> 24) & 0xff))
-            result.append(UInt8((length >> 16) & 0xff))
-            result.append(UInt8((length >> 8) & 0xff))
-            result.append(UInt8(length & 0xff))
-            result.append(contentsOf: bytes)
-        }
-        return result
-    }
-
-    private func base64URLData(_ encoded: String) -> Data? {
-        var value = encoded.replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        value += String(repeating: "=", count: (4 - value.count % 4) % 4)
-        return Data(base64Encoded: value)
     }
 
     private func dnsQuery(_ name: String) -> Data {

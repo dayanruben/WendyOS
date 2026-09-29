@@ -4,6 +4,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -38,6 +39,11 @@ func stubEnrollPrompts(t *testing.T) {
 		t.Fatal("unexpected enrollment call")
 		return nil, nil
 	}
+	origACME := preEnrollACMEFn
+	preEnrollACMEFn = func(context.Context, *config.AuthConfig, string) (*acmeEnrollmentBake, error) {
+		t.Fatal("unexpected ACME enrollment call")
+		return nil, nil
+	}
 	// Default org resolver returns a stable test org so tests that reach
 	// preEnrollDeviceFn don't need a live cloud connection.
 	resolveOrgFn = func(_ context.Context, _ *config.AuthConfig, _ bool) (OrgResolution, error) {
@@ -48,6 +54,7 @@ func stubEnrollPrompts(t *testing.T) {
 		confirmPreEnroll = origPreEnroll
 		confirmContinueUnenrolled = origContinue
 		preEnrollDeviceFn = origEnroll
+		preEnrollACMEFn = origACME
 		resolveOrgFn = origResolveOrg
 	})
 }
@@ -359,5 +366,59 @@ func TestResolvePreEnrollmentAuthErrorInteractiveAsksToContinue(t *testing.T) {
 	prov, err := resolvePreEnrollment(context.Background(), cfg, preEnrollOptions{mode: preEnrollAuto}, true, "dev")
 	if err != nil || prov != nil {
 		t.Fatalf("acknowledged auth failure must continue without JSON, got %v / %v", prov, err)
+	}
+}
+
+func TestACMEPreEnrollmentBakesEABMaterial(t *testing.T) {
+	stubEnrollPrompts(t)
+	want := &acmeEnrollmentBake{
+		DirectoryURL: "https://acme.dev.pki.wendy.sh/" + testOperatorTenant + "/acme/directory",
+		DeviceID:     "11111111-1111-4111-8111-111111111111",
+		EABKeyID:     "eab-id",
+		EABHMACKey:   strings.Repeat("ab", 32),
+		CloudHost:    "prod.example.com:443",
+	}
+	var gotAuth *config.AuthConfig
+	var gotName string
+	preEnrollACMEFn = func(_ context.Context, auth *config.AuthConfig, name string) (*acmeEnrollmentBake, error) {
+		gotAuth, gotName = auth, name
+		return want, nil
+	}
+	got, err := resolveACMEPreEnrollment(context.Background(), twoSessionConfig(),
+		preEnrollOptions{mode: preEnrollForced, cloudGRPC: "prod.example.com:443"}, false, "dev")
+	if err != nil {
+		t.Fatalf("resolveACMEPreEnrollment: %v", err)
+	}
+	if got != want {
+		t.Fatalf("bake = %#v, want %#v", got, want)
+	}
+	if gotName != "dev" || gotAuth == nil || gotAuth.CloudGRPC != "prod.example.com:443" {
+		t.Fatalf("mint got auth=%v name=%q", gotAuth, gotName)
+	}
+	// The baked JSON is the on-disk contract the device consumes on first boot:
+	// the first four keys must match acmeenroll.Config's tags, plus cloudHost.
+	blob, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, frag := range []string{
+		`"directoryURL":"https://acme.dev.pki.wendy.sh/`,
+		`"deviceID":"11111111-1111-4111-8111-111111111111"`,
+		`"eabKeyID":"eab-id"`,
+		`"eabHMACKey":"` + strings.Repeat("ab", 32) + `"`,
+		`"cloudHost":"prod.example.com:443"`,
+	} {
+		if !strings.Contains(string(blob), frag) {
+			t.Errorf("acme-enrollment.json missing %s; got %s", frag, blob)
+		}
+	}
+}
+
+func TestACMEPreEnrollmentSkips(t *testing.T) {
+	stubEnrollPrompts(t)
+	got, err := resolveACMEPreEnrollment(context.Background(), twoSessionConfig(),
+		preEnrollOptions{mode: preEnrollSkip}, true, "dev")
+	if err != nil || got != nil {
+		t.Fatalf("skip: bake=%v err=%v; want nil,nil", got, err)
 	}
 }
