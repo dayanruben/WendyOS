@@ -1371,6 +1371,9 @@ func newDeviceLogsCmd() *cobra.Command {
 
 			conn, err := connectToAgent(ctx)
 			if err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil
+				}
 				return err
 			}
 			defer conn.Close()
@@ -1410,6 +1413,9 @@ func newDeviceLogsCmd() *cobra.Command {
 			}
 			stream, err := conn.TelemetryService.StreamLogs(streamCtx, req)
 			if err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil
+				}
 				return fmt.Errorf("starting log stream: %w", err)
 			}
 
@@ -1446,6 +1452,9 @@ func newDeviceLogsCmd() *cobra.Command {
 					break
 				}
 				if err != nil {
+					if errors.Is(ctx.Err(), context.Canceled) {
+						return nil
+					}
 					if noFollow && errors.Is(streamCtx.Err(), context.DeadlineExceeded) {
 						return fmt.Errorf("log replay did not finish within 30 seconds; the agent may not support --no-follow")
 					}
