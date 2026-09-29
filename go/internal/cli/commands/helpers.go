@@ -2965,13 +2965,43 @@ func loadAllCLICerts() []config.CertificateInfo {
 	if err != nil || len(cfg.Auth) == 0 {
 		return nil
 	}
-	var out []config.CertificateInfo
+	var all []config.CertificateInfo
 	for _, auth := range cfg.Auth {
 		if len(auth.Certificates) > 0 {
-			out = append(out, auth.Certificates[0])
+			all = append(all, auth.Certificates[0])
 		}
 	}
-	return out
+	return preferValidCerts(all, time.Now())
+}
+
+// preferValidCerts keeps only non-expired certs so the mTLS ladder doesn't
+// waste rungs on a stale session (e.g. an expired "default" context) when
+// another session for the device's org is still valid. It falls back to every
+// cert if they're all expired, so the handshake still produces a meaningful
+// "run auth login" error instead of a confusing "no certificate".
+func preferValidCerts(all []config.CertificateInfo, now time.Time) []config.CertificateInfo {
+	var valid []config.CertificateInfo
+	for _, cert := range all {
+		if !certExpired(cert, now) {
+			valid = append(valid, cert)
+		}
+	}
+	if len(valid) > 0 {
+		return valid
+	}
+	return all
+}
+
+// certExpired reports whether the certificate's leaf has passed its NotAfter.
+// It uses the same tolerant decoder as config.CertificateInfo.CertificatePrincipal
+// so ML-DSA/pki-core certs with trailing ASN.1 bytes parse correctly; an
+// unparseable cert is treated as not-expired so it is still attempted.
+func certExpired(c config.CertificateInfo, now time.Time) bool {
+	leaves, _ := certs.ParseCertsFromPEM([]byte(c.PemCertificate))
+	if len(leaves) == 0 {
+		return false
+	}
+	return now.After(leaves[0].NotAfter)
 }
 
 func loadCLIAuth() *config.AuthConfig {
