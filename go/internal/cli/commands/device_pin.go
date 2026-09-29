@@ -443,6 +443,16 @@ func challengeUnprovisionedDevice(cfg *config.Config, hostname string) error {
 // refusal that has no other way out. Best-effort; a config read/write failure
 // just leaves the old pin in place.
 //
+// One deliberate difference from unpin (D2): when hostname is a VM's
+// vm:<name> key, this clears the vm:<name> pin like any other, but — unlike
+// `wendy device unpin vm:<name>` — never the VM's 127.0.0.1 endpoint pins.
+// set-default runs unattended as part of an ordinary workflow, not as a
+// deliberate "replace this device" act, and while the VM is stopped there is
+// no live connection to prove those addresses still belong to it; clearing
+// them here could leave 127.0.0.1:<port> unpinned for whoever else holds the
+// port. clearPinsGoverning itself no longer touches them at all — only
+// newDeviceUnpinCmd does, after calling it.
+//
 // It reports what it cleared on stderr for the same reason unpin does on
 // stdout: set-default deleting trust state is a side effect of a command whose
 // name does not mention pins, and the user is the only one who can notice it

@@ -398,6 +398,65 @@ func TestSetDefaultOnBareLoopbackClearsTheEndpointPin(t *testing.T) {
 	}
 }
 
+// D2 (safe option): only `wendy device unpin vm:<name>` clears a VM's
+// 127.0.0.1 endpoint pins; `wendy device set-default vm:<name>` still clears
+// the vm:<name> pin itself (a fresh identity re-pins on the next connect) but
+// must leave the endpoint pins alone. A reviewer showed that running
+// set-default while the VM is stopped, with another local account holding the
+// port span, previously left 127.0.0.1:<port> unpinned by falling through to
+// the same clearVMEndpointPins call unpin uses.
+func TestSetDefaultOnVMKeepsItsEndpointPins(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	stubLoopbackVMs(t, nil) // the VM is stopped
+	setPinCache(t)
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"vm:dev":          pinA,
+		"127.0.0.1:50051": pinA,
+		"127.0.0.1:50052": pinA,
+	})
+
+	// Nothing here should boot the VM or touch the network: the reachability
+	// probe set-default runs after re-pinning must fail cleanly.
+	origConnect := connectSimulatorChoiceFn
+	connectSimulatorChoiceFn = func(context.Context, *simulatorChoice, bool) (*SelectedDevice, error) {
+		return nil, errors.New("VM offline in test")
+	}
+	origLookup, origBrowse, origLadder, origDiscover := osLookupHostFn, lanBrowseFn, dialAgentLadderFn, discoverLANDevices
+	osLookupHostFn = func(context.Context, string) ([]string, error) { return nil, errors.New("no resolver in test") }
+	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+		return nil, nil, errors.New("device offline in test")
+	}
+	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	origUSB := usbDirectCandidatesFn
+	usbDirectCandidatesFn = func() []discovery.USBDirectCandidate { return nil }
+	t.Cleanup(func() {
+		connectSimulatorChoiceFn = origConnect
+		osLookupHostFn, lanBrowseFn, dialAgentLadderFn, discoverLANDevices = origLookup, origBrowse, origLadder, origDiscover
+		usbDirectCandidatesFn = origUSB
+	})
+
+	cmd := newDeviceSetDefaultCmd()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd.SetContext(ctx)
+	if err := cmd.RunE(cmd, []string{"vm:dev"}); err != nil {
+		t.Fatal(err)
+	}
+
+	pins := readPins()
+	if _, ok := pins["vm:dev"]; ok {
+		t.Error("set-default vm:dev did not clear the VM's own pin")
+	}
+	if _, ok := pins["127.0.0.1:50051"]; !ok {
+		t.Error("set-default vm:dev cleared the VM's endpoint pin at 127.0.0.1:50051 — only unpin should")
+	}
+	if _, ok := pins["127.0.0.1:50052"]; !ok {
+		t.Error("set-default vm:dev cleared the VM's endpoint pin at 127.0.0.1:50052 — only unpin should")
+	}
+}
+
 func TestVMPrintReachabilityNamesTheVMAlias(t *testing.T) {
 	var buf bytes.Buffer
 	vmPrintReachability(&buf, "dev", vm.NetConfig{Mode: vm.NetUser}, 50151)
