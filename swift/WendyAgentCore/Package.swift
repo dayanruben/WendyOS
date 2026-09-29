@@ -79,7 +79,6 @@ let package = Package(
                 .product(name: "HummingbirdTLS", package: "hummingbird"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "WendyCloudGRPC"),
-                .target(name: "WendyCloudV2GRPC"),
             ],
             path: "Sources/WendyAgent",
             swiftSettings: swiftSettings
@@ -96,15 +95,6 @@ let package = Package(
         ),
         .target(
             name: "WendyCloudGRPC",
-            dependencies: [
-                .product(name: "GRPCCore", package: "grpc-swift-2"),
-                .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
-                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
-            ],
-            swiftSettings: swiftSettings
-        ),
-        .target(
-            name: "WendyCloudV2GRPC",
             dependencies: [
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
