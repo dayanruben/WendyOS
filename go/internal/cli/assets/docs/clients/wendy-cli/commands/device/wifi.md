@@ -1,12 +1,19 @@
 # `wendy device wifi`
 
-Manages WiFi on the host machine running the Wendy CLI (not on a connected WendyOS device).
+Manages WiFi **on the connected WendyOS device**, through the device's agent.
+Run with no subcommand for an interactive session.
+
+The one exception is the host-scan fallback: a Wendy Lite device reached over
+BLE, or a device behind a provider that manages WiFi itself, cannot scan from
+the device, so those are offered the networks visible from the host machine
+instead. The [Platform behavior](#platform-behavior) section below describes
+that host-side scan only.
 
 ## Subcommands
 
-### `wendy device wifi scan`
+### `wendy device wifi list`
 
-Lists WiFi networks visible to the host.
+Lists WiFi networks visible to the device.
 
 ```sh
 wendy device wifi list
@@ -14,7 +21,7 @@ wendy device wifi list
 
 ### `wendy device wifi connect`
 
-Interactively selects and connects the host to a WiFi network.
+Interactively selects and connects the device to a WiFi network.
 
 ```sh
 wendy device wifi connect [--ssid <name>]
@@ -22,9 +29,29 @@ wendy device wifi connect [--ssid <name>]
 
 Pass `--ssid` to skip the interactive network picker.
 
+### `wendy device wifi status`
+
+Shows the device's current WiFi connection.
+
+### `wendy device wifi disconnect`
+
+Disconnects the device from its current network.
+
+### `wendy device wifi rank`
+
+Shows or adjusts the device's network priority order.
+
+### `wendy device wifi forget`
+
+Removes a saved network from the device.
+
 ---
 
 ## Platform behavior
+
+> These notes describe the **host-side scan fallback** described above — how
+> the CLI enumerates networks on the machine you are running it from. They do
+> not describe scanning on a WendyOS device, which the agent performs.
 
 ### macOS
 

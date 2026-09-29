@@ -3,6 +3,7 @@ package cdi
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/oci"
@@ -125,7 +126,7 @@ func TestApplyL4TCSV_MountsLibsAndDevices(t *testing.T) {
 	}
 
 	// Lib mounts must remain executable-capable: no "noexec".
-	if m, _ := mountForDest(spec, libFile); contains(m.Options, "noexec") {
+	if m, _ := mountForDest(spec, libFile); slices.Contains(m.Options, "noexec") {
 		t.Error("lib mount must not set noexec (loader needs PROT_EXEC mmap)")
 	}
 }
@@ -173,13 +174,4 @@ func TestApplyL4TCSV_SkipsDuplicateOfExistingSpecEntry(t *testing.T) {
 	if count != 1 {
 		t.Errorf("duplicate mount destination created: %d entries", count)
 	}
-}
-
-func contains(s []string, v string) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }

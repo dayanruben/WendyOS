@@ -138,6 +138,7 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	if npuInfo.vendor != "" {
 		resp.NpuVendor = &npuInfo.vendor
 	}
+	resp.NpuBackends = npuInfo.backends
 
 	if usage, ok := rootDiskUsage(); ok {
 		resp.DiskUsedBytes = &usage.usedBytes
@@ -244,8 +245,23 @@ type gpuInfo struct {
 	devices        []gpudiscovery.Device
 }
 
-// detectGPUInfo probes on every call rather than caching. /dev/dri and the DRM
-// sysfs tree are live state: the first RPC can land before udev has settled,
+// detectGPUInfo reports what accelerator hardware this board *has*. It is a
+// presence check, not a health check, and hasGPU in particular is satisfied on a
+// Jetson by a file on disk — true whether the driver is healthy, wedged, or
+// never loaded.
+//
+// That is deliberate and must stay so: hasGPU is a board fact that reaches image
+// builds as WENDY_HAS_GPU, so tying it to the driver's current mood would change
+// how an image is built because of a transient condition. It does mean the flag
+// is easy to read as "the GPU is fine" when it says nothing of the sort — for
+// that question, see hardware.ProbeGPUDriver, which is reported through the gpu
+// capability's driver_status.
+//
+// For NVIDIA, gpuArch comes from an nvidia-smi query. A blank value can mean the
+// tool or query is unavailable; it is not by itself evidence of a driver failure.
+//
+// Probe on every call rather than caching. /dev/dri and the DRM sysfs tree are
+// live state: the first RPC can land before udev has settled,
 // and installing a driver add-on makes a GPU appear without restarting the
 // agent — so a cached "no GPU" would never heal, and would contradict
 // detectFeatureset, which re-probes.
@@ -279,8 +295,9 @@ var (
 var adrenoCompatibleRe = regexp.MustCompile(`qcom,adreno-(\d+)\.\d+`)
 
 type npuInfo struct {
-	hasNPU bool
-	vendor string
+	hasNPU   bool
+	vendor   string
+	backends []string
 }
 
 // detectNPUInfo probes on every call, for the same reason detectGPUInfo does: the
@@ -297,9 +314,19 @@ func detectNPUInfo() npuInfo {
 		if strings.HasSuffix(node, fastrpcSecureSuffix) {
 			continue
 		}
-		return npuInfo{hasNPU: true, vendor: dspVendor()}
+		vendor := dspVendor()
+		return npuInfo{hasNPU: true, vendor: vendor, backends: npuBackends(vendor)}
 	}
 	return npuInfo{}
+}
+
+// npuBackends names the runtime an app can use on a reachable NPU. The vendor
+// settles it: the FastRPC node the caller found is that runtime's only transport.
+func npuBackends(vendor string) []string {
+	if vendor == "qualcomm" {
+		return []string{"qnn"}
+	}
+	return nil
 }
 
 // dspVendor names the vendor from the DSP remoteproc's device-tree compatible. An
@@ -887,6 +914,10 @@ func (s *AgentService) ForgetBluetoothPeripheral(ctx context.Context, req *agent
 
 const osUpdateUnsupportedForHostMessage = "This setup cannot be updated with wendy os update. Use this machine’s normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install."
 
+const updateInProgressMessage = "Another update is already in progress on this device. Try again once it has finished."
+
+const osUpdateAwaitingRebootMessage = "An OS update is already installed on this device. Reboot the device to apply it."
+
 // systemctlFn runs systemctl; overridable in tests.
 var systemctlFn = func(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
@@ -962,9 +993,20 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	s.logger.Info("UpdateOS started",
 		zap.String("artifact_url", req.GetArtifactUrl()), zap.String("updater", req.GetUpdaterBackend()))
 
+	if !s.installer.TryLock() {
+		s.logger.Warn("UpdateOS rejected: another update is already in progress")
+		return sendOSUpdateFailure(stream, updateInProgressMessage)
+	}
+	defer s.installer.Unlock()
+
 	if !s.isWendyOSHost() {
 		s.logger.Warn("UpdateOS rejected: host is not a WendyOS OTA target", zap.String("artifact_url", req.GetArtifactUrl()))
 		return sendOSUpdateFailure(stream, osUpdateUnsupportedForHostMessage)
+	}
+
+	if osUpdateStagedThisBoot(s.osUpdateStateDir) {
+		s.logger.Warn("UpdateOS rejected: an installed OS update is waiting for a reboot")
+		return sendOSUpdateFailure(stream, osUpdateAwaitingRebootMessage)
 	}
 
 	// Stop the auto-updater so it can't SIGTERM the in-flight install mid-OTA;

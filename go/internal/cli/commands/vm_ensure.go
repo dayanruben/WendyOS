@@ -12,6 +12,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // errSimulatorUnavailable marks a failure to bring up the selected simulator.
@@ -138,7 +140,9 @@ func waitForSimulatorAgent(ctx context.Context, name, addr string, budget time.D
 			_ = vmRecordHostnameFn(name, resp.GetHostname())
 			return conn, nil
 		}
-		if blocksUnauthenticatedFallback(err) {
+		// An unreachable pinned endpoint is expected during boot. An explicit
+		// authentication failure needs user action, not another boot retry.
+		if simulatorAuthenticationFailed(err) {
 			return nil, err
 		}
 		// Under emulation the budget is five minutes. Without this, a guest that
@@ -150,11 +154,25 @@ func waitForSimulatorAgent(ctx context.Context, name, addr string, budget time.D
 			return nil, fmt.Errorf("the simulator did not answer on %s within %s: %w", addr, budget, err)
 		}
 		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("the simulator did not answer on %s within %s: %w", addr, budget, err)
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// simulatorAuthenticationFailed distinguishes a responding peer rejecting
+// authentication from an agent that has not started listening yet.
+func simulatorAuthenticationFailed(err error) bool {
+	var orgMismatch orgMismatchDeviceError
+	return errors.Is(err, errDeviceIdentityRefused) ||
+		errors.Is(err, errTLSHandshakeRejected) ||
+		errors.As(err, &orgMismatch) ||
+		status.Code(err) == codes.Unauthenticated ||
+		status.Code(err) == codes.PermissionDenied
 }
 
 // VM aliases carry identity separately from their current loopback port. Never
@@ -323,12 +341,17 @@ func awaitSimulatorWith(ctx context.Context, name, addr string, booting bool,
 		conn, err = wait(ctx)
 	}
 	if err != nil {
-		if errors.Is(err, ErrUserCancelled) {
+		if errors.Is(err, ErrUserCancelled) || errors.Is(err, context.Canceled) {
 			return nil, err
+		}
+		if simulatorAuthenticationFailed(err) {
+			// Boot output cannot explain a rejected certificate. Preserve the
+			// actionable error and its type without appending the login banner.
+			return nil, markSimulatorUnavailable(err)
 		}
 		// A silent timeout after minutes of waiting is the worst outcome, so
 		// hand back what the guest actually printed.
-		return nil, fmt.Errorf("%w: %v%s", errSimulatorUnavailable, err, vmConsoleTail(name))
+		return nil, fmt.Errorf("%w: %w%s", errSimulatorUnavailable, err, vmConsoleTail(name))
 	}
 	return conn, nil
 }

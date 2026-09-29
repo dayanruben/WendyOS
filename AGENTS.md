@@ -40,6 +40,12 @@ Use the `run` MCP tool to deploy from within an AI session.
 Most MCP tools require an active device connection. The `run` tool works
 without a prior connection (it manages the cloud tunnel internally).
 
+## Device troubleshooting
+
+Start with [wendy-device-ops](plugins/wendy-agentic-coding/skills/wendy-device-ops/SKILL.md)
+for device inspection and access rules. Use [wendy-device-debug](plugins/wendy-agentic-coding/skills/wendy-device-debug/SKILL.md)
+to trace failures across the CLI, firmware, OS, and app.
+
 ## Authentication
 
 Log in to Wendy Cloud:

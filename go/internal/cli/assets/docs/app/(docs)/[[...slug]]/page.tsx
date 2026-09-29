@@ -1,3 +1,4 @@
+import { PageActions } from '@/components/docs/page-actions';
 import { getMDXComponents } from '@/components/mdx';
 import { source } from '@/lib/source';
 import { ogImage, withBasePath } from '@/lib/shared';
@@ -40,6 +41,9 @@ const legacyRedirects: Record<string, string> = {
   'installation/ubuntu': '/installation/linux/',
   'guides/tutorials/camera-exposure': '/guides/camera-exposure/',
   'guides/tutorials/fleet-deployment': '/guides/fleet-deployment/',
+  'get-started/hardware': '/',
+  'get-started/mac': '/installation/wendy-agent-macos/',
+  'installation/developer-machine-setup': '/',
 };
 
 function getLegacyRedirect(slug?: string[]) {
@@ -62,6 +66,7 @@ export default async function Page(props: PageProps) {
     <DocsPage toc={page.data.toc} full={page.data.full}>
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
+      <PageActions slug={params.slug?.join('/') ?? ''} />
       <DocsBody>
         <MDX
           components={getMDXComponents({

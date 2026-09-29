@@ -14,15 +14,14 @@ WendyOS is an Embedded Linux operating system for edge computing. It supports:
 
 ## Learning About Wendy
 
-Before helping with Wendy commands, run this to learn all available commands:
+Before helping with Wendy commands, explore the command tree with the built-in help:
 
 ```bash
-wendy --experimental-dump-help
+wendy --help
+wendy <command> --help
 ```
 
-This outputs a JSON structure with all commands, flags, and documentation.
-
-Whenever you invoke a wendy command, use the JSON structure options to provide structured JSON output. This will also prevent interactive dialogs and errors. Use `--json` or `-j` to provide JSON output.
+Whenever you invoke a wendy command, pass the persistent `--json` flag for structured output. This also prevents interactive dialogs and the errors they cause in a non-interactive session. (There is no `-j` shorthand.)
 
 ## Common Tasks
 
@@ -89,8 +88,8 @@ See `references/wendy.json.md` for detailed entitlement configuration.
 ### Quick Start
 
 1. Create a new Swift project or navigate to an existing one
-2. Initialize wendy.json: `wendy project init`
-3. Add required entitlements (e.g., for a web server): `wendy project entitlements add network --mode host`
+2. Initialize wendy.json: `wendy init`
+3. Add required entitlements (e.g., for a web server): `wendy project entitlements add network` (the mode is chosen at the interactive prompt; there is no `--mode` flag)
 4. Run on device: `wendy run`
 
 ### Common Entitlements
@@ -106,14 +105,19 @@ See `references/wendy.json.md` for detailed entitlement configuration.
 
 ## Remote Debugging
 
-WendyOS provides built-in support for remote debugging Swift apps. Use `wendy run --debug` to include and launch a debugging session.
-This exposes a GDB server on port 4242.
+`wendy run --debug` starts the app under a debugger.
 
-### Connecting from VS Code
+For **Python** apps the agent rewrites the entrypoint to run under `debugpy`.
+The CLI does **not** inject debugpy into the image, so the image must already
+bundle it — for Stagefile projects the CLI checks the pip requirements up front
+and fails fast rather than letting the app crash-loop with
+`No module named debugpy`.
 
-1. Run `wendy run --debug`
-2. In VS Code, use the CodeLLDB extension
-3. Connect to `<device-ip>:4242`
+For **Swift** apps, attach with the WendyOS VS Code extension, which generates a
+debug configuration per executable target. See the
+[VS Code extension guide](../../docs/remote-debugging/vscode-extension.mdx) for
+the ports and prerequisites — the debugger wiring lives in that extension, not
+in this CLI.
 
 ## Observability
 
@@ -150,7 +154,7 @@ The local collector handles forwarding telemetry to your backend infrastructure.
 
 | Problem | Solution |
 |---------|----------|
-| Device not found | Check USB/LAN connection, run `wendy discover`. On Linux with USB-C, run `wendy device usb-setup` first. |
+| Device not found | Check USB/LAN connection, run `wendy discover`. On Linux with USB-C, the CLI offers to run its USB setup step automatically — accept that prompt. |
 | Network access denied | Add network entitlement with host mode |
 | GPU not detected | Add gpu entitlement (Jetson for CUDA, Raspberry Pi for board telemetry) |
 | Camera not found | Add camera entitlement, verify camera at `/dev/video0` (for CSI cameras also check `/run/udev` is present on host) |

@@ -14,11 +14,11 @@ actor DatagramSessionCache {
     // same session (or the same failure). Without this, two datagrams to a newly-seen device
     // arriving in the same readDatagrams batch could each call `CloudDatagramSession.open`
     // before either finishes, leaking one of the two sessions forever.
-    private var sessionTasks: [Int32: Task<WendyCloudDatagramSession, any Error>] = [:]
+    private var sessionTasks: [String: Task<WendyCloudDatagramSession, any Error>] = [:]
     private let flowIDs = FlowIDCounter()
 
     func session(
-        for assetID: Int32,
+        for assetID: String,
         config: ExtensionConfig
     ) async throws
         -> WendyCloudDatagramSession
@@ -52,7 +52,7 @@ actor DatagramSessionCache {
         }
     }
 
-    private func dropSession(assetID: Int32) {
+    private func dropSession(assetID: String) {
         sessionTasks[assetID] = nil
     }
 

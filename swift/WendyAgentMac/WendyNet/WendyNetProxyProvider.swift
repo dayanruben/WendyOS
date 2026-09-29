@@ -116,7 +116,12 @@ final class WendyNetProxyProvider: NETransparentProxyProvider, NEAppProxyUDPFlow
             return true
         }
 
-        guard let assetID = WendyMeshAddressPlan.deviceID(for: endpointHost.debugDescription) else {
+        guard
+            let addressIndex = WendyMeshAddressPlan.addressIndex(
+                for: endpointHost.debugDescription
+            ),
+            let assetID = config.directory.device(forAddressIndex: addressIndex)?.assetID
+        else {
             return false
         }
         let port = Int(endpointPort.rawValue)
@@ -164,7 +169,7 @@ final class WendyNetProxyProvider: NETransparentProxyProvider, NEAppProxyUDPFlow
 
     /// The single insertion point for LAN-direct (follow-up plan). Today: broker only.
     private func openTunnel(
-        assetID: Int32,
+        assetID: String,
         port: Int,
         flow: NEAppProxyTCPFlow,
         config: ExtensionConfig
@@ -223,18 +228,22 @@ final class WendyNetProxyProvider: NETransparentProxyProvider, NEAppProxyUDPFlow
                 if port.rawValue == 53 {
                     if let resp = WendyMeshDNS.answer(
                         payload,
-                        resolve: { id in
+                        resolve: { addressIndex in
                             // Only answer for devices actually in this org's directory.
-                            guard config.directory.devices.contains(where: { $0.assetID == id })
+                            guard config.directory.device(forAddressIndex: addressIndex) != nil
                             else { return nil }
-                            return WendyMeshAddressPlan.address(for: id)
+                            return WendyMeshAddressPlan.address(for: addressIndex)
                         }
                     ) {
                         Task { await writeQueue.enqueue(resp, endpoint: endpoint) }
                     }
                     continue  // non-mesh name: drop (resolver only matches the mesh DNS suffixes)
                 }
-                guard let assetID = WendyMeshAddressPlan.deviceID(for: "\(host)") else { continue }
+                guard let addressIndex = WendyMeshAddressPlan.addressIndex(for: "\(host)"),
+                    let assetID = config.directory.device(forAddressIndex: addressIndex)?.assetID
+                else {
+                    continue
+                }
                 Task {
                     await self.relayUDPDatagram(
                         payload,
@@ -267,7 +276,7 @@ final class WendyNetProxyProvider: NETransparentProxyProvider, NEAppProxyUDPFlow
     /// theoretical.
     private func relayUDPDatagram(
         _ payload: Data,
-        assetID: Int32,
+        assetID: String,
         port: UInt32,
         endpoint: Network.NWEndpoint,
         udp: NEAppProxyUDPFlow,
@@ -311,11 +320,11 @@ final class WendyNetProxyProvider: NETransparentProxyProvider, NEAppProxyUDPFlow
             let responses = queries.compactMap { query in
                 WendyMeshDNS.answer(
                     query,
-                    resolve: { id in
-                        guard config.directory.devices.contains(where: { $0.assetID == id }) else {
+                    resolve: { addressIndex in
+                        guard config.directory.device(forAddressIndex: addressIndex) != nil else {
                             return nil
                         }
-                        return WendyMeshAddressPlan.address(for: id)
+                        return WendyMeshAddressPlan.address(for: addressIndex)
                     }
                 )
             }
@@ -380,7 +389,7 @@ actor UDPFlowMap {
     /// re-registers a handler on the session that's actually live.
     func id(
         for endpoint: Network.NWEndpoint,
-        assetID: Int32,
+        assetID: String,
         session: WendyCloudDatagramSession,
         cache: DatagramSessionCache
     ) -> (UInt32, Bool) {

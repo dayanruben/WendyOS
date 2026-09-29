@@ -10,11 +10,14 @@ struct CloudDiscoverySession: Equatable, Sendable {
 enum WendyCLICloudConfig {
     struct Configuration: Decodable {
         let auth: [AuthEntry]
+        let currentContext: String?
         let defaultCloudGRPC: String?
         let defaultOrgId: Int32?
+        let defaultTenantUUID: String?
     }
 
     struct AuthEntry: Decodable {
+        let name: String?
         let cloudGRPC: String
         let certificates: [Certificate]
     }
@@ -23,8 +26,23 @@ enum WendyCLICloudConfig {
         let pemCertificate: String
         let pemCertificateChain: String
         let pemPrivateKey: String
-        let organizationId: Int32
+        let organizationId: Int32?
         let userId: String?
+        let principalUri: String?
+
+        var organizationID: String? {
+            if let principalUri,
+                let url = URL(string: principalUri),
+                url.scheme == "spiffe"
+            {
+                let components = url.path.split(separator: "/")
+                if components.count >= 2, components[0] == "tenant" {
+                    return String(components[1])
+                }
+            }
+            guard let organizationId, organizationId != 0 else { return nil }
+            return String(organizationId)
+        }
     }
 
     static func loadSession(from url: URL) -> CloudDiscoverySession? {
@@ -38,8 +56,14 @@ enum WendyCLICloudConfig {
 
     static func resolveSession(in configuration: Configuration) -> CloudDiscoverySession? {
         let auth: AuthEntry?
-        if configuration.auth.count == 1 {
+        if let currentContext = configuration.currentContext {
+            auth = configuration.auth.first { $0.name == currentContext }
+        } else if configuration.auth.count == 1 {
             auth = configuration.auth[0]
+        } else if let tenant = configuration.defaultTenantUUID {
+            auth = configuration.auth.first {
+                $0.certificates.first?.organizationID == tenant
+            }
         } else if let organizationID = configuration.defaultOrgId,
             organizationID != 0
         {
@@ -52,14 +76,18 @@ enum WendyCLICloudConfig {
             auth = nil
         }
 
-        guard let auth, let certificate = auth.certificates.first else { return nil }
+        guard let auth, let certificate = auth.certificates.first,
+            let organizationID = certificate.organizationID
+        else {
+            return nil
+        }
         return CloudDiscoverySession(
             cloudGRPC: auth.cloudGRPC,
             credentials: WendyCloudCredentials(
                 pemCertificate: certificate.pemCertificate,
                 pemCertificateChain: certificate.pemCertificateChain,
                 pemPrivateKey: certificate.pemPrivateKey,
-                organizationID: certificate.organizationId,
+                organizationID: organizationID,
                 userID: certificate.userId
             )
         )
@@ -83,7 +111,7 @@ struct LiveCloudSessionSource: Sendable {
 
 enum MeshDirectorySync {
     static func refresh(session: CloudDiscoverySession) async throws -> WendyMeshDirectory {
-        let devices = try await WendyCloudDirectory.listOnlineDevices(
+        let devices = try await WendyCloudDirectory.listDevices(
             cloudGRPC: session.cloudGRPC,
             credentials: session.credentials
         )
