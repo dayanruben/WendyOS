@@ -91,7 +91,8 @@ final class WendyNetPacketProvider: NEPacketTunnelProvider, @unchecked Sendable 
 
     private func handle(_ packetData: Data, config: ExtensionConfig) {
         guard let echo = WendyICMPv4.parseEchoRequest(packetData),
-            let assetID = WendyMeshAddressPlan.deviceID(for: echo.destinationAddress)
+            let addressIndex = WendyMeshAddressPlan.addressIndex(for: echo.destinationAddress),
+            let assetID = config.directory.device(forAddressIndex: addressIndex)?.assetID
         else {
             // Drop diagnostic: everything except ICMP echo to a VIP is dropped by design.
             // Confirmed by the Step 6 spike that only proto=1 (ICMP) ever arrives here in
@@ -109,7 +110,7 @@ final class WendyNetPacketProvider: NEPacketTunnelProvider, @unchecked Sendable 
 
     private func relayEcho(
         _ echo: WendyICMPv4.EchoRequest,
-        assetID: Int32,
+        assetID: String,
         config: ExtensionConfig
     ) {
         Task { [weak self] in

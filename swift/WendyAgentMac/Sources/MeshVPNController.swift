@@ -5,6 +5,8 @@ import WendyAgentCore
 
 @MainActor
 final class MeshVPNController: NSObject, ObservableObject {
+    static let shared = MeshVPNController()
+
     enum Status: Equatable {
         case disabled, activatingExtension, needsApproval, connecting, connected
         case failed(String)
@@ -13,12 +15,12 @@ final class MeshVPNController: NSObject, ObservableObject {
 
     private let extensionID = MeshSystemExtensionInstaller.extensionID
     private let autoConnectKey = "wendyMeshAutoConnect"
-    private let profileConfigurationVersion = 6
+    private let profileConfigurationVersion = 7
     private var manager: NETransparentProxyManager?
     private var packetManager: NETunnelProviderManager?
     private var statusObserver: (any NSObjectProtocol)?
 
-    override init() {
+    private override init() {
         super.init()
         Task { await refreshStatus() }
     }

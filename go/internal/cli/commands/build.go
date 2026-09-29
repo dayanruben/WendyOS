@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -51,6 +52,11 @@ type buildOptions struct {
 	// maxConcurrency caps how many service images build at once in a
 	// multi-service project (0 = default limit of 4).
 	maxConcurrency int
+}
+
+func mustStopBuildAfterTargetError(err error) bool {
+	var recoveryStopped *defaultDeviceRecoveryStoppedError
+	return errors.As(err, &recoveryStopped) || errors.Is(err, ErrUserCancelled) || errors.Is(err, context.Canceled)
 }
 
 var appleContainerLocalProviderHintSupported = func() bool {
@@ -119,7 +125,14 @@ func newBuildCmd() *cobra.Command {
 				}
 			}
 
-			target, _ := resolveTarget(cmd.Context())
+			target, targetErr := resolveTarget(cmd.Context())
+			// A local build can proceed without a reachable device, but it must
+			// stop when the user declined to choose a replacement target or
+			// cancelled the picker. Otherwise the build silently targets a
+			// different architecture from the one the user expected.
+			if mustStopBuildAfterTargetError(targetErr) {
+				return targetErr
+			}
 
 			// If the target is an external provider device, use the provider build path.
 			if target != nil && target.External != nil && target.Provider != nil {

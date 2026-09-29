@@ -20,6 +20,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -210,7 +211,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:    use,
-		Short:  "Show agent version, OS, architecture, GPU, NPU, and hardware info for the target device",
+		Short:  "Show organization, agent version, OS, architecture, GPU, NPU, and hardware info for the target device",
 		Hidden: deprecated,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -235,6 +236,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			var partitions []*agentpb.DiskPartition
 			var containerStorage *agentpb.DiskPartition
 			var gpuCapabilities []*agentpb.GpuCapabilities
+			var npuBackends []string
 			var netInterfaces []*agentpb.NetworkInterface
 			var hasGPU, hasNPU bool
 			var providerInfo *providers.ProviderDeviceInfo
@@ -275,6 +277,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuArch = resp.GetGpuArch()
 				hasNPU = resp.GetHasNpu()
 				npuVendor = resp.GetNpuVendor()
+				npuBackends = resp.GetNpuBackends()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
 				memTotalBytes = resp.GetMemTotalBytes()
@@ -313,6 +316,8 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				}
 			}
 
+			organization := deviceOrganization(ctx, target.Agent)
+
 			var latestVersion string
 			if checkUpdates {
 				if providerInfo != nil {
@@ -334,6 +339,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					"deviceType":      deviceType,
 					"cliVersion":      version.Version,
 					"hasGpu":          hasGPU,
+				}
+				if organization != nil {
+					out["organization"] = nil
+					if organization.ID != "" {
+						out["organization"] = organization
+					}
 				}
 				if storageMedium != "" {
 					out["storageMedium"] = storageMedium
@@ -390,6 +401,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if npuVendor != "" {
 					out["npuVendor"] = npuVendor
 				}
+				if len(npuBackends) > 0 {
+					out["npuBackends"] = npuBackends
+				}
 				if len(netInterfaces) > 0 {
 					ifaces := make([]map[string]any, len(netInterfaces))
 					for i, iface := range netInterfaces {
@@ -423,6 +437,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 
 			fmt.Printf("%s %s\n", tui.Dim("Agent Version:"), tui.Value(agentVersion))
+			if organization != nil {
+				fmt.Printf("%s %s\n", tui.Dim("Organization:"), tui.Value(organization.label()))
+			}
 			fmt.Printf("%s %s\n", tui.Dim("OS:"), tui.Value(osName+" "+osVersion))
 			fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(cpuArch))
 			if cpuCount > 0 {
@@ -471,11 +488,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				}
 			}
 			if hasNPU {
-				vendor := npuVendor
-				if vendor == "" {
-					vendor = "unknown"
-				}
-				fmt.Printf("%s %s\n", tui.Dim("NPU:"), tui.Value(vendor))
+				fmt.Printf("%s %s\n", tui.Dim("NPU:"), tui.Value(formatNPU(npuVendor, npuBackends)))
 			}
 			if providerInfo != nil {
 				fmt.Printf("%s %s\n", tui.Dim("WASM Apps:"), tui.Value(yesNo(providerInfo.WasmAppSupport)))
@@ -797,14 +810,24 @@ func newDeviceEnrollCmd() *cobra.Command {
 	var name string
 	var cloudGRPC string
 	var orgID int32
+	var acmeDirectoryURL string
 
 	cmd := &cobra.Command{
 		Use:    "enroll",
 		Short:  "Enroll this device with Wendy Cloud or a local pki-core",
-		Long:   "Creates an enrollment token using your stored auth session and provisions the connected device with mTLS certificates. Run 'wendy cloud login' first.",
+		Long:   "Enrolls the connected device using your stored auth session. OIDC accounts use direct PKI enrollment through Cloud's enrollment relay; legacy accounts use Cloud enrollment. Run 'wendy auth login' first.",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+
+			auth, err := resolveEnrollmentAuthEntry(cloudGRPC, orgID)
+			if err != nil {
+				return err
+			}
+			auth, err = prepareEnrollmentAuth(ctx, auth)
+			if err != nil {
+				return err
+			}
 
 			conn, err := connectToAgent(ctx, SuppressProvisioningHint(), SuppressPickerEnroll())
 			if err != nil {
@@ -814,18 +837,14 @@ func newDeviceEnrollCmd() *cobra.Command {
 
 			promptWifiIfNeeded(ctx, conn)
 
-			auth, err := pickAuthEntry(cloudGRPC)
-			if err != nil {
-				return err
-			}
-
-			return runEnrollDevice(ctx, conn, auth, name, orgID)
+			return runEnrollDevice(ctx, conn, auth, name, orgID, acmeDirectoryURL)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Device name")
-	cmd.Flags().Int32Var(&orgID, "org", 0, "Organization ID to enroll into; skips the interactive org picker (required in non-interactive/--json runs when you belong to multiple orgs)")
-	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use (optional when a default session is set via 'wendy auth use')")
+	cmd.Flags().StringVar(&acmeDirectoryURL, "acme-directory-url", "", "ACME directory URL override for custom PKI deployments (OIDC accounts only)")
+	cmd.Flags().Int32Var(&orgID, "org", 0, "Organization ID override for legacy enrollment; OIDC enrollment uses the session's tenant")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use; limits the organization picker to this endpoint")
 	return cmd
 }
 
@@ -882,26 +901,26 @@ func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) {
 
 // defaultEnrollmentName derives a device name from the connected host,
 // stripping a .local suffix. Returns "" for bare IP addresses (no usable name).
+// defaultEnrollmentName proposes the device's own advertised hostname. Cloud
+// compares names without regard to case, so the suggestion is lowercased --
+// but nothing else is repaired: a host that is not a DNS label is reported by
+// validateHostnameArg rather than quietly mangled into one.
 func defaultEnrollmentName(host string) string {
 	h := strings.TrimSpace(host)
 	if h == "" || net.ParseIP(h) != nil {
 		return ""
 	}
-	return strings.TrimSuffix(h, ".local")
+	return strings.ToLower(strings.TrimSuffix(h, ".local"))
 }
 
-func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string, orgOverride int32) error {
-	if len(auth.Certificates) == 0 {
-		return fmt.Errorf("selected auth entry has no certificates; re-run 'wendy auth login'")
-	}
-
+func enrollmentDeviceName(conn *grpcclient.AgentConnection, name string) (string, error) {
 	if name == "" {
 		defaultName := defaultEnrollmentName(conn.Host)
 		if !isInteractiveTerminal() {
 			if defaultName != "" {
 				name = defaultName
 			} else {
-				return fmt.Errorf("device name is required; pass --name when not running interactively")
+				return "", fmt.Errorf("device name is required; pass --name when not running interactively")
 			}
 		} else {
 			prompt := "Device name"
@@ -916,14 +935,47 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 				name = defaultName
 			}
 			if name == "" {
-				return fmt.Errorf("device name is required")
+				return "", fmt.Errorf("device name is required")
 			}
 		}
 	}
 
-	if auth == nil || len(auth.Certificates) == 0 {
-		return fmt.Errorf("missing authentication certificate in selected auth entry")
+	// The same rule 'wendy device rename' enforces, and the same one Cloud
+	// applies to the asset row: a device whose hostname and Cloud row disagree
+	// is one an operator cannot find by either name. Checking it here keeps a
+	// bad name from reaching an enrollment that would refuse it anyway.
+	if err := validateHostnameArg(name); err != nil {
+		return "", fmt.Errorf("device name %q is not usable: %w", name, err)
 	}
+
+	return name, nil
+}
+
+func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string, orgOverride int32, acmeDirectoryURLs ...string) error {
+	if auth == nil || len(auth.Certificates) == 0 {
+		return validateEnrollmentCertificate(auth)
+	}
+	acmeDirectoryURL := ""
+	if len(acmeDirectoryURLs) > 0 {
+		acmeDirectoryURL = acmeDirectoryURLs[0]
+	}
+	if auth.OAuthIssuer == "" && acmeDirectoryURL != "" {
+		return fmt.Errorf("--acme-directory-url requires an OIDC login session")
+	}
+	if err := validateEnrollmentCertificate(auth); err != nil {
+		return err
+	}
+	// Only the new login flow uses direct PKI enrollment. Imported certificates
+	// and legacy sessions retain the Cloud enrollment contract.
+	if auth.OAuthIssuer != "" {
+		return runOIDCEnrollDevice(ctx, conn, auth, name, orgOverride, acmeDirectoryURL)
+	}
+
+	name, err := enrollmentDeviceName(conn, name)
+	if err != nil {
+		return err
+	}
+
 	cert := auth.Certificates[0]
 
 	var cloudTransport grpc.DialOption
@@ -945,7 +997,11 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 	} else {
 		cloudTransport = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
-	cloudConn, err := grpc.NewClient(auth.CloudGRPC, cloudTransport)
+	dialOptions, err := withCloudRequestSigning(auth, cloudTransport)
+	if err != nil {
+		return err
+	}
+	cloudConn, err := grpc.NewClient(auth.CloudGRPC, dialOptions...)
 	if err != nil {
 		return fmt.Errorf("connecting to cloud: %w", err)
 	}
@@ -956,25 +1012,22 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 		return err
 	}
 
-	var org OrgResolution
+	// The selected session already identifies the enrollment organization.
+	// Avoid requiring the organization-listing API just to enroll a device.
+	orgID := int32(cert.OrganizationID)
 	if orgOverride != 0 {
-		// Explicit --org: use it directly (the cloud rejects it if the caller
-		// isn't a member), skipping org listing and the interactive picker.
-		org = OrgResolution{ID: orgOverride, Name: fmt.Sprintf("org %d", orgOverride)}
-	} else {
-		var orgErr error
-		org, orgErr = resolveOrg(ctx, auth, false)
-		if orgErr != nil {
-			return fmt.Errorf("resolving organization: %w", orgErr)
-		}
+		orgID = orgOverride
 	}
 
 	certClient := cloudpb.NewCertificateServiceClient(cloudConn)
 	tokenResp, err := certClient.CreateAssetEnrollmentToken(tokenCtx, &cloudpb.CreateAssetEnrollmentTokenRequest{
-		OrganizationId: org.ID,
+		OrganizationId: orgID,
 		Name:           name,
 		TtlSeconds:     600,
 	})
+	if status.Code(err) == codes.Unimplemented {
+		return fmt.Errorf("this Cloud deployment does not support legacy device enrollment; sign in with 'wendy auth login --email <your-email>' and retry: %w", err)
+	}
 	if err != nil {
 		return fmt.Errorf("creating enrollment token: %w", err)
 	}
@@ -990,21 +1043,37 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 		return fmt.Errorf("enrolling device: %w", err)
 	}
 
-	fmt.Printf("Device enrolled (org: %s / ID: %d, asset: %d).\n",
-		org.Name, tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
+	fmt.Printf("Device enrolled (org: %d, asset: %d).\n",
+		tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
 	return nil
 }
 
 func pickAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
+	auth, err := resolveAuthEntry(cloudGRPC)
+	if err != nil {
+		return nil, err
+	}
+	// Renew while the certificate is still valid. This shared picker has no
+	// caller context; renewal applies its own request timeout. Enrollment uses
+	// prepareEnrollmentAuth instead so expiry can trigger login before work.
+	if rerr := ensureFreshCertificateFn(context.Background(), auth); rerr != nil {
+		reportStaleCertificate(rerr)
+	}
+	return auth, nil
+}
+
+// resolveAuthEntry selects a session without renewing or warning, so enrollment
+// can handle expired credentials before connecting to a device or prompting.
+func resolveAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
-	// A default that points at a removed session is treated as unset; warn so
-	// the user understands why the picker appeared instead of auto-selecting.
-	if cloudGRPC == "" && cfg.DefaultCloudGRPC != "" {
-		if _, ok := cfg.DefaultAuth(); !ok {
-			fmt.Fprintf(os.Stderr, "warning: default session %s no longer exists; clear it with 'wendy auth default --clear'\n", cfg.DefaultCloudGRPC)
+	// A current context that points at a removed session is treated as unset;
+	// warn so the user understands why the picker appeared instead of auto-selecting.
+	if cloudGRPC == "" && cfg.CurrentContext != "" {
+		if _, ok := cfg.ContextByName(cfg.CurrentContext); !ok {
+			fmt.Fprintf(os.Stderr, "warning: current context %q no longer exists; clear it with 'wendy auth default --clear'\n", cfg.CurrentContext)
 		}
 	}
 	var pick config.SessionPicker
@@ -1012,6 +1081,28 @@ func pickAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 		pick = pickAuthSessionFn
 	}
 	return config.ResolveAuth(cfg, cloudGRPC, pick)
+}
+
+// reportStaleCertificate prints why the stored certificate could not be renewed
+// and what to do about it. It does not fail the command: the connection attempt
+// is still worth making — the certificate may be accepted anyway, and a
+// connection error carries better context than a guess made here.
+func reportStaleCertificate(err error) {
+	if jsonOutput {
+		return
+	}
+	fmt.Fprintln(os.Stderr, tui.WarningMessage(capitalizeFirst(err.Error())+"."))
+	fmt.Fprintln(os.Stderr, "  Sign in again to get a new one: wendy auth login")
+}
+
+// capitalizeFirst upper-cases the first rune so an error string reads as a
+// sentence when printed as one.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	return string(unicode.ToUpper(r[0])) + string(r[1:])
 }
 
 func newDeviceUnenrollCmd() *cobra.Command {
@@ -1149,7 +1240,11 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
 
-	cloudConn, dialErr := grpc.NewClient(auth.CloudGRPC, transport)
+	dialOptions, dialErr := withCloudRequestSigning(auth, transport)
+	if dialErr != nil {
+		return nil, nil, dialErr
+	}
+	cloudConn, dialErr := grpc.NewClient(auth.CloudGRPC, dialOptions...)
 	if dialErr != nil {
 		return nil, nil, fmt.Errorf("connecting to cloud: %w", dialErr)
 	}
@@ -1249,6 +1344,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	var minSeverity int32
 	var level string
 	var tail int32
+	var noFollow bool
 
 	cmd := &cobra.Command{
 		Use:   "logs [app]",
@@ -1275,6 +1371,9 @@ func newDeviceLogsCmd() *cobra.Command {
 
 			conn, err := connectToAgent(ctx)
 			if err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil
+				}
 				return err
 			}
 			defer conn.Close()
@@ -1288,7 +1387,7 @@ func newDeviceLogsCmd() *cobra.Command {
 				}
 			}
 
-			req := &agentpb.StreamLogsRequest{}
+			req := &agentpb.StreamLogsRequest{NoFollow: noFollow}
 			if appName != "" {
 				req.AppName = &appName
 			}
@@ -1306,8 +1405,17 @@ func newDeviceLogsCmd() *cobra.Command {
 			if tail > 0 {
 				req.LastN = &tail
 			}
-			stream, err := conn.TelemetryService.StreamLogs(ctx, req)
+			streamCtx := ctx
+			if noFollow {
+				var cancel context.CancelFunc
+				streamCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+			}
+			stream, err := conn.TelemetryService.StreamLogs(streamCtx, req)
 			if err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil
+				}
 				return fmt.Errorf("starting log stream: %w", err)
 			}
 
@@ -1324,14 +1432,18 @@ func newDeviceLogsCmd() *cobra.Command {
 				case serviceName != "":
 					target = serviceName
 				}
-				if tail > 0 {
+				if noFollow && tail > 0 {
+					cliLogln("Showing up to %d recent log batches from %s.", tail, target)
+				} else if noFollow {
+					cliLogln("Showing recent logs from %s.", target)
+				} else if tail > 0 {
 					cliLogln("Streaming logs from %s — replaying up to %d recent, then live. Press Ctrl-C to stop.", target, tail)
 				} else {
 					cliLogln("Streaming logs from %s. Waiting for new logs — press Ctrl-C to stop.", target)
 				}
 			}
 
-			liveSeparatorPrinted := tail == 0
+			liveSeparatorPrinted := noFollow || tail == 0
 			seenHistory := false
 
 			for {
@@ -1340,7 +1452,16 @@ func newDeviceLogsCmd() *cobra.Command {
 					break
 				}
 				if err != nil {
+					if errors.Is(ctx.Err(), context.Canceled) {
+						return nil
+					}
+					if noFollow && errors.Is(streamCtx.Err(), context.DeadlineExceeded) {
+						return fmt.Errorf("log replay did not finish within 30 seconds; the agent may not support --no-follow")
+					}
 					return fmt.Errorf("receiving logs: %w", err)
+				}
+				if noFollow && !resp.IsHistory {
+					return fmt.Errorf("agent continued into live logs; update the agent to use --no-follow")
 				}
 
 				logs := resp.GetLogs()
@@ -1383,7 +1504,8 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serviceName, "service", "", "Filter by service name")
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
-	cmd.Flags().Int32Var(&tail, "tail", 0, "Request the last N stored log batches matching the filters before following new output (default 0)")
+	cmd.Flags().Int32Var(&tail, "tail", 0, "Request the last N stored log batches matching the filters (default 0); continue live unless --no-follow")
+	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Return after available log history instead of following live output")
 
 	return cmd
 }
@@ -2989,8 +3111,9 @@ func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryD
 // what the user is told. Transport-level drops (bare io.EOF, Unavailable,
 // Canceled) carry no verdict and map to errAgentUpdateUnconfirmed; a real
 // server status is surfaced with its message, with an actionable hint for the
-// stale-lock FailedPrecondition (an interrupted update on an older agent can
-// leave the lock held until the device is rebooted).
+// busy-lock FailedPrecondition: usually another OS or agent update is running,
+// but an interrupted update on an older agent can leave the lock held until the
+// device is rebooted.
 func agentUpdateTerminalError(recvErr error) error {
 	if errors.Is(recvErr, io.EOF) {
 		return errAgentUpdateUnconfirmed
@@ -3007,8 +3130,8 @@ func agentUpdateTerminalError(recvErr error) error {
 		// half-applied update. Add the reboot hint only where it fits: for the
 		// sysext-overlay refusal a reboot is the one action that makes it worse.
 		if strings.Contains(s.Message(), "update is already in progress") {
-			return fmt.Errorf("%s — if this repeats, a previous update likely applied without the agent restarting; "+
-				"reboot the device to finish it, then retry", s.Message())
+			return fmt.Errorf("%s — another OS or agent update may still be running; wait for it to finish, then retry. "+
+				"If this repeats with nothing running, reboot the device, then retry", s.Message())
 		}
 		return errors.New(s.Message())
 	default:

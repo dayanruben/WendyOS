@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     )
     private let wendyAgent = WendyAgent(configuration: .default)
     private let localBuildService = WendyRuntimeVM()
-    private let meshVPN = MeshVPNController()
+    private let meshVPN = MeshVPNController.shared
     private let welcomeAndPermissions = WelcomeAndPermissions()
     private var statusMenuController: StatusMenuController?
     private var welcomeAndPermissionsWindow: NSWindow?

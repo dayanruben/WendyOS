@@ -5,14 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 // unavailableContainerClient always fails QueryChunks with a gRPC Unavailable
@@ -239,5 +246,171 @@ func TestPushLayersResumingTunnelDropsGivesUpAfterAttempts(t *testing.T) {
 	}
 	if cClosed {
 		t.Error("the final conn is the caller's to close, not pushLayersResumingTunnelDrops's")
+	}
+}
+
+// probeDevice is the device-side chunk store backing probeAgent. It survives
+// a simulated "reconnect" (a fresh probeAgent pointed at the same
+// probeDevice), the way a real device's chunk store survives the CLI
+// reconnecting to the same agent.
+type probeDevice struct {
+	mu     sync.Mutex
+	staged map[[32]byte]int // hash -> times received
+}
+
+// probeAgent is a minimal WendyContainerServiceServer for driving
+// pushLayersResumingTunnelDrops over a real gRPC transport (bufconn), rather
+// than the fakeContainerClient used elsewhere in this package: this test
+// needs several concurrently open WriteChunks streams and a mid-transfer
+// server Stop(), which a hand-rolled fake can't reproduce faithfully.
+type probeAgent struct {
+	agentpb.UnimplementedWendyContainerServiceServer
+	dev       *probeDevice
+	received  atomic.Int64
+	openNow   atomic.Int64
+	maxOpen   atomic.Int64
+	dropAfter int64
+	drop      func()
+	dropOnce  sync.Once
+}
+
+func (a *probeAgent) QueryChunks(_ context.Context, req *agentpb.QueryChunksRequest) (*agentpb.QueryChunksResponse, error) {
+	a.dev.mu.Lock()
+	defer a.dev.mu.Unlock()
+	var missing [][]byte
+	for _, hb := range req.GetChunkHashes() {
+		var h [32]byte
+		copy(h[:], hb)
+		if a.dev.staged[h] == 0 {
+			missing = append(missing, hb)
+		}
+	}
+	return &agentpb.QueryChunksResponse{MissingHashes: missing}, nil
+}
+
+func (a *probeAgent) QueryLayers(context.Context, *agentpb.QueryLayersRequest) (*agentpb.QueryLayersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "no")
+}
+
+func (a *probeAgent) WriteChunks(stream grpc.ClientStreamingServer[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]) error {
+	n := a.openNow.Add(1)
+	for {
+		m := a.maxOpen.Load()
+		if n <= m || a.maxOpen.CompareAndSwap(m, n) {
+			break
+		}
+	}
+	defer a.openNow.Add(-1)
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			return stream.SendAndClose(&agentpb.WriteChunksResponse{})
+		}
+		if err != nil {
+			return err
+		}
+		var h [32]byte
+		copy(h[:], msg.GetHash())
+		a.dev.mu.Lock()
+		a.dev.staged[h]++
+		a.dev.mu.Unlock()
+		if total := a.received.Add(1); a.dropAfter > 0 && total == a.dropAfter {
+			a.dropOnce.Do(func() { go a.drop() })
+		}
+		time.Sleep(100 * time.Microsecond) // device slower than the link, so streams overlap
+	}
+}
+
+// startProbeAgent starts the given probeAgent as a gRPC server behind a
+// bufconn listener, and returns an AgentConnection wired to it the way
+// grpcclient's real dialers do.
+func startProbeAgent(t *testing.T, a *probeAgent) (*grpcclient.AgentConnection, *grpc.Server) {
+	t.Helper()
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer(grpc.InitialWindowSize(8<<20), grpc.InitialConnWindowSize(16<<20))
+	agentpb.RegisterWendyContainerServiceServer(srv, a)
+	go func() { _ = srv.Serve(lis) }()
+	cc, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cc.Close(); srv.Stop(); lis.Close() })
+	return &grpcclient.AgentConnection{Conn: cc, ContainerService: agentpb.NewWendyContainerServiceClient(cc)}, srv
+}
+
+// TestPushLayersResumingTunnelDropsResumesWithSeveralStreamsOpen covers Review
+// Focus #4 over a real gRPC transport: a multi-batch layer pushed with several
+// WriteChunks streams open, dropped once mid-transfer. The plan's Task 4
+// claimed this was "covered by the existing chunkresume_test.go", but every
+// other test in this file fails at the QueryChunks capability probe or finds
+// the layer already present — none of them reaches WriteChunks, let alone
+// with more than one stream open. This one does: it requires the resume to
+// send only the chunks the device is still missing, and never send a chunk
+// twice.
+func TestPushLayersResumingTunnelDropsResumesWithSeveralStreamsOpen(t *testing.T) {
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "16")
+	t.Setenv("WENDY_CHUNK_UPLOAD_STREAMS", "")
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	for iter := 0; iter < 5; iter++ {
+		manifestCacheTestDir = t.TempDir()
+		layerTar := variedChunkTestData(300 * 64 << 10)
+		dev := &probeDevice{staged: map[[32]byte]int{}}
+		agentA := &probeAgent{dev: dev, dropAfter: 120}
+		connA, srvA := startProbeAgent(t, agentA)
+		agentA.drop = srvA.Stop
+		agentB := &probeAgent{dev: dev}
+		connB, _ := startProbeAgent(t, agentB)
+		reconnects := 0
+		connA.Reconnect = func(context.Context) (*grpcclient.AgentConnection, error) {
+			reconnects++
+			return connB, nil
+		}
+		layers := []localLayer{{
+			Digest:    "sha256:" + sha256Hex(layerTar),
+			MediaType: "application/vnd.oci.image.layer.v1.tar",
+			Blob:      layerTar,
+		}}
+		got, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil)
+		if err != nil {
+			t.Fatalf("iter %d: push failed: %v\n%s", iter, err, out.String())
+		}
+		if got != connB || reconnects != 1 || len(headers) != 1 {
+			t.Fatalf("iter %d: conn=%v reconnects=%d headers=%d", iter, got == connB, reconnects, len(headers))
+		}
+		unique := map[[32]byte]bool{}
+		for _, hb := range headers[0].GetChunkHashes() {
+			var h [32]byte
+			copy(h[:], hb)
+			unique[h] = true
+		}
+		dev.mu.Lock()
+		dups := 0
+		for h := range unique {
+			if dev.staged[h] == 0 {
+				t.Fatalf("iter %d: chunk never staged", iter)
+			}
+			dups += dev.staged[h] - 1
+		}
+		dev.mu.Unlock()
+		t.Logf("iter %d: unique=%d A received=%d (max %d streams open) B received=%d re-sent duplicates=%d",
+			iter, len(unique), agentA.received.Load(), agentA.maxOpen.Load(), agentB.received.Load(), dups)
+		if agentA.maxOpen.Load() < 2 {
+			t.Fatalf("iter %d: the drop happened with %d stream(s) open; this test did not exercise several streams", iter, agentA.maxOpen.Load())
+		}
+		if agentB.received.Load() >= int64(len(unique)) {
+			t.Fatalf("iter %d: the resume re-sent everything", iter)
+		}
+		if dups != 0 {
+			t.Fatalf("iter %d: the resume re-sent %d chunk(s) the device already had", iter, dups)
+		}
 	}
 }
