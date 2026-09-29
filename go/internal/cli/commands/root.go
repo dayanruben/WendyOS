@@ -60,20 +60,7 @@ func NewRootCmd() *cobra.Command {
 			firstRun = analytics.Init(cfg)
 			premark("  prerun: analytics.Init")
 			if firstRun {
-				cmd.PrintErrln("Attention: The Wendy CLI collects anonymous analytics.")
-				cmd.PrintErrln("They help us understand which commands are used most, identify common errors, and prioritize improvements.")
-				cmd.PrintErrln("Analytics are enabled by default. If you'd like to opt-out, use the following command:")
-				cmd.PrintErrln("  wendy analytics disable")
-				cmd.PrintErrln("Or, set the following environment variable:")
-				cmd.PrintErrln("  WENDY_ANALYTICS=false")
-
-				cmd.PrintErrln("")
-				cmd.PrintErrln("New to Wendy? Run `wendy tour` for a guided setup.")
-
-				cfg.Analytics = &config.AnalyticsConfig{Enabled: true}
-				if err := config.Save(cfg); err != nil {
-					return err
-				}
+				showFirstRunNotice(cmd, cfg)
 			}
 
 			// Refresh MCP config and skills if the CLI was upgraded since the
