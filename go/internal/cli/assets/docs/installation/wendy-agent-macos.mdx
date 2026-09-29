@@ -109,6 +109,25 @@ If you set the Mac as your default device, omit `--device`:
 wendy run
 ```
 
+## Local Build Service (optional)
+
+Wendy Agent for Mac includes an optional **Local Build Service** that runs
+BuildKit in a lightweight Linux VM using Virtualization.framework. It is off by
+default and starts only when you choose **Start Local Build Service** from the
+menu bar. The menu shows its starting, running, stopping, or failed state and
+lets you stop it explicitly. Quitting Wendy Agent also requests a clean stop.
+
+The VM exposes BuildKit through a user-owned Unix socket with `0600`
+permissions. A bounded 32 GB sparse disk preserves its build cache across
+restarts. The embedded arm64 kernel and initramfs add approximately 132 MB
+uncompressed to the app bundle.
+
+This service only solves and caches Linux image builds. It does not run Wendy
+applications: native Mac apps continue to run as macOS processes, and Apple
+`container` remains the Mac application runtime. Starting the service alone
+does not change CLI builder selection; choose the BuildKit builder explicitly
+when using CLI versions that support it.
+
 ### Homebrew dependencies with Brewfile
 
 Native SwiftPM and Xcode Mac apps can declare Homebrew dependencies with a
@@ -138,11 +157,12 @@ only applies to native Mac deployments.
 - Deploying native SwiftPM macOS apps with `wendy run`
 - Discovering Mac targets over Bonjour/mDNS
 - Setting the Mac as your default Wendy device
+- Starting the optional BuildKit-based Local Build Service from the menu bar
 
 ## Not Supported
 
 - Intel Macs
-- Linux container deployment (Dockerfile, Compose)
+- Linux containers as the Mac application runtime — the Local Build Service builds images but does not run Wendy apps
 - Wi-Fi remote provisioning — configure Wi-Fi through macOS network settings
 - Bluetooth, audio, and GPU hardware APIs via Wendy
 - Wendy camera APIs — use native hardware SDKs (AVFoundation, etc.) directly in your app
