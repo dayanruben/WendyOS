@@ -97,22 +97,20 @@ Attached `wendy run` starts the container and streams output. Ctrl+C stops the c
 
 ## Stream logs
 
-For app logs, prefer JSON records when the next step is machine analysis:
-
-```bash
-wendy --json device logs --app <app-id> --device <hostname>
-wendy --json device logs --app <app-id> --level info --device <hostname>
-wendy --json device logs --app <app-id> --service <service-name> --level warn --device <hostname>
-wendy --json device logs --app <app-id> --min-severity 9 --device <hostname>
-```
-
-For an agent-controlled bounded sample on a current agent, use:
+For a bounded, machine-readable diagnostic sample, use `--tail` with `--no-follow`:
 
 ```bash
 wendy --json device logs --app <app-id> --tail 50 --no-follow --device <hostname>
+wendy --json device logs --app <app-id> --service <service-name> --level warn --tail 50 --no-follow --device <hostname>
 ```
 
-Omit `--no-follow` only when continuous live output is needed. Older agents do not understand finite replay; update the agent if the command reports that it continued into live logs. On macOS, GNU `timeout` may not be installed.
+Use `--level` or `--min-severity` to narrow the sample. Only omit `--no-follow` when continuous live output is needed:
+
+```bash
+wendy --json device logs --app <app-id> --device <hostname>
+```
+
+Bound intentional live streams with the surrounding tool's timeout or a background process. On macOS, GNU `timeout` may not be installed.
 
 For structured telemetry streams:
 
@@ -222,7 +220,7 @@ wendy --json device apps list --device <hostname>
 4. Stream a bounded log sample:
 
 ```bash
-timeout 20s wendy --json device logs --app <app-id> --device <hostname>
+wendy --json device logs --app <app-id> --tail 50 --no-follow --device <hostname>
 ```
 
 5. Stop or remove only when requested:
