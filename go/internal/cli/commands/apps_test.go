@@ -175,8 +175,9 @@ func TestAppsStartCmd_HasDetachFlag(t *testing.T) {
 }
 
 // The skill once claimed `apps start` had no --detach and recommended GNU
-// `timeout`, which macOS lacks. Guard every copy (the plugin source and, when
-// present, the CLI's embedded copy) against those claims coming back.
+// `timeout`, which macOS lacks, to bound a log sample. Guard every copy (the
+// plugin source and, when present, the CLI's embedded copy) against those
+// claims coming back.
 func TestAppLifecycleSkill_NoStaleClaims(t *testing.T) {
 	copies := []string{
 		filepath.Join("..", "..", "..", "..", "plugins", "wendy-agentic-coding", "skills", "wendy-app-lifecycle", "SKILL.md"),
@@ -203,8 +204,8 @@ func TestAppLifecycleSkill_NoStaleClaims(t *testing.T) {
 		if !strings.Contains(text, "wendy device apps start <app-id> --detach") {
 			t.Errorf("%s should show `wendy device apps start <app-id> --detach`", path)
 		}
-		if !strings.Contains(text, "$(mktemp)") {
-			t.Errorf("%s should sample logs into a $(mktemp) file", path)
+		if !strings.Contains(text, "--tail 50 --no-follow") {
+			t.Errorf("%s should take a finite log sample with `--tail 50 --no-follow`", path)
 		}
 	}
 	if checked == 0 {

@@ -32,6 +32,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -739,6 +740,16 @@ func cloudFallbackDeviceName(explicit, flagValue, configDefault string) string {
 	return configDefault
 }
 
+// A LAN hostname often differs from the Cloud display name. When the default
+// has a saved asset identity, look up that exact asset through Cloud; the
+// identity check still verifies the selected org and asset before connecting.
+func cloudDefaultSelector(defaultName string, expected *certs.WendyIdentity) string {
+	if expected != nil && expected.EntityType == certs.EntityAsset && expected.EntityID != "" {
+		return expected.EntityID
+	}
+	return defaultName
+}
+
 // resolveWithCloudFallback is resolveRunTarget with the cloud-tunnel device name
 // stated explicitly rather than read from the --device flag.
 //
@@ -753,11 +764,44 @@ func cloudFallbackDeviceName(explicit, flagValue, configDefault string) string {
 // An empty cloudName preserves the original behaviour for the deploy target,
 // where --device IS the device being resolved.
 func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...resolveOption) (*SelectedDevice, error) {
-	target, err := resolveTarget(ctx, opts...)
+	// A saved default that fails on LAN should get its existing Cloud route
+	// before the picker asks to move this run to another device. The hook is
+	// only called for an implicit default, so explicit --device and build-host
+	// selectors retain their normal fallback behavior.
+	cloudCheckedBeforePicker := false
+	resolveOpts := append(append([]resolveOption(nil), opts...), func(c *resolveConfig) {
+		c.sameTargetFallback = func(ctx context.Context, defaultName string) (*SelectedDevice, error) {
+			cloudCheckedBeforePicker = true
+			cfg, err := config.Load()
+			if err != nil {
+				return nil, err
+			}
+			if len(cfg.Auth) == 0 {
+				return nil, fmt.Errorf("no Wendy Cloud session available")
+			}
+			expected := expectedIdentityFor(pinKeyForAddr(defaultName))
+			conn, err := connectToCloudAgentExpecting(ctx, "", cloudDefaultSelector(defaultName, expected), "", expected)
+			if err != nil {
+				return nil, err
+			}
+			return &SelectedDevice{Agent: conn}, nil
+		}
+	})
+	target, err := resolveTarget(ctx, resolveOpts...)
 	if err == nil {
 		return target, nil
 	}
+	// If Cloud was already checked, the error came from the ensuing recovery
+	// flow (possibly after the user selected another device). Retrying Cloud
+	// here could silently replace that selection with the saved default.
+	if cloudCheckedBeforePicker {
+		return nil, err
+	}
 	if errors.Is(err, ErrUserCancelled) {
+		return nil, err
+	}
+	var stopped *defaultDeviceRecoveryStoppedError
+	if errors.As(err, &stopped) {
 		return nil, err
 	}
 	// The user picked a local VM. Falling back to a cloud device here would
@@ -776,8 +820,15 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 		return nil, err
 	}
 
-	cloudConn, cloudErr := connectToCloudAgent(ctx, "", deviceName, "")
+	var expected *certs.WendyIdentity
+	if cloudName == "" && deviceFlag == "" && deviceName == cfg.DefaultDevice {
+		expected = expectedIdentityFor(pinKeyForAddr(deviceName))
+	}
+	cloudConn, cloudErr := connectToCloudAgentExpecting(ctx, "", cloudDefaultSelector(deviceName, expected), "", expected)
 	if cloudErr != nil {
+		if errors.Is(cloudErr, errDeviceIdentityRefused) {
+			return nil, cloudErr
+		}
 		return nil, err
 	}
 	maybeFixClock(ctx, cloudConn)

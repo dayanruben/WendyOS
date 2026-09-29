@@ -2,10 +2,11 @@ package commands
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,10 +14,9 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
+	"github.com/wendylabsinc/wendy/go/internal/shared/chunkupload"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	grpcgzip "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/status"
 )
 
@@ -28,12 +28,6 @@ import (
 // already parallelized across cores (chunk.ChunkReaderAt), so this need not
 // equal the core count.
 const maxConcurrentLayerPush = 4
-
-// maxChunksPerWriteStream bounds one client-streaming WriteChunks RPC. Closing
-// each small batch gets an application-level acknowledgement, limits how much
-// progress can be reported before the receiver confirms it, and starts a fresh
-// HTTP/2 stream at negligible overhead (at most 4 MiB per batch).
-const maxChunksPerWriteStream = 64
 
 // chunkTransferProgressWriter is implemented by interactive build output
 // adapters that can display chunk-upload bytes directly. Keeping this as an
@@ -454,6 +448,9 @@ func pushLayersByChunksWithPrepareModeAndCache(ctx context.Context, cs agentpb.W
 		}()
 	}
 
+	if len(toPush) > 0 {
+		logChunkUploadTuning()
+	}
 	uploadGroup, uploadGroupCtx := errgroup.WithContext(uploadCtx)
 	uploadGroup.SetLimit(limit)
 	for _, idx := range toPush {
@@ -694,87 +691,67 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 		missing[h] = true
 	}
 
-	if len(missing) > 0 {
-		// The device needs some chunks, so we must produce their bytes. If a
-		// cache hit let us skip decompression above, do it now. Re-chunking here
-		// reproduces the exact hashes in `missing` only because chunking is
-		// deterministic and loadManifestCache rejects manifests from a different
-		// AlgoVersion — so the cached hashes always match what ChunkReaderAt emits.
-		if err := r.ensureDecompressed(indexProgress); err != nil {
-			return err
-		}
-		var missingBytes int64
-		planned := make(map[[32]byte]bool, len(missing))
-		for _, ref := range r.refs {
-			if !missing[ref.Hash] || planned[ref.Hash] {
-				continue
-			}
-			planned[ref.Hash] = true
-			missingBytes += int64(ref.Len)
-		}
-		transferProgress.addTotal(missingBytes)
-		prog.LayerPlanned(len(unique), len(missing), missingBytes)
-		var wc grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]
-		chunksInStream := 0
-		for chunkIndex, ref := range r.refs {
-			if !missing[ref.Hash] {
-				continue
-			}
-			if wc == nil {
-				// Hardware reproduction showed that particular raw chunk payloads can
-				// stall a USB-NCM link while the compressed registry path succeeds.
-				// Give the fast path the same property; gRPC decompresses the message
-				// before the agent hashes and stages the original bytes.
-				wc, err = cs.WriteChunks(ctx, grpc.UseCompressor(grpcgzip.Name))
-				if err != nil {
-					return fmt.Errorf("opening chunk upload for layer %s: %w", r.header.GetDiffId(), err)
-				}
-			}
-			buf := make([]byte, ref.Len) // ref.Len <= chunk.MaxSize (64 KiB)
-			if _, err := r.dl.f.ReadAt(buf, int64(ref.Offset)); err != nil {
-				return fmt.Errorf("reading chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
-			}
-			hb := ref.Hash // copy
-			if err := wc.Send(&agentpb.WriteChunksRequest{
-				Hash: hb[:],
-				Data: buf,
-			}); err != nil {
-				// grpc-go reports io.EOF from Send when the server has already
-				// closed a client-streaming RPC. CloseAndRecv carries the actual
-				// terminal status (for example ResourceExhausted or InvalidArgument);
-				// without this read the CLI hides the actionable agent error behind
-				// a bare EOF and incorrectly treats it as a transport drop.
-				if errors.Is(err, io.EOF) {
-					if _, terminalErr := wc.CloseAndRecv(); terminalErr != nil {
-						err = terminalErr
-					}
-				}
-				return fmt.Errorf("sending chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
-			}
-			// The ordered manifest may reference identical content more than
-			// once. A single staged copy satisfies every occurrence.
-			delete(missing, ref.Hash)
-			prog.ChunkSent(len(buf))
-			transferProgress.addSent(int64(len(buf)))
-			chunksInStream++
-			if chunksInStream == maxChunksPerWriteStream {
-				if _, err := wc.CloseAndRecv(); err != nil {
-					return fmt.Errorf("closing chunk upload batch after chunk %d/%d for layer %s: %w", chunkIndex+1, len(r.refs), r.header.GetDiffId(), err)
-				}
-				wc = nil
-				chunksInStream = 0
-			}
-		}
-		if wc != nil {
-			_, err = wc.CloseAndRecv()
-		}
-		if err != nil {
-			return fmt.Errorf("closing chunk upload for layer %s: %w", r.header.GetDiffId(), err)
-		}
-	} else {
+	if len(missing) == 0 {
 		prog.LayerPlanned(len(unique), 0, 0)
+		return nil
 	}
-	return nil
+	// The device needs some chunks, so we must produce their bytes. If a
+	// cache hit let us skip decompression above, do it now. Re-chunking here
+	// reproduces the exact hashes in `missing` only because chunking is
+	// deterministic and loadManifestCache rejects manifests from a different
+	// AlgoVersion — so the cached hashes always match what ChunkReaderAt emits.
+	if err := r.ensureDecompressed(indexProgress); err != nil {
+		return err
+	}
+	plan, missingBytes := chunkupload.Plan(r.refs, missing)
+	transferProgress.addTotal(missingBytes)
+	prog.LayerPlanned(len(unique), len(missing), missingBytes)
+	streams, batch := chunkUploadTuning()
+	return chunkupload.Upload(ctx, cs, r.dl.f, plan, chunkupload.Options{
+		Layer:       r.header.GetDiffId(),
+		BatchChunks: batch,
+		Streams:     streams,
+		// Hardware reproduction (#1765, WendyOS 0.18.2) showed particular raw
+		// chunk payloads can stall a USB-NCM link while compressed ones pass;
+		// gRPC inflates each message before the agent hashes and stages it.
+		Compressor: chunkupload.Gzip,
+		OnSent: func(n int) {
+			prog.ChunkSent(n)
+			transferProgress.addSent(int64(n))
+		},
+	})
+}
+
+// chunkUploadTuning returns the stream and batch sizes for chunk uploads.
+// WENDY_CHUNK_UPLOAD_STREAMS and WENDY_CHUNK_UPLOAD_BATCH are developer
+// knobs, documented in DEVELOPMENT.md next to WENDY_TIMING, for measuring the
+// transport on new hosts, links and devices; unset or out-of-range values
+// keep the defaults. The streams range is clamped to what upload.go's
+// process-wide cap (chunkupload.maxConcurrentStreams, currently 8) can
+// actually honor — a higher value would silently behave as 8 anyway, and a
+// benchmark that doesn't know that would report a setting it never measured.
+func chunkUploadTuning() (streams, batch int) {
+	return envIntInRange("WENDY_CHUNK_UPLOAD_STREAMS", chunkupload.DefaultStreams, 1, 8),
+		envIntInRange("WENDY_CHUNK_UPLOAD_BATCH", chunkupload.DefaultBatchChunks, 1, 4096)
+}
+
+// logChunkUploadTuning prints the effective streams/batch settings once per
+// push, through the same [timing] line phaseTimer prints elsewhere in this
+// package, so a developer running WENDY_TIMING=1 can see what a benchmark run
+// actually measured instead of assuming the defaults or an out-of-range knob.
+func logChunkUploadTuning() {
+	streams, batch := chunkUploadTuning()
+	phaseTimer()(fmt.Sprintf("chunk upload tuning: %d streams x %d chunks/batch", streams, batch))
+}
+
+// envIntInRange parses the integer environment variable key, returning
+// fallback when it is unset, malformed, or outside [lo, hi].
+func envIntInRange(key string, fallback, lo, hi int) int {
+	v, err := strconv.Atoi(os.Getenv(key))
+	if err != nil || v < lo || v > hi {
+		return fallback
+	}
+	return v
 }
 
 func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClient, l localLayer) (*agentpb.RunContainerLayerHeader, error) {
