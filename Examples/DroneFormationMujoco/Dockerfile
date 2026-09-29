@@ -11,8 +11,14 @@ WORKDIR /app
 COPY requirements.txt ./requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
+# The Crazyflie model and three.js are fetched from pinned commits and hash-checked.
+COPY assets.lock.json ./assets.lock.json
+COPY drone_formation/__init__.py drone_formation/assets.py ./drone_formation/
+RUN python -m drone_formation.assets
+
 COPY drone_formation ./drone_formation
 COPY models ./models
+RUN python -m drone_formation.assets --check
 
 EXPOSE 8879
 

@@ -23,9 +23,10 @@ WIND_EVERY = 4  # send the wind grid with every fourth state (15 Hz)
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/viewer.js": ("viewer.js", "text/javascript; charset=utf-8"),
+    # Fetched by drone_formation.assets from a pinned three.js commit.
     "/three/three.module.js": ("three/three.module.js", "text/javascript; charset=utf-8"),
     "/three/three.core.js": ("three/three.core.js", "text/javascript; charset=utf-8"),
-    "/three/OrbitControls.js": ("three/OrbitControls.js", "text/javascript; charset=utf-8"),
+    "/three/addons/controls/OrbitControls.js": ("three/addons/controls/OrbitControls.js", "text/javascript; charset=utf-8"),
 }
 
 

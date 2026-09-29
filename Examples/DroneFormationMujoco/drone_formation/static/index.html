@@ -54,6 +54,9 @@
 <div class="hud panel" id="formation">
   <div class="label">Formation</div><div class="big" id="formation-name">Parked</div><div class="small" id="formation-error">On the pads</div>
 </div>
+<script type="importmap">
+  { "imports": { "three": "./three/three.module.js", "three/addons/": "./three/addons/" } }
+</script>
 <script type="module">
   import { DroneViewer } from './viewer.js';
   const viewer = new DroneViewer(document.querySelector('#view'), document.querySelector('#status'));

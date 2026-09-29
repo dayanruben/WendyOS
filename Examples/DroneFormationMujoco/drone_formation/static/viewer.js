@@ -1,5 +1,5 @@
-import * as THREE from './three/three.module.js';
-import { OrbitControls } from './three/OrbitControls.js';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // MuJoCo is the authority. The browser interpolates streamed poses, spins the
 // propellers from each rotor's streamed thrust, and draws the simulator's wind

@@ -88,6 +88,7 @@ POST /api/reset     restart the show
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt pytest
+python -m drone_formation.assets   # fetch the pinned model and three.js
 python -m drone_formation.server
 pytest -q
 ```
@@ -100,9 +101,10 @@ pytest -q
 - Formations and timing: `_plan()` in `drone_formation/choreography.py`.
 - Gains and limits: the constants at the top of `drone_formation/control.py`.
 
-## Vendored code
+## Third-party files
 
 The Crazyflie 2 model comes from MuJoCo Menagerie (MIT), which converted it from
-Bitcraze's URDF. Provenance is in `models/bitcraze_crazyflie_2/UPSTREAM.md`.
-The viewer uses three.js r180 (MIT); see
-`drone_formation/static/three/UPSTREAM.md`.
+Bitcraze's URDF. The viewer uses three.js r180 (MIT). Neither is stored in this
+repository. `python -m drone_formation.assets` downloads both from pinned
+commits and checks every file against the SHA-256 in `assets.lock.json`. The
+Docker build runs the same step. See `THIRD_PARTY.md`.

@@ -1,11 +1,7 @@
 # Bitcraze Crazyflie 2 model provenance
 
-- Repository: `https://github.com/google-deepmind/mujoco_menagerie.git`
-- Commit: `71f066ad0be9cd271f7ed58c030243ef157af9f4`
-- Source model: `bitcraze_crazyflie_2/cf2.xml` and the meshes in `bitcraze_crazyflie_2/assets/`
-- License: MIT; see `LICENSE` in this directory.
-
-The Menagerie model was converted from Bitcraze's `crazyflie_description` URDF.
-`cf2.xml` and the meshes are unmodified. `drone_formation/model.py` loads the
-file, copies the airframe once per drone, and replaces the upstream thrust and
-body-moment actuators with four rotor actuators per drone.
+The model files are fetched into this directory by `python -m drone_formation.assets`
+from MuJoCo Menagerie commit `71f066ad0be9cd271f7ed58c030243ef157af9f4`
+(`bitcraze_crazyflie_2/`), and each is checked against its SHA-256 in
+`../../assets.lock.json`. See `../../THIRD_PARTY.md` for the license and how the
+model is used.
