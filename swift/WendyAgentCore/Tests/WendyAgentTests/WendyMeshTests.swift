@@ -49,6 +49,17 @@ struct WendyMeshTests {
         #expect(credentials.debugDescription == "WendyCloudCredentials(<redacted>)")
     }
 
+    @Test("legacy numeric asset IDs retain their mesh hostname address slots")
+    func legacyAddressSlots() {
+        let directory = WendyMeshDirectory(devices: [
+            WendyMeshDevice(assetID: "42", name: "sensor", organizationID: "7", online: true),
+            WendyMeshDevice(assetID: "513", name: "camera", organizationID: "7", online: true),
+        ])
+        #expect(directory.addressIndex(forAssetID: "513") == 513)
+        #expect(directory.device(forAddressIndex: 513)?.name == "camera")
+        #expect(directory.device(forAddressIndex: 1) == nil)
+    }
+
     @Test("legacy Cloud boundary rejects UUID identifiers explicitly")
     func legacyCloudBoundary() throws {
         #expect(try legacyNumericID("42", field: "asset ID") == 42)
