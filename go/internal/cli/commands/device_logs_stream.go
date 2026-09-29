@@ -19,9 +19,10 @@ type logStreamReceiver interface {
 // How `wendy device logs --no-follow` decides the agent's history replay is
 // over. Vars so tests can shrink them.
 //
-// The protocol has no end-of-history marker, and agents already in the field
-// can't grow one. What every agent does do is send its whole replay first —
-// the on-disk batches for --tail, then its in-memory recent batches — all
+// Agents that honour the request's NoFollow (#2103) close the stream once the
+// replay is sent, which ends the read at once. Older agents ignore it and send
+// no end-of-history marker. What every agent does do is send its whole replay
+// first — the on-disk batches for --tail, then its in-memory recent batches — all
 // back-to-back and flagged IsHistory, before entering the live loop, whose
 // frames (new logs, and since WDY-2912 an empty heartbeat after 15 s of
 // quiet) are never flagged. So:

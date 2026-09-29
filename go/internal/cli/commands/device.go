@@ -208,6 +208,7 @@ func newDeprecatedDeviceVersionCmd() *cobra.Command {
 func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 	var checkUpdates bool
 	var prerelease bool
+	var readOnly bool
 
 	cmd := &cobra.Command{
 		Use:    use,
@@ -223,7 +224,15 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				}
 			}
 
-			target, err := resolveTarget(ctx, IncludeBluetooth())
+			var target *SelectedDevice
+			var err error
+			if readOnly {
+				var conn *grpcclient.AgentConnection
+				conn, err = connectToAgent(ctx, ReadOnlyMonitoring())
+				target = &SelectedDevice{Agent: conn}
+			} else {
+				target, err = resolveTarget(ctx, IncludeBluetooth())
+			}
 			if err != nil {
 				return err
 			}
@@ -530,6 +539,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 	cmd.Flags().BoolVar(&checkUpdates, "check-updates", false, "Check for available agent updates on GitHub")
 	cmd.Flags().BoolVar(&prerelease, "prerelease", false, "Include prerelease (nightly) builds when checking for updates")
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Observe an existing agent without starting VMs or managing updates")
 
 	return cmd
 }
@@ -1340,6 +1350,7 @@ func formatKernelLogRecord(rec *agentpb.KernelLogRecord) string {
 
 func newDeviceLogsCmd() *cobra.Command {
 	var appName string
+	var readOnly bool
 	var serviceName string
 	var minSeverity int32
 	var level string
@@ -1371,8 +1382,11 @@ func newDeviceLogsCmd() *cobra.Command {
 				appName = args[0]
 			}
 
-			conn, err := connectToAgent(ctx)
+			conn, err := connectToAgent(ctx, monitoringOptions(readOnly)...)
 			if err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil
+				}
 				return err
 			}
 			defer conn.Close()
@@ -1386,7 +1400,7 @@ func newDeviceLogsCmd() *cobra.Command {
 				}
 			}
 
-			req := &agentpb.StreamLogsRequest{}
+			req := &agentpb.StreamLogsRequest{NoFollow: noFollow}
 			if appName != "" {
 				req.AppName = &appName
 			}
@@ -1410,6 +1424,9 @@ func newDeviceLogsCmd() *cobra.Command {
 			defer cancelStream()
 			stream, err := conn.TelemetryService.StreamLogs(streamCtx, req)
 			if err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil
+				}
 				return fmt.Errorf("starting log stream: %w", err)
 			}
 
@@ -1426,8 +1443,10 @@ func newDeviceLogsCmd() *cobra.Command {
 				case serviceName != "":
 					target = serviceName
 				}
-				if noFollow {
-					cliLogln("Fetching recent logs from %s...", target)
+				if noFollow && tail > 0 {
+					cliLogln("Showing up to %d recent log batches from %s.", tail, target)
+				} else if noFollow {
+					cliLogln("Showing recent logs from %s.", target)
 				} else if tail > 0 {
 					cliLogln("Streaming logs from %s — replaying up to %d recent, then live. Press Ctrl-C to stop.", target, tail)
 				} else {
@@ -1487,8 +1506,9 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serviceName, "service", "", "Filter by service name")
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
-	cmd.Flags().Int32Var(&tail, "tail", 0, "Request the last N stored log batches matching the filters before following new output (default 0)")
+	cmd.Flags().Int32Var(&tail, "tail", 0, "Request the last N stored log batches matching the filters (default 0); continue live unless --no-follow")
 	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Print the logs the device replays (see --tail) and exit instead of following new output; device agents released before 2026-08-19 replay history only with --tail")
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Observe an existing device without starting VMs or managing updates")
 
 	return cmd
 }
@@ -3094,8 +3114,9 @@ func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryD
 // what the user is told. Transport-level drops (bare io.EOF, Unavailable,
 // Canceled) carry no verdict and map to errAgentUpdateUnconfirmed; a real
 // server status is surfaced with its message, with an actionable hint for the
-// stale-lock FailedPrecondition (an interrupted update on an older agent can
-// leave the lock held until the device is rebooted).
+// busy-lock FailedPrecondition: usually another OS or agent update is running,
+// but an interrupted update on an older agent can leave the lock held until the
+// device is rebooted.
 func agentUpdateTerminalError(recvErr error) error {
 	if errors.Is(recvErr, io.EOF) {
 		return errAgentUpdateUnconfirmed
@@ -3112,8 +3133,8 @@ func agentUpdateTerminalError(recvErr error) error {
 		// half-applied update. Add the reboot hint only where it fits: for the
 		// sysext-overlay refusal a reboot is the one action that makes it worse.
 		if strings.Contains(s.Message(), "update is already in progress") {
-			return fmt.Errorf("%s — if this repeats, a previous update likely applied without the agent restarting; "+
-				"reboot the device to finish it, then retry", s.Message())
+			return fmt.Errorf("%s — another OS or agent update may still be running; wait for it to finish, then retry. "+
+				"If this repeats with nothing running, reboot the device, then retry", s.Message())
 		}
 		return errors.New(s.Message())
 	default:
