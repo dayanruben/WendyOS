@@ -61,6 +61,23 @@ func deviceChosenByEnv() bool {
 	return deviceFlagFromEnv != "" && deviceFlag == deviceFlagFromEnv
 }
 
+// hilDeviceSelector is the device `wendy run --hil` chooses its simulator
+// from. WENDY_DEVICE usually names the real device — the HIL peer — so HIL
+// takes the variable only when it names a simulator (vm:NAME, sim, simulator)
+// and otherwise opens its simulator picker as if no device were given. An
+// explicit --device is returned unchanged.
+func hilDeviceSelector() string {
+	if !deviceChosenByEnv() {
+		return deviceFlag
+	}
+	// A malformed vm: selector still names a simulator; keep it so HIL
+	// reports it rather than silently picking another.
+	if _, matched, err := simulatorName(deviceFlag); matched || err != nil {
+		return deviceFlag
+	}
+	return ""
+}
+
 // noteEnvDevice tells the user a command acted on the device named by
 // WENDY_DEVICE, once a connection exists. explicit is a device the caller
 // named in code (SelectDevice), which outranks the variable.
