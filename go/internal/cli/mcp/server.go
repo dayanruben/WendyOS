@@ -48,6 +48,7 @@ type mcpServer struct {
 	tunnelsClosed        bool
 	toolGroups           []string
 	discoverLANFn        func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
+	usbSetupNoticeFn     func() string
 	mu                   sync.RWMutex
 	proxyDiag            []proxyDiagEntry
 	containerMCP         *containerMCPManager
@@ -161,6 +162,16 @@ func (s *mcpServer) SetLANDiscoverer(fn func(ctx context.Context, timeout time.D
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.discoverLANFn = fn
+}
+
+// SetUSBSetupNotice supplies the check device_list runs for a USB-C-tethered
+// device this host can't reach yet because its link isn't configured (only
+// Linux hosts need that setup). fn returns a message for the user, or "" when
+// there is nothing to report. Without it, device_list never reports one.
+func (s *mcpServer) SetUSBSetupNotice(fn func() string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.usbSetupNoticeFn = fn
 }
 
 // SetConnType records the transport type of the active connection ("direct" or "cloud").

@@ -42,11 +42,18 @@ func notifyCLIUpdate(cmd *cobra.Command) (shown bool, err error) {
 	}
 
 	if jsonOutput || !isInteractiveTerminal() {
+		// No prompt here, so nothing else clears AvailableCLIUpdate: remember
+		// which release was announced and stay quiet until a newer one appears.
+		if cfg.CLIUpdateNoticeShown == newVersion {
+			return false, nil
+		}
 		msg := "\nA new version of the Wendy CLI is available: %s (you have %s)\nUpdate with: %s\n"
 		if runtime.GOOS == "darwin" {
 			msg += "  (if the tap is untrusted: brew trust wendylabsinc/tap)\n"
 		}
 		cmd.PrintErrf(msg, newVersion, version.Version, updateShellCmd)
+		cfg.CLIUpdateNoticeShown = newVersion
+		_ = config.Save(cfg) // best-effort: if it can't be saved, the notice just repeats
 		return true, nil
 	}
 
