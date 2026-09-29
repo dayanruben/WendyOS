@@ -69,3 +69,4 @@ Dockerfile.generated.*
 web-client/public/wendy.wasm.gz
 web-client/.vite
 web-client/.openai
+scripts/deploy-bench/results/
