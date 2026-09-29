@@ -23,6 +23,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshname"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
@@ -618,6 +619,9 @@ func connectPinnedMCPCloudAgent(ctx context.Context, auth *config.AuthConfig, de
 	}
 	agentConn := grpcclient.NewFromConn(grpcConn)
 	agentConn.Host = device.GetName()
+	if !device.isV2 {
+		agentConn.MeshHost = meshname.Device(device.legacyID)
+	}
 	agentConn.IsMTLS = true
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
 		return device.openTunnel(ctx, brokerConn, auth, uint32(port))

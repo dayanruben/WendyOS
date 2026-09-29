@@ -20,6 +20,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshname"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
@@ -221,6 +222,9 @@ func connectCloudDiscoveryDevice(ctx context.Context, auth *config.AuthConfig, a
 
 	agentConn := grpcclient.NewFromConn(grpcConn)
 	agentConn.Host = asset.GetName()
+	if asset.legacy != nil {
+		agentConn.MeshHost = meshname.Device(asset.legacy.GetId())
+	}
 	agentConn.IsMTLS = true
 	agentConn.CertInfo = &cert
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
