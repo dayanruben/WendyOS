@@ -11,6 +11,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 )
 
 // Child messages are tagged so background commands keep updating the correct
@@ -29,6 +30,7 @@ type devicePickerChoice struct {
 	Local     *tui.PickerItem
 	Simulator *simulatorChoice
 	Cloud     *cloudpb.Asset
+	CloudV2   *cloudpbv2.Asset
 }
 
 type devicePickerModel struct {
@@ -50,12 +52,16 @@ type devicePickerModel struct {
 	windowWidth  int
 }
 
-func newDevicePickerModel(ctx context.Context, local tui.PickerModel, auth *config.AuthConfig, defaultOrg int32, disableEnroll bool) devicePickerModel {
+func newDevicePickerModel(ctx context.Context, local tui.PickerModel, auth *config.AuthConfig, defaultOrg int32, disableEnroll bool, active devicePickerTab) devicePickerModel {
 	m := devicePickerModel{
 		purpose: devicePickerPurposeFromContext(ctx), local: local,
-		sim:        newSimulatorPickerModel(ctx),
-		cloudAuth:  auth,
-		defaultOrg: defaultOrg,
+		sim:          newSimulatorPickerModel(ctx),
+		cloudAuth:    auth,
+		cloudOrg:     cachedCloudOrganizationName(auth),
+		defaultOrg:   defaultOrg,
+		active:       active,
+		simStarted:   active == devicePickerSimulatorTab,
+		cloudStarted: active == devicePickerCloudTab && auth != nil,
 	}
 	if auth != nil {
 		m.cloud = newCloudDiscoverModel(ctx, auth, os.Getenv("WENDY_BROKER_URL"), false, true, nil)
@@ -106,10 +112,14 @@ func tagDevicePickerCmd(cmd tea.Cmd, tab devicePickerTab) tea.Cmd {
 }
 
 func (m devicePickerModel) Init() tea.Cmd {
-	// The simulator list is not started here: it polls the VM store, and doing
-	// that for a tab nobody opened is both wasted I/O and lock contention with
-	// any concurrent `vm start`.
-	return tagDevicePickerCmd(m.local.Init(), devicePickerLocalTab)
+	local := tagDevicePickerCmd(m.local.Init(), devicePickerLocalTab)
+	if m.cloudStarted {
+		return tea.Batch(local, m.startCloudCmd())
+	}
+	if m.simStarted {
+		return tea.Batch(local, m.startSimulatorCmd())
+	}
+	return local
 }
 
 func (m devicePickerModel) startSimulatorCmd() tea.Cmd {
@@ -128,20 +138,15 @@ func (m devicePickerModel) startCloudCmd() tea.Cmd {
 
 func (m devicePickerModel) loadOrgNameCmd() tea.Cmd {
 	ctx := m.cloud.ctx
-	auth := m.cloudAuth
-	orgID := cloudAuthOrgID(auth)
-	return func() tea.Msg {
-		orgs, err := listOrgsFromCloud(ctx, auth)
-		if err != nil {
-			return devicePickerOrgMsg{}
-		}
-		for _, org := range orgs {
-			if org.GetId() == orgID {
-				return devicePickerOrgMsg{name: org.GetName()}
-			}
-		}
-		return devicePickerOrgMsg{}
+	// Snapshot before the batch starts: device scanning can refresh the live
+	// session concurrently with this display-only lookup.
+	var auth *config.AuthConfig
+	if m.cloudAuth != nil {
+		copy := *m.cloudAuth
+		copy.Certificates = append([]config.CertificateInfo(nil), m.cloudAuth.Certificates...)
+		auth = &copy
 	}
+	return func() tea.Msg { return devicePickerOrgMsg{name: cloudOrganizationName(ctx, auth)} }
 }
 
 func (m devicePickerModel) updateLocal(msg tea.Msg) (devicePickerModel, tea.Cmd) {
@@ -179,7 +184,7 @@ func (m devicePickerModel) updateSimulator(msg tea.Msg) (devicePickerModel, tea.
 func (m devicePickerModel) updateCloud(msg tea.Msg) (devicePickerModel, tea.Cmd) {
 	updated, cmd := m.cloud.Update(msg)
 	m.cloud = updated.(cloudDiscoverModel)
-	if m.cloud.selected != nil {
+	if m.cloud.selected != nil || m.cloud.selectedV2 != nil {
 		m.chosen, m.hasChosen = devicePickerCloudTab, true
 		return m, tea.Quit
 	}
@@ -202,7 +207,9 @@ func (m devicePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateCloud(msg.msg)
 	case devicePickerOrgMsg:
-		m.cloudOrg = msg.name
+		if msg.name != "" {
+			m.cloudOrg = msg.name
+		}
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.windowWidth = msg.Width
@@ -318,10 +325,18 @@ func (m devicePickerModel) View() string {
 }
 
 func deviceCloudOrgLabel(auth *config.AuthConfig, name string, defaultOrg int32) string {
+	if auth != nil && len(auth.Certificates) > 0 {
+		if tenant := auth.Certificates[0].TenantUUID(); tenant != "" {
+			if name != "" {
+				return fmt.Sprintf("Organization: %s  (o switch)", name)
+			}
+			return fmt.Sprintf("Organization: %s  (o switch)", tenant)
+		}
+	}
 	orgID := cloudAuthOrgID(auth)
 	label := fmt.Sprintf("Organization: org %d", orgID)
 	if name != "" {
-		label = fmt.Sprintf("Organization: %s (org %d)", name, orgID)
+		label = fmt.Sprintf("Organization: %s", name)
 	}
 	if orgID != 0 && orgID == defaultOrg {
 		label += "  ✦ default"
@@ -341,6 +356,7 @@ func (m devicePickerModel) choice() (devicePickerChoice, bool) {
 		c.Simulator = m.sim.selected()
 	case devicePickerCloudTab:
 		c.Cloud = m.selectedCloud()
+		c.CloudV2 = m.cloud.selectedV2
 	default:
 		c.Local = m.selectedLocal()
 	}

@@ -6,14 +6,14 @@ public struct WendyCloudCredentials: Codable, Equatable, Sendable, CustomDebugSt
     public let pemCertificate: String
     public let pemCertificateChain: String
     public let pemPrivateKey: String
-    public let organizationID: Int32
+    public let organizationID: String
     public let userID: String?
 
     public init(
         pemCertificate: String,
         pemCertificateChain: String,
         pemPrivateKey: String,
-        organizationID: Int32,
+        organizationID: String,
         userID: String?
     ) {
         self.pemCertificate = pemCertificate
@@ -40,12 +40,12 @@ public struct WendyCloudCredentials: Codable, Equatable, Sendable, CustomDebugSt
 }
 
 public struct WendyMeshDevice: Codable, Equatable, Sendable {
-    public let assetID: Int32
+    public let assetID: String
     public let name: String
-    public let organizationID: Int32
+    public let organizationID: String
     public let online: Bool
 
-    public init(assetID: Int32, name: String, organizationID: Int32, online: Bool) {
+    public init(assetID: String, name: String, organizationID: String, online: Bool) {
         self.assetID = assetID
         self.name = name
         self.organizationID = organizationID
@@ -64,7 +64,32 @@ public struct WendyMeshDirectory: Codable, Equatable, Sendable {
     public let devices: [WendyMeshDevice]
 
     public init(devices: [WendyMeshDevice]) {
-        self.devices = devices
+        // Every process derives the same compact address index from the v2 UUID roster. The
+        // UUID remains the relay identity; the index exists only inside this directory snapshot.
+        self.devices = devices.sorted {
+            if $0.assetID == $1.assetID { return $0.name < $1.name }
+            return $0.assetID < $1.assetID
+        }
+    }
+
+    public func device(forAddressIndex addressIndex: Int32) -> WendyMeshDevice? {
+        guard addressIndex >= WendyMeshAddressPlan.minimumAddressIndex,
+            addressIndex <= WendyMeshAddressPlan.maximumAddressIndex
+        else {
+            return nil
+        }
+        let offset = Int(addressIndex - WendyMeshAddressPlan.minimumAddressIndex)
+        guard devices.indices.contains(offset) else { return nil }
+        return devices[offset]
+    }
+
+    public func addressIndex(forAssetID assetID: String) -> Int32? {
+        guard let offset = devices.firstIndex(where: { $0.assetID == assetID }),
+            offset < Int(WendyMeshAddressPlan.maximumAddressIndex)
+        else {
+            return nil
+        }
+        return Int32(offset) + WendyMeshAddressPlan.minimumAddressIndex
     }
 
     public static func encode(_ directory: WendyMeshDirectory) throws -> Data {
@@ -74,28 +99,32 @@ public struct WendyMeshDirectory: Codable, Equatable, Sendable {
     }
 
     public static func decode(_ data: Data) throws -> WendyMeshDirectory {
-        try JSONDecoder().decode(WendyMeshDirectory.self, from: data)
+        let decoded = try JSONDecoder().decode(WendyMeshDirectory.self, from: data)
+        return WendyMeshDirectory(devices: decoded.devices)
     }
 }
 
-/// Deterministic mesh VIP scheme shared with WendyOS: device N maps to
-/// `10.99.(N >> 8).(N & 0xff)`.
+/// Deterministic mesh VIP scheme for directory-local address indices: index N maps to
+/// `10.99.(N >> 8).(N & 0xff)`. Cloud asset identifiers remain UUID strings and are never
+/// truncated into this 16-bit address space.
 public enum WendyMeshAddressPlan {
     public static let serviceCIDR = "10.99.0.0/16"
-    public static let minimumDeviceID: Int32 = 1
-    public static let maximumDeviceID: Int32 = 65_534
+    public static let minimumAddressIndex: Int32 = 1
+    public static let maximumAddressIndex: Int32 = 65_534
 
-    public static func address(for deviceID: Int32) -> (UInt8, UInt8, UInt8, UInt8)? {
-        guard deviceID >= minimumDeviceID, deviceID <= maximumDeviceID else { return nil }
-        return (10, 99, UInt8((deviceID >> 8) & 0xff), UInt8(deviceID & 0xff))
+    public static func address(for addressIndex: Int32) -> (UInt8, UInt8, UInt8, UInt8)? {
+        guard addressIndex >= minimumAddressIndex, addressIndex <= maximumAddressIndex else {
+            return nil
+        }
+        return (10, 99, UInt8((addressIndex >> 8) & 0xff), UInt8(addressIndex & 0xff))
     }
 
-    public static func addressString(for deviceID: Int32) -> String? {
-        guard let address = address(for: deviceID) else { return nil }
+    public static func addressString(for addressIndex: Int32) -> String? {
+        guard let address = address(for: addressIndex) else { return nil }
         return "\(address.0).\(address.1).\(address.2).\(address.3)"
     }
 
-    public static func deviceID(for address: String) -> Int32? {
+    public static func addressIndex(for address: String) -> Int32? {
         let parts = address.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4,
             let first = UInt8(parts[0]),
@@ -107,17 +136,19 @@ public enum WendyMeshAddressPlan {
         else {
             return nil
         }
-        let deviceID = Int32(third) << 8 | Int32(fourth)
-        guard deviceID >= minimumDeviceID, deviceID <= maximumDeviceID else { return nil }
-        return deviceID
+        let addressIndex = Int32(third) << 8 | Int32(fourth)
+        guard addressIndex >= minimumAddressIndex, addressIndex <= maximumAddressIndex else {
+            return nil
+        }
+        return addressIndex
     }
 }
 
-/// Minimal DNS codec for `device-<id>.mesh.wendy.internal`.
+/// Minimal DNS codec for `device-<address-index>.mesh.wendy.internal`.
 public enum WendyMeshDNS {
     private static let suffixes = [".mesh.wendy.internal", ".cloud.wendy.dev"]
 
-    public static func deviceID(forName name: String) -> Int32? {
+    public static func addressIndex(forName name: String) -> Int32? {
         let normalized = name.hasSuffix(".") ? String(name.dropLast()) : name
         guard let suffix = suffixes.first(where: { normalized.hasSuffix($0) }) else { return nil }
         let label = normalized.dropLast(suffix.count)
@@ -134,7 +165,9 @@ public enum WendyMeshDNS {
         guard let query = parseQuery(data) else { return nil }
         let normalized = query.name.hasSuffix(".") ? String(query.name.dropLast()) : query.name
         guard suffixes.contains(where: { normalized.hasSuffix($0) }) else { return nil }
-        guard let deviceID = deviceID(forName: query.name), let address = resolve(deviceID) else {
+        guard let addressIndex = addressIndex(forName: query.name),
+            let address = resolve(addressIndex)
+        else {
             return response(to: query, answer: nil, responseCode: 3)
         }
         guard query.type == 1 else {

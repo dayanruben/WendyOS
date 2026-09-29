@@ -244,14 +244,13 @@ func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, in
 	}
 	cloudAuth := devicePickerInitialAuth(cfg)
 	var createReq *errCreateSimulator
-	// Which tab to open on. Only a create changes it, so the user lands back
-	// where they pressed the key rather than on Local.
+	// Resume the tab that opened the login, organization, or simulator prompt.
 	openOn := devicePickerLocalTab
 	for {
 		err := discoverContinuousWithCloudAuth(ctx, opts, includeLocal, cloudAuth, defaultOrgForCloudAuth(cfg, cloudAuth), openOn)
-		openOn = devicePickerLocalTab
 		switch {
 		case errors.Is(err, errDevicePickerLogin):
+			openOn = devicePickerCloudTab
 			if err := performLogin(ctx, defaultCloudDashboard, defaultCloudGRPC); err != nil {
 				return err
 			}
@@ -275,6 +274,7 @@ func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, in
 			}
 			openOn = devicePickerSimulatorTab
 		case errors.Is(err, errDevicePickerSwitchOrg):
+			openOn = devicePickerCloudTab
 			cfg, err = config.Load()
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
@@ -301,7 +301,7 @@ func defaultOrgForCloudAuth(cfg *config.Config, auth *config.AuthConfig) int32 {
 	if cfg.DefaultOrgID != 0 {
 		return cfg.DefaultOrgID
 	}
-	if auth != nil && cfg.DefaultCloudGRPC == auth.CloudGRPC {
+	if auth != nil && auth.Name != "" && cfg.CurrentContext == auth.Name {
 		return cloudAuthOrgID(auth)
 	}
 	return 0
@@ -457,9 +457,10 @@ type flashClearMsg struct{}
 
 // discoverUpdateDoneMsg is sent when a background device update completes.
 type discoverUpdateDoneMsg struct {
-	deviceName string
-	assetID    int32
-	err        error
+	deviceName    string
+	assetID       int32
+	cloudAssetKey string
+	err           error
 	// note carries a non-error outcome that is not a successful update, e.g.
 	// the device already running the release we would install.
 	note string
@@ -745,6 +746,11 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delay := m.ethernetInterval.delay(env.DiscoverEthernetInterval())
 		return m, delayThen(delay, m.scanEthernet())
 	case lanEventMsg:
+		if msg.ev.Kind == discovery.LANCached || msg.ev.Kind == discovery.LANOffline {
+			// Cache entries are probe candidates, not evidence that a device
+			// is on this network. Only live confirmations belong in the table.
+			return m, waitLANEvent(msg.ch)
+		}
 		if msg.ev.Kind == discovery.LANRetracted {
 			// Listed, then found to be one of this machine's VMs: it belongs
 			// on the Simulator tab, not here.
@@ -936,11 +942,8 @@ func (m discoverModel) anyProbePending() bool {
 
 // upsertLANDevice merges dev into m.collection.LANDevices, keyed by
 // discoverycache.Key(dev.ID, dev.DisplayName) — the same identity the on-disk
-// cache uses. A device already present (e.g. a LANCached row confirmed by a
-// later LANFound/LANUpdated) is replaced in place so the row count never
-// grows for the same physical device; an unseen device is appended. Offline
-// devices are merged like any other event: the row stays listed, never
-// removed, per the picker's "never drop a known device" contract.
+// cache uses. A device already present is replaced in place so updates never
+// add another row for the same physical device; an unseen device is appended.
 func (m *discoverModel) upsertLANDevice(dev models.LANDevice) {
 	key := discoverycache.Key(dev.ID, dev.DisplayName)
 	for i := range m.collection.LANDevices {

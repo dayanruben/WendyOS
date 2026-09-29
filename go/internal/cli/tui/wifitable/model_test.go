@@ -2,6 +2,7 @@ package wifitable
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -122,7 +123,7 @@ func TestRankModeReordersAndCommits(t *testing.T) {
 		t.Errorf("action = %v; want ActionReorder", res.Action)
 	}
 	want := []string{"Bravo", "Alpha", "Charlie"}
-	if got := res.Order; !equalStrings(got, want) {
+	if got := res.Order; !slices.Equal(got, want) {
 		t.Errorf("order = %v; want %v", got, want)
 	}
 }
@@ -557,16 +558,4 @@ func TestRankModeFlashesAtBottomBoundary(t *testing.T) {
 	if m.flashMessage == "" {
 		t.Errorf("expected a flash message at bottom boundary")
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

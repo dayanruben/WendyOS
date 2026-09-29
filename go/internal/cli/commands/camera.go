@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -47,11 +48,18 @@ func newCameraListCmd() *cobra.Command {
 		Short: "List cameras",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			conn, err := connectToAgent(ctx)
+			target, err := resolveCameraTargetFn(ctx, IncludeBluetooth())
 			if err != nil {
 				return err
 			}
-			defer conn.Close()
+			defer target.Close()
+			if isLiteCameraTarget(target) {
+				return listLiteCameras(cmd, target)
+			}
+			conn, err := connectFromSelectedDevice(target, resolveConfig{})
+			if err != nil {
+				return err
+			}
 
 			var devices []*agentpb.VideoDevice
 			if refresh {
@@ -320,7 +328,7 @@ func newCameraWatchCmd() *cobra.Command {
 	return newCameraStreamCmd("watch", true)
 }
 
-var connectCameraStreamFn = connectToAgent
+var resolveCameraTargetFn = resolveTarget
 
 // newCameraStreamCmd builds the camera streaming command under the given name.
 // "view" is the canonical, listed command; "watch" reuses the same logic as a
@@ -333,7 +341,7 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    use,
 		Hidden: hidden,
-		Short:  "Stream H.264 video from a device camera",
+		Short:  "Stream video from a device camera",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if raw && !toStdout {
@@ -349,15 +357,26 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 			// #762–#764 latency work). Like watch, the stream also holds one
 			// connection for its whole lifetime, so reuse saves nothing after
 			// the first frame.
-			opts := []resolveOption{DisableSessionBroker()}
+			opts := []resolveOption{DisableSessionBroker(), IncludeBluetooth()}
 			if nonInteractive {
 				opts = append(opts, NonInteractive(), SuppressUpdateCheck(), SuppressProvisioningHint())
 			}
-			conn, err := connectCameraStreamFn(ctx, opts...)
+			target, err := resolveCameraTargetFn(ctx, opts...)
 			if err != nil {
 				return err
 			}
-			defer conn.Close()
+			defer target.Close()
+			if isLiteCameraTarget(target) {
+				return viewLiteCamera(cmd, target, liteCameraOptions{
+					id: deviceID, idSet: cmd.Flags().Changed("id"), stableID: stableID,
+					width: width, height: height, fps: fps,
+					stdout: toStdout, raw: raw, nonInteractive: nonInteractive,
+				})
+			}
+			conn, err := connectFromSelectedDevice(target, resolveConfig{suppressProvisioningHint: nonInteractive})
+			if err != nil {
+				return err
+			}
 
 			// --stable-id addresses the camera by its stable udev identity and
 			// is resolved by the AGENT at request time. --id is the boot-order
@@ -412,32 +431,86 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 			// not while constructing the stream. Wrap both phases so a missing IP
 			// camera login is resolved and retried exactly once wherever gRPC
 			// surfaces it. Local cameras never take this path.
-			stream, err := streamVideoWithCredentialRetry(startStream, resolveCredentials)
-			if err != nil {
-				return fmt.Errorf("starting video stream: %w", cameraStreamDiagnostic(err))
+			open := func() (videoStream, error) {
+				stream, err := streamVideoWithCredentialRetry(startStream, resolveCredentials)
+				if err != nil {
+					return nil, err
+				}
+				return &cameraDiagnosticStream{videoStream: stream}, nil
 			}
-			diagnosticStream := &cameraDiagnosticStream{videoStream: stream}
-
-			cliLogln("Streaming video (Ctrl+C to stop)...")
-
-			if toStdout {
-				return pipeVideoToStdout(diagnosticStream, cmd.OutOrStdout())
+			play := func(stream videoStream) error {
+				if toStdout {
+					return pipeVideoToStdout(stream, cmd.OutOrStdout())
+				}
+				return playVideoWithGStreamer(ctx, stream, !nonInteractive)
 			}
-			return playVideoWithGStreamer(ctx, diagnosticStream, !nonInteractive)
+			return streamCameraRejoiningRestarts(ctx, open, play)
 		},
 	}
 
-	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Camera device ID (boot order; see --stable-id)")
+	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Camera device ID, or SensorLink channel ID on Wendy Lite")
 	cmd.Flags().StringVar(&stableID, "stable-id", "",
 		"Camera stable ID from `camera list --json` — survives reboots and re-plugging")
 	cmd.Flags().Uint32Var(&width, "width", 0, "Frame width (0 = device default)")
 	cmd.Flags().Uint32Var(&height, "height", 0, "Frame height (0 = device default)")
 	cmd.Flags().Uint32Var(&fps, "fps", 0, "Framerate (0 = device default)")
-	cmd.Flags().BoolVar(&toStdout, "stdout", false, "Pipe encoded video to stdout instead of opening a window (codec: H.264 or VP8/WebM depending on device capabilities)")
+	cmd.Flags().BoolVar(&toStdout, "stdout", false, "Pipe encoded video to stdout instead of opening a window (codec: H.264, VP8/WebM, or Wendy Lite MJPEG)")
 	cmd.Flags().BoolVar(&raw, "raw", false, "With --stdout: write the camera's uncompressed capture frames (one whole frame per message, layout printed to stderr) instead of encoded video. Only cameras captured in a raw pixel format offer this; viewers of the same camera keep receiving H.264.")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Disable terminal prompts and automatic installs; select a camera with --id or --stable-id when several are available")
 
 	return cmd
+}
+
+// cameraRejoinDelay is how long the viewer waits before rejoining a camera
+// whose producer an episode capture restarted. It is a pause, not a backoff:
+// the replacement producer is started by the agent as part of the same
+// takeover, so the camera is normally back within one pipeline start. The wait
+// only keeps the client from arriving before the new hub exists.
+const cameraRejoinDelay = 500 * time.Millisecond
+
+// cameraRejoinAttempts bounds the rejoins one `camera view` will make. A
+// takeover is a rare event driven by a campaign trigger; a stream that keeps
+// being restarted is a device busy recording, and saying so beats reconnecting
+// forever in a loop the operator has to notice and break.
+const cameraRejoinAttempts = 5
+
+// streamCameraRejoiningRestarts plays a camera stream, rejoining when the
+// agent ends it because an episode capture restarted the producer.
+//
+// The agent's capture policy takes a camera over only from viewers that
+// asserted no stream parameters, and `wendy camera view` with no --width,
+// --height or --fps is exactly such a viewer. The stream is deliberately ended
+// rather than spliced, because a new producer means a new sequence parameter
+// set and a decoder handed both in one timeline produces garbage. Ending it is
+// therefore right; leaving the operator staring at a dead window is not, so
+// the viewer rejoins the replacement stream and says that it did.
+func streamCameraRejoiningRestarts(ctx context.Context, open func() (videoStream, error), play func(videoStream) error) error {
+	for attempt := 0; ; attempt++ {
+		stream, err := open()
+		if err != nil {
+			return fmt.Errorf("starting video stream: %w", cameraStreamDiagnostic(err))
+		}
+		if attempt == 0 {
+			cliLogln("Streaming video (Ctrl+C to stop)...")
+		}
+		err = play(stream)
+		if !streamreason.Has(err, streamreason.CameraProducerRestarted) {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if attempt+1 >= cameraRejoinAttempts {
+			return fmt.Errorf("camera producer was restarted by episode capture %d times; the device is busy recording: %w",
+				cameraRejoinAttempts, err)
+		}
+		cliLogln("Camera producer restarted by an episode capture; rejoining the new stream...")
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(cameraRejoinDelay):
+		}
+	}
 }
 
 // videoStream is the receive side of the StreamVideo gRPC stream.
@@ -514,7 +587,14 @@ func playVideoWithGStreamer(ctx context.Context, stream videoStream, allowInstal
 		return fmt.Errorf("receiving video: %w", err)
 	}
 	codec := first.GetCodec()
+	return playCameraPipeline(ctx, playbackPipelineArgs(codec), allowInstallPrompt, func(w io.Writer) error {
+		return feedGStreamer(ctx, stream, first, codec, w)
+	})
+}
 
+// playCameraPipeline owns the player process for both agent and SensorLink streams.
+func playCameraPipeline(ctx context.Context, pipeline []string, allowInstallPrompt bool, feed func(io.Writer) error) error {
+	var err error
 	var gstPath string
 	if allowInstallPrompt {
 		gstPath, err = ensureGSTLaunch(ctx)
@@ -525,7 +605,7 @@ func playVideoWithGStreamer(ctx context.Context, stream videoStream, allowInstal
 		return err
 	}
 
-	gst := exec.CommandContext(ctx, gstPath, playbackPipelineArgs(codec)...)
+	gst := exec.CommandContext(ctx, gstPath, pipeline...)
 	gst.Stderr = os.Stderr
 
 	stdin, err := gst.StdinPipe()
@@ -536,19 +616,33 @@ func playVideoWithGStreamer(ctx context.Context, stream videoStream, allowInstal
 	if err := gst.Start(); err != nil {
 		return fmt.Errorf("starting GStreamer: %w", err)
 	}
+	playerExited := make(chan struct{})
+	var playerErr error
+	go func() {
+		playerErr = gst.Wait()
+		close(playerExited)
+	}()
 	defer func() {
 		stdin.Close()      //nolint:errcheck — signal EOF to GStreamer before killing
 		gst.Process.Kill() //nolint:errcheck
-		gst.Wait()         //nolint:errcheck
+		<-playerExited
 	}()
 
 	done := make(chan error, 1)
-	go func() { done <- feedGStreamer(ctx, stream, first, codec, stdin) }()
+	go func() { done <- feed(stdin) }()
 
 	select {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
+		return nil
+	case <-playerExited:
+		if ctx.Err() != nil {
+			return nil
+		}
+		if playerErr != nil {
+			return fmt.Errorf("GStreamer exited: %w", playerErr)
+		}
 		return nil
 	}
 }
