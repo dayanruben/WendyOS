@@ -13,7 +13,6 @@
     "wifi",
     "bluetooth",
     "pair",
-    "usb-setup",
     "build-host",
     "---Reference---",
     "enroll",

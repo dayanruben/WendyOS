@@ -13,7 +13,7 @@ import (
 
 func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 	listOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("List configured devices and online cloud-enrolled devices from the selected Wendy Cloud auth session by default. Pass scan=true to also scan the local network (3 s). Connect cloud entries with cloud_connect using name and cloud_grpc. Use cloud_discover for offline devices or cloud-side filters. Cloud failures are returned as warnings alongside local devices."),
+		mcpgo.WithDescription("List configured devices and online cloud-enrolled devices from the selected Wendy Cloud auth session by default. Pass scan=true to also scan the local network (3 s). Connect cloud entries with cloud_connect using name and cloud_grpc. Use cloud_discover for offline devices or cloud-side filters. Cloud failures are returned as warnings alongside local devices. On Linux, a USB-C-tethered device the host can't reach yet (its link needs a one-time setup that only a person can approve) is returned as a usb warning: relay its instructions to the user."),
 		mcpgo.WithBoolean("scan", mcpgo.Description("If true, run a live mDNS scan (3 s) in addition to returning configured devices")),
 		mcpgo.WithString("cloud_grpc", mcpgo.Description("Cloud gRPC endpoint to use (optional when a default auth session is selected via 'wendy auth use')")),
 		mcpgo.WithNumber("max_bytes", mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)")),
@@ -106,11 +106,20 @@ func (s *mcpServer) handleDeviceList(ctx context.Context, req mcpgo.CallToolRequ
 	cloud := <-cloudResults
 	devices = append(devices, cloud.devices...)
 	out := map[string]any{"devices": listOrEmpty(devices)}
+	var warnings []map[string]any
 	if cloud.err != nil {
-		out["warnings"] = []map[string]any{{
+		warnings = append(warnings, map[string]any{
 			"source":  "cloud",
 			"message": fmt.Sprintf("Cloud discovery unavailable: %s", cloud.err),
-		}}
+		})
+	}
+	if s.usbSetupNoticeFn != nil {
+		if msg := s.usbSetupNoticeFn(); msg != "" {
+			warnings = append(warnings, map[string]any{"source": "usb", "message": msg})
+		}
+	}
+	if len(warnings) > 0 {
+		out["warnings"] = warnings
 	}
 	return okResultBounded(out, intParam(req, "max_bytes", 100000)), nil
 }

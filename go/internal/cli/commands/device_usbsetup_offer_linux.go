@@ -72,6 +72,10 @@ func detectUnconfiguredUSBGadget() string {
 	return name
 }
 
+// pendingUSBSetupIface feeds pendingUSBSetupNotice. It is a var so tests on
+// any OS can stand in for the interface probe.
+var pendingUSBSetupIface = detectUnconfiguredUSBGadget
+
 // usbSetupProfileExists reports whether the NetworkManager profile this flow
 // manages already exists, so discovery doesn't re-offer setup while the link is
 // still coming up. Absence (or no NetworkManager) is treated as "not set up".
@@ -95,14 +99,19 @@ var usbSetupProfileExists = func() bool {
 
 // maybeOfferUSBSetup detects an unconfigured USB-C Wendy gadget link and, with
 // the user's consent, configures it by re-executing the hidden "__usb-setup"
-// subcommand under sudo. It is best-effort: any failure is reported but never
-// aborts discovery.
+// subcommand under sudo. Without a terminal to ask on (or with --json) it only
+// prints a notice saying how to set the link up. It is best-effort: any
+// failure is reported but never aborts discovery.
 func maybeOfferUSBSetup(ctx context.Context) error {
-	if jsonOutput || !isInteractiveTerminal() {
-		return nil
-	}
 	iface := detectUnconfiguredUSBGadget()
 	if iface == "" {
+		return nil
+	}
+	if jsonOutput || !isInteractiveTerminal() {
+		// Nobody can answer the prompt (an agent, a script): say why the device
+		// is missing rather than leave it silently absent. cliNotice writes to
+		// stderr, so JSON on stdout stays intact.
+		cliNotice("%s", usbSetupNeededNotice(iface))
 		return nil
 	}
 
