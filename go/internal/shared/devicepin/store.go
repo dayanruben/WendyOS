@@ -232,7 +232,13 @@ func (s *Store) flush() error {
 	}
 	defer release()
 
-	if f, err := os.OpenFile(s.path, os.O_WRONLY, 0); err != nil {
+	// A symlinked known_devices.json (a dotfiles repo) is written through to
+	// its target, so the rename below does not replace the link.
+	path, err := atomicfile.ResolveWritePath(s.path)
+	if err != nil {
+		return fmt.Errorf("writing pin store: %w", err)
+	}
+	if f, err := os.OpenFile(path, os.O_WRONLY, 0); err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("writing pin store: %w", err)
 		}
@@ -240,7 +246,7 @@ func (s *Store) flush() error {
 		_ = f.Close()
 	}
 
-	merged, parsed, err := readPinFile(s.path)
+	merged, parsed, err := readPinFile(path)
 	if err != nil {
 		return err
 	}
@@ -265,7 +271,7 @@ func (s *Store) flush() error {
 	if err != nil {
 		return fmt.Errorf("marshaling pin store: %w", err)
 	}
-	if err := atomicfile.WritePreservingOwner(s.path, data, 0o600); err != nil {
+	if err := atomicfile.WritePreservingOwner(path, data, 0o600); err != nil {
 		return fmt.Errorf("writing pin store: %w", err)
 	}
 	s.devices = merged

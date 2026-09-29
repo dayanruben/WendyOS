@@ -554,3 +554,64 @@ func TestStore_OpenTreatsACorruptFileAsEmpty(t *testing.T) {
 		t.Fatal("the pin written over a corrupt file was not persisted")
 	}
 }
+
+// A known_devices.json kept behind a symlink (a dotfiles repo, like
+// config.json — see config's TestSaveWritesThroughASymlinkedConfig) must be
+// written through its link: renaming over the link itself would silently turn
+// it into a regular file. That holds for a dangling link too, whose target
+// flush creates, as os.WriteFile would. The lock stays beside the link.
+func TestStore_FlushWritesThroughASymlinkedPinFile(t *testing.T) {
+	for _, dangling := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dangling=%v", dangling), func(t *testing.T) {
+			dir := t.TempDir()
+			targetDir := t.TempDir()
+			target := filepath.Join(targetDir, "dotfiles-known_devices.json")
+			if !dangling {
+				if err := os.WriteFile(target, []byte(`{}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			link := filepath.Join(dir, "known_devices.json")
+			if err := os.Symlink(target, link); err != nil {
+				t.Skipf("symlinks unavailable here: %v", err)
+			}
+			s, err := devicepin.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.CheckAndUpdate(assetCert(t, 7, "42", time.Now().Add(24*time.Hour)), "thor"); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Lstat(link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				t.Fatal("flush replaced the known_devices.json symlink with a regular file")
+			}
+			data, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatalf("symlink target: %v", err)
+			}
+			if !strings.Contains(string(data), "thor") {
+				t.Fatalf("symlink target does not hold the new pin: %s", data)
+			}
+			if _, err := os.Stat(link + ".lock"); err != nil {
+				t.Errorf("lock file not beside the link: %v", err)
+			}
+			for _, d := range []string{dir, targetDir} {
+				entries, err := os.ReadDir(d)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, e := range entries {
+					switch e.Name() {
+					case "known_devices.json", "known_devices.json.lock", "dotfiles-known_devices.json":
+					default:
+						t.Errorf("flush left %q behind in %s", e.Name(), d)
+					}
+				}
+			}
+		})
+	}
+}
