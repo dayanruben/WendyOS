@@ -1074,8 +1074,15 @@ func connectAgentAtAddress(ctx context.Context, addr string) (*grpcclient.AgentC
 // feed every interface a multi-homed device was seen at, so a device reachable
 // only over its USB link is still dialed even when addr (its WiFi IP) is not.
 func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, provisionedMTLS func() bool, extraCandidates ...string) (*grpcclient.AgentConnection, error) {
+	return connectAgentAtAddressKeyed(ctx, addr, "", provisionedMTLS, extraCandidates...)
+}
+
+// connectAgentAtAddressKeyed is connectAgentAtAddressWithProvisionedHint
+// dialling under pinKey, a key the caller already derived for addr (see
+// connectWithAutoTLSDiagnosticsKeyed); "" derives it here, as always.
+func connectAgentAtAddressKeyed(ctx context.Context, addr, pinKey string, provisionedMTLS func() bool, extraCandidates ...string) (*grpcclient.AgentConnection, error) {
 	tm := phaseTimer()
-	conn, mtlsErr, err := connectWithAutoTLSDiagnostics(ctx, addr, extraCandidates...)
+	conn, mtlsErr, err := connectWithAutoTLSDiagnosticsKeyed(ctx, addr, pinKey, extraCandidates...)
 	if err != nil {
 		return nil, err
 	}
@@ -1118,9 +1125,17 @@ func connectResolvedAgent(ctx context.Context, hostname, addr string, isDefault 
 }
 
 func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr string, isDefault bool, provisionedMTLS func() bool) (*grpcclient.AgentConnection, error) {
+	return connectResolvedAgentKeyed(ctx, hostname, addr, "", isDefault, provisionedMTLS)
+}
+
+// connectResolvedAgentKeyed is connectResolvedAgentWithProvisionedHint
+// dialling under pinKey, the key a front door derived once for addr and judges
+// the connection under afterwards; "" derives it inside the ladder, as always
+// (see connectWithAutoTLSDiagnosticsKeyed). hostname is only the name shown.
+func connectResolvedAgentKeyed(ctx context.Context, hostname, addr, pinKey string, isDefault bool, provisionedMTLS func() bool) (*grpcclient.AgentConnection, error) {
 	if isDefault && !jsonOutput && isInteractiveTerminal() {
 		conn, err := runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
-			return connectAgentAtAddressWithProvisionedHint(spinCtx, addr, provisionedMTLS)
+			return connectAgentAtAddressKeyed(spinCtx, addr, pinKey, provisionedMTLS)
 		})
 		if err != nil {
 			// The unreachable-default paths report the hostname themselves.
@@ -1131,7 +1146,7 @@ func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr
 		noteImplicitDevice(hostname, implicitDefaultDevice)
 		return conn, nil
 	}
-	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, provisionedMTLS)
+	conn, err := connectAgentAtAddressKeyed(ctx, addr, pinKey, provisionedMTLS)
 	if err == nil && isDefault {
 		noteImplicitDevice(hostname, implicitDefaultDevice)
 	}
@@ -1216,8 +1231,12 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 		// dialled is the endpoint conn actually reached: addr, unless a
 		// fallback substituted another connection ("" then).
 		dialled := addr
+		// pinKey is derived once, by resolveDeviceAddress, and every dial
+		// below — the broker, the ladder and each of its retries — and the pin
+		// check after them use it: a key derived again mid-connect can differ
+		// once a local VM starts or stops (see recheckDialPinKey).
 		if !cfg.disableSessionBroker {
-			conn, brokerHit = connectPinnedSession(ctx, addr)
+			conn, brokerHit = connectPinnedSessionKeyed(ctx, addr, pinKey)
 		}
 		if brokerHit {
 			// A broker hit passed a live health probe — a proof-of-life exit
@@ -1228,7 +1247,7 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 			}
 		} else {
 			var finished bool
-			conn, dialled, finished, err = connectToAgentDirect(ctx, cfg, hostname, addr, isDefault)
+			conn, dialled, finished, err = connectToAgentDirect(ctx, cfg, hostname, addr, pinKey, isDefault)
 			if err != nil || finished {
 				// finished: default-device recovery resolved the target through
 				// the picker, whose path enforces its own pin and must not be
@@ -1251,6 +1270,14 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 		// 127.0.0.1 forward, judged as vm:<name>, also records its identity
 		// under the bare 127.0.0.1 key main pinned that address under (see
 		// typedVMBarePinKey). A substituted connection was never dialled there.
+		//
+		// First, the key is derived again: a VM that started or stopped while
+		// this connected would be judged under a key its dial was not made
+		// under. Nothing is recorded or marked for such a connection.
+		if keyErr := recheckDialPinKey(addr, pinKey); keyErr != nil {
+			conn.Close()
+			return nil, keyErr
+		}
 		if pinErr := enforceDevicePinAt(pinKey, dialled, conn); pinErr != nil {
 			conn.Close()
 			return nil, pinErr
@@ -1292,12 +1319,14 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 // must return it untouched instead of running the named-device pin, update,
 // and broker-seed steps. dialled is the endpoint the connection reached —
 // addr for the ladder and its retries, "" when the USB-direct fallback
-// substituted a connection that never touched addr.
-func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr string, isDefault bool) (_ *grpcclient.AgentConnection, dialled string, finished bool, _ error) {
+// substituted a connection that never touched addr. pinKey is the key the
+// caller derived once for addr and judges the connection under: the ladder
+// and every retry dial under it too.
+func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr, pinKey string, isDefault bool) (_ *grpcclient.AgentConnection, dialled string, finished bool, _ error) {
 	startedAt := time.Now()
 	dialled = addr
 	provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
-	conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+	conn, connErr := connectResolvedAgentKeyed(ctx, hostname, addr, pinKey, isDefault, provisionedMTLS)
 	if connErr != nil {
 		if errors.Is(connErr, ErrUserCancelled) {
 			return nil, "", false, connErr
@@ -1311,7 +1340,7 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 			return nil, "", false, connErr
 		}
 		retriedConn, connErr, retried := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
-			return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+			return connectResolvedAgentKeyed(ctx, hostname, addr, pinKey, isDefault, provisionedMTLS)
 		})
 		// retryOnHandshakeTimeout hands back the freshest error it saw, so a
 		// retry that revealed a more specific failure (e.g. a cert rejection)
@@ -1319,12 +1348,12 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 		if retried {
 			conn = retriedConn
 		} else if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
-			return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+			return connectResolvedAgentKeyed(ctx, hostname, addr, pinKey, isDefault, provisionedMTLS)
 		}); ok {
 			conn = syncedConn
 		} else if errors.Is(connErr, errProvisionedAgentUnauthorized) {
 			refreshedConn, ok := offerCertRefreshAndRetry(ctx, cfg.nonInteractive, connErr, func() (*grpcclient.AgentConnection, error) {
-				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+				return connectResolvedAgentKeyed(ctx, hostname, addr, pinKey, isDefault, provisionedMTLS)
 			})
 			if !ok {
 				return nil, "", false, connErr
@@ -2050,6 +2079,19 @@ func defaultDeviceUnreachableError(hostname string, err error) error {
 // cacheFastPathReachable's doc); it happens at
 // connectAgentAtAddressWithProvisionedHint's real post-connect proof of life.
 func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string, extraCandidates ...string) (*grpcclient.AgentConnection, error, error) {
+	return connectWithAutoTLSDiagnosticsKeyed(ctx, plaintextAddr, "", extraCandidates...)
+}
+
+// connectWithAutoTLSDiagnosticsKeyed is connectWithAutoTLSDiagnostics for a
+// front door that has already derived the pin key it will judge the
+// connection under (connectToAgent and resolveTarget). A non-empty pinKey is
+// dialled under as given, at plaintextAddr as given: the caller re-aimed the
+// address when it derived the key, and deriving either again here could
+// disagree with the caller's own check once a local VM starts or stops
+// mid-connect — the ladder's Expected identity and plaintext block would come
+// from one pin and the post-connect check from another. "" derives both here,
+// as connectWithAutoTLSDiagnostics always has.
+func connectWithAutoTLSDiagnosticsKeyed(ctx context.Context, plaintextAddr, pinKey string, extraCandidates ...string) (*grpcclient.AgentConnection, error, error) {
 	// An admin-entitled on-device container reaches the agent over its local
 	// unix socket (bind-mounted by the `admin` entitlement) with no mTLS. When
 	// WENDY_AGENT_SOCKET is set, route every command through it and skip all
@@ -2060,18 +2102,21 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string, ex
 	}
 
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
-	// A direct dial of a running VM's mTLS forward — a reconnect's conn.Addr,
-	// or any other caller's — goes to the VM's agent forward under vm:<name>,
-	// never under the bare 127.0.0.1 key, and never with a ladder that would
-	// also try a port QEMU does not forward. Front doors apply it first, so
-	// their own pin check uses the same key.
-	plaintextAddr = vmForwardDialAddr(plaintextAddr)
+	if pinKey == "" {
+		// A direct dial of a running VM's mTLS forward — a reconnect's
+		// conn.Addr, or any other caller's — goes to the VM's agent forward
+		// under vm:<name>, never under the bare 127.0.0.1 key, and never with
+		// a ladder that would also try a port QEMU does not forward. Front
+		// doors do this themselves, once, and pass the key in.
+		plaintextAddr = vmForwardDialAddr(plaintextAddr)
+		// The pin key is the host the caller was ASKED to reach, captured
+		// before any resolution, cache lookup, or retry can substitute an
+		// address for it.
+		pinKey = pinKeyForAddr(plaintextAddr)
+	}
 	originalAddr := plaintextAddr
-	// The pin key is the host the caller was ASKED to reach, captured before
-	// any resolution, cache lookup, or retry can substitute an address for it.
-	// Every rung below dials with this same key, so which device is acceptable
-	// never depends on what discovery answered.
-	pinKey := pinKeyForAddr(originalAddr)
+	// Every rung below dials with this same key, so which device is
+	// acceptable never depends on what discovery answered.
 	fromCache := false
 	if plainHost, plainPort, splitErr := net.SplitHostPort(plaintextAddr); splitErr == nil && net.ParseIP(plainHost) == nil {
 		if e, ok := cachedDeviceHostEntry(plainHost); ok && shouldUseCachedDeviceAddress(e.InterfaceName, e.IP) {
@@ -3121,13 +3166,20 @@ var (
 // local VM's own 127.0.0.1 forward, which is keyed as that VM (see
 // pinKeyForAddr).
 func connectPinnedSession(ctx context.Context, addr string) (*grpcclient.AgentConnection, bool) {
+	return connectPinnedSessionKeyed(ctx, addr, pinKeyForAddr(addr))
+}
+
+// connectPinnedSessionKeyed is connectPinnedSession for a front door that
+// already derived addr's pin key, so the broker's expected identity comes from
+// the same pin the connection is then judged under.
+func connectPinnedSessionKeyed(ctx context.Context, addr, pinKey string) (*grpcclient.AgentConnection, bool) {
 	// The GOOS check lives here as well as in sessionbroker.Connect: bailing
 	// only inside Connect would still charge Windows the expectedIdentityFor
 	// config read on every invocation, for a feature it never uses.
 	if runtime.GOOS == "windows" {
 		return nil, false
 	}
-	expected := expectedIdentityFor(pinKeyForAddr(addr))
+	expected := expectedIdentityFor(pinKey)
 	if expected == nil {
 		return nil, false
 	}
@@ -3347,9 +3399,16 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		// A running VM's mTLS forward is dialled, and keyed, as the VM — the
 		// same address resolveDeviceAddress gives connectToAgent.
 		addr = vmForwardDialAddr(addr)
+		// Same pin key as connectToAgent's: the host of the address dialled, via
+		// the same pinKeyForAddr the ladder uses. resolveTarget reaches devices
+		// connectToAgent never sees, and an unchecked path is the whole attack.
+		// It is derived once, before dialling: the broker, the ladder, each of
+		// its retries and the pin check below all use it (see
+		// recheckDialPinKey).
+		pinKey := pinKeyForAddr(addr)
 		conn, brokerHit := (*grpcclient.AgentConnection)(nil), false
 		if !cfg.disableSessionBroker {
-			conn, brokerHit = connectPinnedSession(ctx, addr)
+			conn, brokerHit = connectPinnedSessionKeyed(ctx, addr, pinKey)
 		}
 		if brokerHit {
 			rt("  ↳ reusable session connection")
@@ -3366,19 +3425,19 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 			startedAt := time.Now()
 			provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
 			var err error
-			conn, err = connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+			conn, err = connectResolvedAgentKeyed(ctx, device, addr, pinKey, isDefault, provisionedMTLS)
 			rt("  ↳ connectResolvedAgent (dial+probe)")
 			if err != nil {
 				if errors.Is(err, ErrUserCancelled) {
 					return nil, err
 				}
 				if syncedConn, ok := autoSyncTimeAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
-					return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+					return connectResolvedAgentKeyed(ctx, device, addr, pinKey, isDefault, provisionedMTLS)
 				}); ok {
 					conn = syncedConn
 				} else if errors.Is(err, errProvisionedAgentUnauthorized) {
 					refreshedConn, ok := offerCertRefreshAndRetry(ctx, cfg.nonInteractive, err, func() (*grpcclient.AgentConnection, error) {
-						return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+						return connectResolvedAgentKeyed(ctx, device, addr, pinKey, isDefault, provisionedMTLS)
 					})
 					if !ok {
 						return nil, err
@@ -3401,12 +3460,14 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 				}
 			}
 		}
-		// Same pin key as connectToAgent's: the host of the address dialled, via
-		// the same pinKeyForAddr the ladder uses. resolveTarget reaches devices
-		// connectToAgent never sees, and an unchecked path is the whole attack.
-		// Same typed address too, for a running VM's bare-key record (see
-		// typedVMBarePinKey).
-		pinKey := pinKeyForAddr(addr)
+		// Judged under the key it was dialled with — unless a local VM started
+		// or stopped meanwhile, which refuses it with nothing recorded or
+		// marked. The typed address goes with it, for a running VM's bare-key
+		// record (see typedVMBarePinKey).
+		if keyErr := recheckDialPinKey(addr, pinKey); keyErr != nil {
+			conn.Close()
+			return nil, keyErr
+		}
 		if pinErr := enforceDevicePinAt(pinKey, addr, conn); pinErr != nil {
 			conn.Close()
 			return nil, pinErr

@@ -3,7 +3,10 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -152,15 +155,16 @@ func enforceDeviceIdentityAt(hostname, bareKey string, obs observedDeviceIdentit
 	if err != nil {
 		return nil
 	}
+	before := maps.Clone(cfg.DevicePins)
 	changed, refusal := applyDeviceIdentity(cfg, hostname, bareKey, obs)
 	switch decideFallbackAction(updateErr, changed, refusal) {
 	case fallbackWarnUnrecorded:
 		// Another wendy process holds config.lock — hung, or just busy. Writing
 		// without the lock risks reverting that process's own change, so this
-		// verdict is judged but never recorded here. Say so: without a warning,
-		// the next connection to hostname would silently treat this as a first
-		// use (or a swap) all over again.
-		fmt.Fprintf(os.Stderr, "wendy: device identity for %q was not recorded: another wendy process holds the config lock (%v)\n", hostname, updateErr)
+		// verdict is judged but never recorded here. Say so, naming every key
+		// it would have written: without a warning, the next connection there
+		// would silently treat this as a first use (or a swap) all over again.
+		fmt.Fprint(os.Stderr, unrecordedIdentityWarning(hostname, unrecordedPinKeys(before, cfg.DevicePins), updateErr))
 	case fallbackSaveUnlocked:
 		// The lock file itself could not be opened or created (a read-only or
 		// foreign-owned config dir), or Update's own Load failed after taking
@@ -172,6 +176,40 @@ func enforceDeviceIdentityAt(hostname, bareKey string, obs observedDeviceIdentit
 		_ = config.Save(cfg)
 	}
 	return refusal
+}
+
+// unrecordedPinKeys lists, sorted, the pin keys a verdict changed in after
+// that are not so in before: what the lock fallback judged but could not
+// record.
+func unrecordedPinKeys(before, after map[string]config.DevicePin) []string {
+	var keys []string
+	for key, pin := range after {
+		if prev, ok := before[key]; !ok || prev != pin {
+			keys = append(keys, key)
+		}
+	}
+	for key := range before {
+		if _, ok := after[key]; !ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// unrecordedIdentityWarning is the lock fallback's warning that a verdict was
+// judged but not recorded. It names every key that verdict would have written
+// — for a typed connection to a running VM that can be the bare 127.0.0.1
+// alone, or beside vm:<name> — and hostname only when it has no list.
+func unrecordedIdentityWarning(hostname string, keys []string, updateErr error) string {
+	if len(keys) == 0 {
+		keys = []string{hostname}
+	}
+	quoted := make([]string, len(keys))
+	for i, key := range keys {
+		quoted[i] = strconv.Quote(key)
+	}
+	return fmt.Sprintf("wendy: device identity for %s was not recorded: another wendy process holds the config lock (%v)\n", strings.Join(quoted, " and "), updateErr)
 }
 
 // fallbackAction is what enforceDeviceIdentity's read-only fallback does with
@@ -264,14 +302,13 @@ func applyDeviceIdentity(cfg *config.Config, hostname, bareKey string, obs obser
 // cloud host.
 //
 // It never refuses — the connection's own key has already judged it, and a
-// VM's key never consults the bare pin — and it writes only what main's
-// connection would have written there without refusing:
+// VM's key never consults the bare pin — and it writes exactly what main's
+// connection wrote there, where main's would not have refused:
 //
-//   - no bare pin (first use): the identity is filed;
-//   - an org-only bare pin in the same organisation and cloud, and a
-//     certificate naming its asset (adopt): the asset is adopted in place,
-//     the pin's organisation, cloud and source kept (and its principal, if it
-//     has one);
+//   - no bare pin (first use), or an org-only bare pin in the same
+//     organisation and cloud with a certificate naming its asset (adopt): the
+//     observed identity is filed, as main's SetDevicePin filed it (an
+//     adoptable pin is never cloud-sourced, so its source stays LAN);
 //   - a pin that matches, or that names a different identity: nothing. It
 //     keeps governing every other loopback port, and this address once the VM
 //     stops, exactly as it did.
@@ -283,16 +320,8 @@ func recordTypedVMBarePin(cfg *config.Config, bareKey string, obs observedDevice
 		return false
 	}
 	switch cfg.EvaluateDevicePin(bareKey, obs.orgID, cloud, obs.assetID) {
-	case config.PinFirstUse:
+	case config.PinFirstUse, config.PinAdoptAsset:
 		cfg.SetDevicePin(bareKey, obs.orgID, cloud, obs.assetID, obs.principal)
-		return true
-	case config.PinAdoptAsset:
-		own, _ := cfg.DevicePinFor(bareKey)
-		principal := own.Principal
-		if principal == "" {
-			principal = obs.principal
-		}
-		cfg.SetDevicePinFrom(bareKey, own.OrgID, own.CloudGRPC, obs.assetID, principal, cfg.PinSource(bareKey))
 		return true
 	default: // config.PinMatch, config.PinMismatch
 		return false

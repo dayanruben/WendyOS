@@ -834,3 +834,22 @@ func spkiRefusal(pinKey string, pm *devicepin.PinMismatchError) error {
 		"device %q presented a different certificate key than the one pinned for %s (pinned %s, now %s); refusing to connect — if its certificate was legitimately reissued, run 'wendy device unpin %s'",
 		named, pm.Key, pm.Want, pm.Got, unpinArg)
 }
+
+// errVMChangedDuringConnect is a front door's refusal of a connection whose
+// pin key changed while it was being made: a local VM started or stopped
+// between the dial and the check, so the check would judge the connection
+// under a pin its dial was not made under. Retrying derives the key afresh.
+var errVMChangedDuringConnect = errors.New("VM state changed during connect")
+
+// recheckDialPinKey derives the pin key for addr — the address a front door
+// dialled, already re-aimed — again after the connection is made, and returns
+// errVMChangedDuringConnect, naming both keys, when it no longer equals
+// pinKey, the key the dial was made under and the check is about to use. A
+// non-loopback address never reads the VM store, so its key cannot change.
+func recheckDialPinKey(addr, pinKey string) error {
+	now := pinKeyForAddr(vmForwardDialAddr(addr))
+	if now == pinKey {
+		return nil
+	}
+	return fmt.Errorf("%w: %s was dialled as %q but now keys as %q (a local VM started or stopped); retry the command", errVMChangedDuringConnect, addr, pinKey, now)
+}

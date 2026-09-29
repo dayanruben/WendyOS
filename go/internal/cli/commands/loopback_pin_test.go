@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -841,7 +844,7 @@ func TestUSBFallbackConnectionIsNotTheDialledEndpoint(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	conn, dialled, finished, err := connectToAgentDirect(ctx, resolveConfig{nonInteractive: true}, "wendy-thor", "wendy-thor.local:50051", false)
+	conn, dialled, finished, err := connectToAgentDirect(ctx, resolveConfig{nonInteractive: true}, "wendy-thor", "wendy-thor.local:50051", "wendy-thor.local", false)
 	if err != nil || finished || conn == nil {
 		t.Fatalf("connectToAgentDirect = (%v, finished %v, %v), want the USB connection", conn, finished, err)
 	}
@@ -1320,5 +1323,417 @@ func TestVMForwardDialAddrLeavesAnotherVMsAgentPortAlone(t *testing.T) {
 	}
 	if key := pinKeyForAddr(vmForwardDialAddr("127.0.0.1:50052")); key != "vm:b" {
 		t.Fatalf("key = %q, want vm:b", key)
+	}
+}
+
+// stubFlippingVM makes VM dev forward agentPort on 127.0.0.1 while it runs,
+// and flips its running state once `after` VM-store reads have been made — a
+// VM started or stopped mid-connect. Both store views count as reads.
+func stubFlippingVM(t *testing.T, agentPort int, running bool, after int32) *atomic.Int32 {
+	t.Helper()
+	var reads atomic.Int32
+	isRunning := func() bool {
+		if reads.Add(1) > after {
+			return !running
+		}
+		return running
+	}
+	origName, origPort := loopbackVMNameFn, runningVMAgentPortFn
+	loopbackVMNameFn = func(port int) (string, bool) {
+		if isRunning() && port == agentPort {
+			return "dev", true
+		}
+		return "", false
+	}
+	runningVMAgentPortFn = func(name string) (int, bool) {
+		if isRunning() && name == "dev" {
+			return agentPort, true
+		}
+		return 0, false
+	}
+	t.Cleanup(func() { loopbackVMNameFn, runningVMAgentPortFn = origName, origPort })
+	return &reads
+}
+
+// dialKeyReads is how many VM-store reads one derivation of addr's dial
+// address and pin key makes with the VM in the given state: exactly the reads
+// a front door makes before it dials.
+func dialKeyReads(t *testing.T, addr string, agentPort int, running bool) (int32, string) {
+	t.Helper()
+	reads := stubFlippingVM(t, agentPort, running, 1<<30)
+	key := pinKeyForAddr(vmForwardDialAddr(addr))
+	return reads.Load(), key
+}
+
+// addTestAuthOrg gives the test config a login for org, so a certificate of
+// that organisation is one the user could hold.
+func addTestAuthOrg(t *testing.T, org int, cloud string) {
+	t.Helper()
+	if err := config.Update(func(cfg *config.Config) (bool, error) {
+		cfg.Auth = append(cfg.Auth, config.AuthConfig{CloudGRPC: cloud, Certificates: []config.CertificateInfo{{OrganizationID: org}}})
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// connectThroughDoor drives a front door (connectToAgent or resolveTarget)
+// for a typed --device address, with a ladder that answers where it is
+// dialled as obs. It returns every dial target the ladder was handed, the
+// connection the ladder built (so the caller can see whether it was marked),
+// and the front door's error.
+func connectThroughDoor(t *testing.T, door, addr string, obs observedDeviceIdentity) ([]dialTarget, *grpcclient.AgentConnection, error) {
+	t.Helper()
+	var targets []dialTarget
+	var built *grpcclient.AgentConnection
+	origLadder, origObserve, origDiscover := dialAgentLadderFn, observeDeviceIdentityFn, discoverLANDevices
+	origUSB, origLookup, origBrowse := usbDirectCandidatesFn, osLookupHostFn, lanBrowseFn
+	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		targets = append(targets, target)
+		built = &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: target.Addr,
+			AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}}}
+		return built, nil, nil
+	}
+	observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity { return obs }
+	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	usbDirectCandidatesFn = func() []discovery.USBDirectCandidate { return nil }
+	osLookupHostFn = func(context.Context, string) ([]string, error) { return []string{"192.168.2.10"}, nil }
+	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	defer func() {
+		dialAgentLadderFn, observeDeviceIdentityFn, discoverLANDevices = origLadder, origObserve, origDiscover
+		usbDirectCandidatesFn, osLookupHostFn, lanBrowseFn = origUSB, origLookup, origBrowse
+	}()
+	deviceFlag = addr
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	opts := []resolveOption{SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive(), DisableSessionBroker()}
+	var err error
+	if door == "connectToAgent" {
+		var conn *grpcclient.AgentConnection
+		conn, err = connectToAgent(ctx, opts...)
+		if conn != nil {
+			conn.Close()
+		}
+	} else {
+		var sel *SelectedDevice
+		sel, err = resolveTarget(ctx, opts...)
+		if sel != nil {
+			sel.Close()
+		}
+	}
+	return targets, built, err
+}
+
+// R31 (C1): a front door derives its pin key once, dials under it (the
+// ladder's Expected identity and plaintext block), and judges the connection
+// under it. If a local VM starts or stops mid-connect, the key it would derive
+// afterwards differs: the connection is refused as retryable, with nothing
+// pinned and nothing marked. Before this, the ladder re-derived its own key:
+// with a VM stopping mid-connect, it dialled under an org-only bare pin and
+// the check then ran under an unpinned vm:dev, accepting (and pinning) a
+// listener with another organisation's certificate that main refused.
+func TestFrontDoorRefusesAConnectionWhoseVMChangedMidConnect(t *testing.T) {
+	orgOnly := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443"}
+	// Another local account's listener, with a certificate from another
+	// organisation the user belongs to.
+	other := observedDeviceIdentity{mTLS: true, orgID: 8, assetID: "99"}
+	for _, door := range []string{"connectToAgent", "resolveTarget"} {
+		for _, tc := range []struct {
+			name    string
+			addr    string
+			running bool
+		}{
+			{"agent port, VM stops", "127.0.0.1:50051", true},
+			{"agent port, VM starts", "127.0.0.1:50051", false},
+			{"mTLS port, VM stops", "127.0.0.1:50052", true},
+			{"mTLS port, VM starts", "127.0.0.1:50052", false},
+		} {
+			t.Run(door+"/"+tc.name, func(t *testing.T) {
+				restoreDeviceGlobals(t)
+				stubNonInteractive(t)
+				setPinCache(t)
+				start := map[string]config.DevicePin{"127.0.0.1": orgOnly}
+				readPins := writePinTestConfig(t, start)
+				addTestAuthOrg(t, 8, "grpc.b.sh:443")
+
+				n, keyBefore := dialKeyReads(t, tc.addr, 50051, tc.running)
+				_, keyAfter := dialKeyReads(t, tc.addr, 50051, !tc.running)
+				if keyBefore == keyAfter {
+					t.Fatalf("test setup: %s keys as %q either way", tc.addr, keyBefore)
+				}
+				stubFlippingVM(t, 50051, tc.running, n)
+
+				targets, built, err := connectThroughDoor(t, door, tc.addr, other)
+				if !errors.Is(err, errVMChangedDuringConnect) {
+					t.Fatalf("got %v, want the VM-changed-during-connect refusal", err)
+				}
+				for _, want := range []string{strconv.Quote(keyBefore), strconv.Quote(keyAfter), "retry"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("refusal %q does not name %s", err, want)
+					}
+				}
+				if len(targets) != 1 {
+					t.Fatalf("ladder dialled %d times, want once", len(targets))
+				}
+				// The ladder dialled under the key the front door derived first —
+				// the key the check would have used — not a second derivation.
+				want := newDialTarget(keyBefore, targets[0].Addr)
+				if got := targets[0]; got.PinKey != keyBefore || got.PinnedKey != want.PinnedKey || got.pinned() != want.pinned() || (got.Expected == nil) != (want.Expected == nil) {
+					t.Errorf("ladder target = %+v, want it governed by %q (%+v)", got, keyBefore, want)
+				}
+				if built != nil && built.SimulatorName != "" {
+					t.Errorf("the refused connection was marked as VM %q", built.SimulatorName)
+				}
+				if pins := readPins(); !reflect.DeepEqual(pins, start) {
+					t.Errorf("pins = %+v, want them untouched (%+v)", pins, start)
+				}
+			})
+		}
+	}
+}
+
+// R31: when no VM changes, the ladder and the check use the same key, and the
+// connection goes through; a typed VM connection is marked and pinned as before.
+func TestFrontDoorDialsAndJudgesUnderOneKey(t *testing.T) {
+	for _, door := range []string{"connectToAgent", "resolveTarget"} {
+		t.Run(door, func(t *testing.T) {
+			restoreDeviceGlobals(t)
+			stubNonInteractive(t)
+			setPinCache(t)
+			stubLoopbackVMs(t, map[int]string{50051: "dev"})
+			readPins := writePinTestConfig(t, map[string]config.DevicePin{"vm:dev": pinA, "127.0.0.1": pinB})
+			targets, built, err := connectThroughDoor(t, door, "127.0.0.1:50051", assetObs("42"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(targets) != 1 || targets[0].PinKey != "vm:dev" || targets[0].Expected == nil || targets[0].Expected.EntityID != "42" {
+				t.Fatalf("ladder targets = %+v, want one dial under vm:dev (asset 42)", targets)
+			}
+			if built.SimulatorName != "dev" {
+				t.Errorf("SimulatorName = %q, want dev", built.SimulatorName)
+			}
+			if pins := readPins(); pins["vm:dev"].AssetID != "42" || pins["127.0.0.1"].AssetID != "43" || len(pins) != 2 {
+				t.Errorf("pins = %+v, want vm:dev=42 and the bare 43 untouched", pins)
+			}
+		})
+	}
+}
+
+// R31: a non-loopback key never reads the VM store, so it can never change
+// between the dial and the re-check: no extra refusals, however the VM store
+// behaves.
+func TestNonLoopbackKeysNeverTripTheVMChangeCheck(t *testing.T) {
+	for _, door := range []string{"connectToAgent", "resolveTarget"} {
+		for _, addr := range []string{"192.168.2.253:50051", "10.0.0.5", "[fe80::1%en0]:50051", "rpi5.local:50051", "wendyos-thor.local:99"} {
+			t.Run(door+"/"+addr, func(t *testing.T) {
+				restoreDeviceGlobals(t)
+				stubNonInteractive(t)
+				setPinCache(t)
+				readPins := writePinTestConfig(t, map[string]config.DevicePin{})
+				// A store whose answer changes on every read.
+				reads := stubFlippingVM(t, 50051, true, 0)
+				targets, built, err := connectThroughDoor(t, door, addr, assetObs("42"))
+				if err != nil {
+					t.Fatalf("got %v, want the connection", err)
+				}
+				key := pinKeyForAddr(addr)
+				if len(targets) != 1 || targets[0].PinKey != key {
+					t.Fatalf("ladder targets = %+v, want one dial under %q", targets, key)
+				}
+				if n := reads.Load(); n != 0 {
+					t.Errorf("the VM store was read %d times for a non-loopback address", n)
+				}
+				if built.SimulatorName != "" {
+					t.Errorf("SimulatorName = %q, want none", built.SimulatorName)
+				}
+				// The pin store files an mDNS name without its ".local".
+				if pins := readPins(); len(pins) != 1 || pins[strings.TrimSuffix(key, ".local")].AssetID != "42" {
+					t.Errorf("pins = %+v, want only %s=42", pins, key)
+				}
+			})
+		}
+	}
+}
+
+// m1: adopting an asset into an org-only bare pin writes exactly what main's
+// connection wrote under that key — SetDevicePin with the observed identity,
+// principal included.
+func TestTypedVMBarePinAdoptWritesWhatMainWrote(t *testing.T) {
+	const oldPrincipal = "spiffe://wendy.sh/tenant/0f8fad5b-d9cb-469f-a165-70867728950e/device/1"
+	const newPrincipal = "spiffe://wendy.sh/tenant/0f8fad5b-d9cb-469f-a165-70867728950e/device/42"
+	start := map[string]config.DevicePin{"127.0.0.1": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", Principal: oldPrincipal}}
+	obs := observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42", principal: newPrincipal}
+
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	setPinCache(t)
+	stubLoopbackVMs(t, map[int]string{50051: "dev"})
+	readPins := writePinTestConfig(t, start)
+	if _, err := connectTypedLoopback(t, "127.0.0.1:50051", obs); err != nil {
+		t.Fatal(err)
+	}
+	got := readPins()["127.0.0.1"]
+
+	// Main judged and recorded the same typed connection under the bare key.
+	readMain := writePinTestConfig(t, start)
+	if err := enforceDeviceIdentity("127.0.0.1", obs); err != nil {
+		t.Fatal(err)
+	}
+	want := readMain()["127.0.0.1"]
+	if got != want {
+		t.Fatalf("bare pin after the typed VM connection = %+v, main wrote %+v", got, want)
+	}
+	if got.Principal != newPrincipal || got.AssetID != "42" {
+		t.Fatalf("bare pin = %+v, want asset 42 with the observed principal", got)
+	}
+}
+
+// m2: `wendy device unpin` clears the key a dial of its target is checked
+// under. A host:port target is re-aimed like the dial, so a running VM's mTLS
+// forward names the VM; a bare host never is, so `unpin 127.0.0.1` clears the
+// shared pin.
+func TestUnpinOfARunningVMsMTLSForwardClearsTheVMPin(t *testing.T) {
+	setPinCache(t)
+	for _, tc := range []struct {
+		name    string
+		vms     map[int]string
+		target  string
+		cleared string
+	}{
+		{"mTLS port of a running VM", map[int]string{50051: "dev"}, "127.0.0.1:50052", "vm:dev"},
+		{"agent port of a running VM", map[int]string{50051: "dev"}, "127.0.0.1:50051", "vm:dev"},
+		{"bare host while the VM runs", map[int]string{50051: "dev"}, "127.0.0.1", "127.0.0.1"},
+		{"mTLS port once the VM stops", nil, "127.0.0.1:50052", "127.0.0.1"},
+		{"another port", map[int]string{50051: "dev"}, "127.0.0.1:50061", "127.0.0.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubLoopbackVMs(t, tc.vms)
+			readPins := writePinTestConfig(t, map[string]config.DevicePin{"vm:dev": pinA, "127.0.0.1": pinB})
+			runUnpin(t, tc.target)
+			pins := readPins()
+			if _, ok := pins[tc.cleared]; ok {
+				t.Errorf("unpin %s left %s", tc.target, tc.cleared)
+			}
+			if len(pins) != 1 {
+				t.Errorf("unpin %s: pins = %+v, want only %s cleared", tc.target, pins, tc.cleared)
+			}
+		})
+	}
+}
+
+// m3: when another wendy process holds the config lock, the fallback judges
+// the connection but cannot record it; its warning names every key it could
+// not record — for a typed VM connection that is the bare 127.0.0.1 too, and
+// sometimes only that.
+func TestLockFallbackWarningNamesWhatWasNotRecorded(t *testing.T) {
+	lockErr := errors.New("another wendy process has held config.lock")
+	for _, tc := range []struct {
+		name  string
+		start map[string]config.DevicePin
+		want  []string
+	}{
+		{"only the bare record", map[string]config.DevicePin{"vm:dev": pinA}, []string{"127.0.0.1"}},
+		{"both keys", map[string]config.DevicePin{}, []string{"127.0.0.1", "vm:dev"}},
+		{"only the VM's key", map[string]config.DevicePin{"127.0.0.1": pinA}, []string{"vm:dev"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Auth:       []config.AuthConfig{{CloudGRPC: "grpc.a.sh:443", Certificates: []config.CertificateInfo{{OrganizationID: 7}}}},
+				DevicePins: mxCopyPins(tc.start),
+			}
+			before := mxCopyPins(cfg.DevicePins)
+			changed, refusal := applyDeviceIdentity(cfg, "vm:dev", "127.0.0.1", assetObs("42"))
+			if refusal != nil || !changed {
+				t.Fatalf("applyDeviceIdentity = (%v, %v), want a change to record", changed, refusal)
+			}
+			keys := unrecordedPinKeys(before, cfg.DevicePins)
+			if !reflect.DeepEqual(keys, tc.want) {
+				t.Fatalf("unrecorded keys = %q, want %q", keys, tc.want)
+			}
+			msg := unrecordedIdentityWarning("vm:dev", keys, lockErr)
+			for _, key := range []string{"127.0.0.1", "vm:dev"} {
+				if named := strings.Contains(msg, strconv.Quote(key)); named != slices.Contains(tc.want, key) {
+					t.Errorf("warning names %q = %v, want %v:\n%s", key, named, !named, msg)
+				}
+			}
+			if !strings.Contains(msg, "was not recorded") || !strings.Contains(msg, lockErr.Error()) {
+				t.Errorf("warning = %q", msg)
+			}
+		})
+	}
+}
+
+func mxCopyPins(p map[string]config.DevicePin) map[string]config.DevicePin {
+	out := make(map[string]config.DevicePin, len(p))
+	for k, v := range p {
+		out[k] = v
+	}
+	return out
+}
+
+// R31: the session broker is consulted under the same key as the ladder and
+// the check — the broker's expected identity comes from the pin the front
+// door derived once — and a broker hit is re-checked like any connection.
+func TestSessionBrokerIsConsultedUnderTheDialKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the session broker is not used on Windows")
+	}
+	for _, door := range []string{"connectToAgent", "resolveTarget"} {
+		t.Run(door, func(t *testing.T) {
+			restoreDeviceGlobals(t)
+			stubNonInteractive(t)
+			setPinCache(t)
+			start := map[string]config.DevicePin{"vm:dev": pinA, "127.0.0.1": pinB}
+			readPins := writePinTestConfig(t, start)
+			n, _ := dialKeyReads(t, "127.0.0.1:50051", 50051, true)
+			stubFlippingVM(t, 50051, true, n) // the VM stops once the key is derived
+
+			var consulted []string
+			origConnect, origStart, origLadder := connectSessionBrokerFn, startSessionBrokerFn, dialAgentLadderFn
+			connectSessionBrokerFn = func(_ context.Context, key string, expected certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
+				consulted = append(consulted, key+" expecting asset "+expected.EntityID)
+				return &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: key,
+					AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}}}, nil
+			}
+			startSessionBrokerFn = func(string, *grpcclient.AgentConnection) error {
+				t.Error("a broker was seeded for a refused connection")
+				return nil
+			}
+			dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+				t.Error("the ladder ran despite a broker hit")
+				return nil, nil, errors.New("unreachable")
+			}
+			t.Cleanup(func() {
+				connectSessionBrokerFn, startSessionBrokerFn, dialAgentLadderFn = origConnect, origStart, origLadder
+			})
+
+			deviceFlag = "127.0.0.1:50051"
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			opts := []resolveOption{SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive()}
+			var err error
+			if door == "connectToAgent" {
+				var conn *grpcclient.AgentConnection
+				if conn, err = connectToAgent(ctx, opts...); conn != nil {
+					conn.Close()
+				}
+			} else {
+				var sel *SelectedDevice
+				if sel, err = resolveTarget(ctx, opts...); sel != nil {
+					sel.Close()
+				}
+			}
+			// vm:dev's pin (asset 42), the key derived before the VM stopped —
+			// not the bare 127.0.0.1 pin (asset 43) a second derivation gives.
+			if want := []string{"127.0.0.1:50051 expecting asset 42"}; !reflect.DeepEqual(consulted, want) {
+				t.Errorf("broker consulted %q, want %q", consulted, want)
+			}
+			if !errors.Is(err, errVMChangedDuringConnect) {
+				t.Fatalf("got %v, want the VM-changed-during-connect refusal", err)
+			}
+			if pins := readPins(); !reflect.DeepEqual(pins, start) {
+				t.Errorf("pins = %+v, want them untouched", pins)
+			}
+		})
 	}
 }
