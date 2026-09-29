@@ -804,7 +804,8 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 	if cloudCheckedBeforePicker {
 		return nil, err
 	}
-	if errors.Is(err, ErrUserCancelled) {
+	// An MCP-spawned run deploys to the MCP session's device or fails.
+	if errors.Is(err, ErrUserCancelled) || cloudFallbackDisabled(cloudName) {
 		return nil, err
 	}
 	var stopped *defaultDeviceRecoveryStoppedError
@@ -831,7 +832,7 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 	if cloudName == "" && deviceFlag == "" && deviceName == cfg.DefaultDevice {
 		expected = expectedIdentityFor(pinKeyForAddr(deviceName))
 	}
-	cloudConn, cloudErr := connectToCloudAgentExpecting(ctx, "", cloudDefaultSelector(deviceName, expected), "", expected)
+	cloudConn, cloudErr := cloudFallbackConnectFn(ctx, "", cloudDefaultSelector(deviceName, expected), "", expected)
 	if cloudErr != nil {
 		if errors.Is(cloudErr, errDeviceIdentityRefused) {
 			return nil, cloudErr
