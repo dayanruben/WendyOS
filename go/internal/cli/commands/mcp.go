@@ -47,6 +47,7 @@ func newMCPServeCmd() *cobra.Command {
 			srv.SetLANDiscoverer(func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error) {
 				return discovery.CollectLAN(ctx, cliLANStreamOptions(ctx), timeout)
 			})
+			srv.SetUSBSetupNotice(pendingUSBSetupNotice)
 			address := deviceFlag
 			if address == "" {
 				address = cfg.DefaultDevice

@@ -98,7 +98,7 @@ container does not establish sensor, HTTP or robot behavior; use `wendy-robot-de
 for robot checks. If the installed server exposes only the older cloud-only run
 tool, use the CLI with an explicit target or update and restart the MCP host.
 
-`--deploy` creates the container but does not start it. To start that existing app later, use `wendy device apps start <app-id>`, knowing that the current agent-backed start path attaches to the app stream. There is no `wendy device apps start --detach` flag.
+`--deploy` creates the container but does not start it. To start that existing app later without attaching to its output, use `wendy device apps start <app-id> --detach --device <hostname>` (see Manage apps).
 
 `--user-args` is repeatable and also accepts comma-separated values. Prefer repeated flags when values could contain commas. The values are appended to the image's own entrypoint/`CMD`, not substituted for it, so `--user-args --port,8080` runs `<image entrypoint> --port 8080`.
 
@@ -137,13 +137,13 @@ List apps without opening the interactive dashboard:
 wendy --json device apps list --device <hostname>
 ```
 
-Start an existing app by name:
+Start an existing app by name and return as soon as the agent confirms it started:
 
 ```bash
-wendy device apps start <app-id> --device <hostname>
+wendy device apps start <app-id> --detach --device <hostname>
 ```
 
-Current behavior: `device apps start` attaches to the app output stream. For a long-running app where the agent must regain control, prefer `wendy run --detach` for a fresh deploy/start, or start the app in a bounded/background shell and then inspect logs.
+`--detach` (`-d`) does not stream the app's output, and it starts the app with the `unless-stopped` restart policy: the agent restarts it whenever it exits until you run `wendy device apps stop`. Without `--detach`, `device apps start` attaches to the app's output until the container exits (a multi-service app returns right away), so run it only as a bounded or background task.
 
 Stop an app:
 

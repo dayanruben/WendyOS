@@ -58,8 +58,9 @@ const (
 )
 
 // wendyJetsonUdevRulePaths are the standard udev rules directories where the
-// 70-wendy-jetson.rules file (installed by the deb/rpm package or `wendy device
-// usb-setup`) grants non-root access to the Jetson recovery/flashing USB device.
+// 70-wendy-jetson.rules file (installed by the deb/rpm package, or by hand with
+// jetsonUdevRuleInstallHint) grants non-root access to the Jetson
+// recovery/flashing USB device.
 var wendyJetsonUdevRulePaths = []string{
 	"/etc/udev/rules.d/70-wendy-jetson.rules",
 	"/usr/lib/udev/rules.d/70-wendy-jetson.rules",
@@ -152,13 +153,23 @@ func pinCacheDirEnv(environ []string, cacheBase string) []string {
 	return out
 }
 
-// thorElevationReason is the one-line explanation printed just before the sudo
-// re-exec, tailored per platform.
+// jetsonUdevRuleInstallHint returns the shell commands that install the wendy
+// Jetson udev rule by hand — the same rule the deb/rpm packages ship — one per
+// line, each prefixed with indent.
+func jetsonUdevRuleInstallHint(indent string) string {
+	return indent + "echo '" + usbUdevRule + "' | sudo tee " + usbUdevRulePath + "\n" +
+		indent + "sudo udevadm control --reload-rules && sudo udevadm trigger"
+}
+
+// thorElevationReason is the explanation printed just before the sudo re-exec,
+// tailored per platform.
 func thorElevationReason(goos string) string {
 	if goos == "darwin" {
 		return "Flashing a Jetson AGX Thor needs administrator access — it talks to the board's USB recovery device directly, which requires root on macOS."
 	}
-	return "Flashing a Jetson AGX Thor needs USB access to the board's recovery device.\n  Tip: install the udev rule once to skip sudo next time — `wendy device usb-setup`."
+	return "Flashing a Jetson AGX Thor needs USB access to the board's recovery device.\n" +
+		"  Tip: install the udev rule once (the wendy deb/rpm packages include it) to skip sudo next time:\n" +
+		jetsonUdevRuleInstallHint("    ")
 }
 
 // errThorNeedsRoot is returned when a Thor flash needs elevation but cannot obtain
@@ -168,7 +179,8 @@ func errThorNeedsRoot() error {
 	msg := "flashing a Jetson AGX Thor requires administrator access — it opens the board's USB recovery device directly, which needs root.\n" +
 		"  Re-run:  sudo wendy install --device-type " + thorDeviceType
 	if runtime.GOOS == "linux" {
-		msg += "\n  (or install the udev rule once with `wendy device usb-setup`, then no sudo)"
+		msg += "\n  Or install the udev rule once (the wendy deb/rpm packages include it), then no sudo is needed:\n" +
+			jetsonUdevRuleInstallHint("    ")
 	}
 	return errors.New(msg)
 }

@@ -16,7 +16,7 @@ import (
 
 func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 	listOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("List configured and online cloud devices; scan=true adds LAN discovery. Pass a returned device selector to device_connect or run. Cloud failures appear as warnings."),
+		mcpgo.WithDescription("List configured and online cloud devices; scan=true adds LAN discovery. Pass a returned device selector to device_connect or run. Cloud failures appear as warnings. On Linux, a USB-C-tethered device the host can't reach until a person approves a one-time setup appears as a usb warning: relay its instructions to the user."),
 		mcpgo.WithBoolean("scan", mcpgo.Description("If true, run a live mDNS scan (3 s) in addition to returning configured devices")),
 		mcpgo.WithString("cloud_grpc", mcpgo.Description("Cloud gRPC endpoint to use (optional when a default auth session is selected via 'wendy auth use')")),
 		mcpgo.WithInteger("max_bytes", mcpgo.Min(1), mcpgo.Max(1000000), mcpgo.DefaultNumber(16384), mcpgo.Description("JSON byte limit; complete devices retained with omitted count")),
@@ -115,11 +115,20 @@ func (s *mcpServer) handleDeviceList(ctx context.Context, req mcpgo.CallToolRequ
 	cloud := <-cloudResults
 	devices = append(devices, cloud.devices...)
 	out := map[string]any{}
+	var warnings []map[string]any
 	if cloud.err != nil {
-		out["warnings"] = []map[string]any{{
+		warnings = append(warnings, map[string]any{
 			"source":  "cloud",
 			"message": fmt.Sprintf("Cloud discovery unavailable: %s", cloud.err),
-		}}
+		})
+	}
+	if s.usbSetupNoticeFn != nil {
+		if msg := s.usbSetupNoticeFn(); msg != "" {
+			warnings = append(warnings, map[string]any{"source": "usb", "message": msg})
+		}
+	}
+	if len(warnings) > 0 {
+		out["warnings"] = warnings
 	}
 	return okRowsBounded("devices", devices, out, maxBytes, len(devices)), nil
 }

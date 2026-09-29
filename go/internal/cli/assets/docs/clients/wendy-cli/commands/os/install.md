@@ -184,7 +184,7 @@ Thor flashing talks to the board's USB recovery device directly (an in-process l
 `wendy install` handles this for you: when it is not already running as root it re-executes itself under `sudo` **before** the recovery briefing, so you are prompted for your password up front rather than hitting a permission error partway through the flash. The elevated run reuses the already-downloaded flashpack (no re-download) and skips straight to the Thor flow.
 
 - **macOS** — always elevates when not run as root; the OS binds its own driver to the recovery device, so there is no non-root path.
-- **Linux** — if the wendy udev rule (`70-wendy-jetson.rules`, installed by the deb/rpm package or `wendy device usb-setup`) is present, the flash runs as your user with **no prompt**. Otherwise it re-execs under `sudo`.
+- **Linux** — if the wendy udev rule (`70-wendy-jetson.rules`, installed by the deb/rpm package; `wendy install` prints the commands to add it by hand) is present, the flash runs as your user with **no prompt**. Otherwise it re-execs under `sudo`.
 - **Non-interactive** (CI, piped input) — the CLI cannot prompt for a password, so it exits with instructions to re-run under `sudo` (Linux: or install the udev rule) instead of hanging.
 
 ### WiFi pre-configuration
