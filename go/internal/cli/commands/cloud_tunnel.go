@@ -222,7 +222,9 @@ func connectCloudDiscoveryDevice(ctx context.Context, auth *config.AuthConfig, a
 
 	agentConn := grpcclient.NewFromConn(grpcConn)
 	agentConn.Host = asset.GetName()
-	agentConn.MeshHost = meshname.Device(asset.GetId())
+	if asset.legacy != nil {
+		agentConn.MeshHost = meshname.Device(asset.legacy.GetId())
+	}
 	agentConn.IsMTLS = true
 	agentConn.CertInfo = &cert
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
