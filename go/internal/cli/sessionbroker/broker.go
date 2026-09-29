@@ -518,14 +518,20 @@ func (a *activity) rpcUnanswered() {
 	}
 }
 
-// isLocalCancellation distinguishes an explicit cancel from an expired client
-// deadline, which grpc-go also surfaces as cancellation of the server context.
+// gRPC transmits deadlines as relative timeouts, so the broker reconstructs a
+// slightly later deadline after the request crosses the local Unix socket.
+// Allow for that transit and scheduling delay when the client's deadline
+// cancels the server context before the broker's own deadline expires.
+const cancellationDeadlineSlack = 10 * time.Millisecond
+
+// isLocalCancellation recognizes cancellation well before any deadline.
+// Cancellation near the deadline is ambiguous and counts as unanswered.
 func isLocalCancellation(ctx context.Context, err error) bool {
 	if status.Code(err) != codes.Canceled || !errors.Is(ctx.Err(), context.Canceled) {
 		return false
 	}
 	deadline, hasDeadline := ctx.Deadline()
-	return !hasDeadline || time.Now().Before(deadline)
+	return !hasDeadline || time.Until(deadline) > cancellationDeadlineSlack
 }
 
 func (a *activity) noteUpstreamError(upstream *grpc.ClientConn, err error) {

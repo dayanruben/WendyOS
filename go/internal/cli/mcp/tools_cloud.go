@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -13,13 +14,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudenroll"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
-	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -203,24 +207,41 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	assets, err := mcpListCloudAssets(ctx, auth, stringParam(req, "filter"), req.GetBool("online_only", true))
-	if err != nil {
-		return cloudErrResult(err), nil
-	}
-	out := make([]map[string]any, 0, len(assets))
-	for _, a := range assets {
-		out = append(out, cloudAssetToMap(a))
+	filter := stringParam(req, "filter")
+	onlineOnly := req.GetBool("online_only", true)
+	// A v2 (UUID-identity) session must use the v2 AssetService — the v1 arm
+	// sends cert.OrganizationID (0 for these sessions) and silently returns an
+	// empty roster (WDY-3146). Legacy sessions keep the v1 arm.
+	var out []map[string]any
+	if len(auth.Certificates) > 0 && auth.Certificates[0].TenantUUID() != "" {
+		assets, err := mcpListCloudAssetsV2(ctx, auth, filter, onlineOnly)
+		if err != nil {
+			return cloudErrResult(err), nil
+		}
+		out = make([]map[string]any, 0, len(assets))
+		for _, a := range assets {
+			out = append(out, cloudAssetV2ToMap(a))
+		}
+	} else {
+		assets, err := mcpListCloudAssets(ctx, auth, filter, onlineOnly)
+		if err != nil {
+			return cloudErrResult(err), nil
+		}
+		out = make([]map[string]any, 0, len(assets))
+		for _, a := range assets {
+			out = append(out, cloudAssetToMap(a))
+		}
 	}
 	return okListBounded("devices", out, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn, asset, target, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), stringParam(req, "device_name"), stringParam(req, "broker_url"))
+	conn, device, target, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), stringParam(req, "device_name"), stringParam(req, "broker_url"))
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
 	s.setConnection(conn, "cloud", target)
-	return okText(fmt.Sprintf("connected to %s via cloud", asset.GetName())), nil
+	return okText(fmt.Sprintf("connected to %s via cloud", device.GetName())), nil
 }
 
 func (s *mcpServer) handleCloudEnrollDevice(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -236,23 +257,40 @@ func (s *mcpServer) handleCloudEnrollDevice(ctx context.Context, req mcpgo.CallT
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	tokenResp, err := mcpCreateAssetEnrollmentToken(ctx, auth, name)
+
+	// Same EAB path as the CLI: mint device_id, operator-sign the enrollment
+	// request, EnrollDevice -> EAB, then have the connected agent ACME-enroll.
+	deviceID := uuid.NewString()
+	cfg, err := cloudenroll.EnrollmentConfig(auth, deviceID, "")
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	cloudConn, err := mcpDialCloudGRPC(auth)
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	defer cloudConn.Close()
+	tokenCtx, err := mcpCloudContext(ctx, auth)
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	cfg, assetID, err := cloudenroll.MintEAB(tokenCtx, cloudConn, auth, cfg, name)
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	_, err = conn.ProvisioningService.StartProvisioning(ctx, &agentpb.StartProvisioningRequest{
-		OrganizationId:  tokenResp.GetOrganizationId(),
-		AssetId:         tokenResp.GetAssetId(),
-		EnrollmentToken: tokenResp.GetEnrollmentToken(),
-		CloudHost:       auth.CloudGRPC,
+
+	resp, err := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn).StartACMEProvisioning(ctx, &agentpbv2.StartACMEProvisioningRequest{
+		CloudHost: auth.CloudGRPC, DirectoryUrl: cfg.DirectoryURL, DeviceId: cfg.DeviceID,
+		EabKeyId: cfg.EABKeyID, EabHmacKey: cfg.EABHMACKey,
 	})
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	out := map[string]any{
-		"organization_id": tokenResp.GetOrganizationId(),
-		"asset_id":        tokenResp.GetAssetId(),
-		"cloud_host":      auth.CloudGRPC,
+		"asset_id":      assetID,
+		"device_id":     cfg.DeviceID,
+		"principal_uri": resp.GetPrincipalUri(),
+		"cloud_host":    auth.CloudGRPC,
 	}
 	return okResult(out), nil
 }
@@ -278,31 +316,49 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	asset, err := s.pickCloudAsset(ctx, auth, stringParam(req, "device_name"))
+	device, err := s.resolveCloudDevice(ctx, auth, stringParam(req, "device_name"))
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	brokerConn, err := clouddefaults.DialBroker(auth, stringParam(req, "broker_url"))
-	if err != nil {
-		return cloudErrResult(err), nil
+	// v2 has no datagram relay (cloudrelay is TCP-only); refuse UDP there,
+	// mirroring the CLI. v2 ping/UDP is tracked as a WDY-3148 follow-up.
+	if protocol == "udp" && device.isV2 {
+		return errResult(errCodeInvalidArgument, "Cloud's authorized service catalog does not expose UDP forwarding over v2 sessions"), nil
+	}
+	// The v1 datagram and v1 broker tunnel need a broker connection; the v2
+	// relay selects its own broker, so brokerConn stays nil there.
+	var brokerConn *grpc.ClientConn
+	if !device.isV2 {
+		brokerConn, err = clouddefaults.DialBroker(auth, stringParam(req, "broker_url"))
+		if err != nil {
+			return cloudErrResult(err), nil
+		}
+	} else if stringParam(req, "broker_url") != "" {
+		return errResult(errCodeInvalidArgument, "Cloud selects the authorized relay; broker_url is supported only for legacy sessions"), nil
+	}
+	closeBroker := func() {
+		if brokerConn != nil {
+			_ = brokerConn.Close()
+		}
 	}
 
-	key := fmt.Sprintf("%s:%s:%d:%d", protocol, asset.GetName(), localPort, remotePort)
+	key := fmt.Sprintf("%s:%s:%d:%d", protocol, device.GetName(), localPort, remotePort)
 	tunnelCtx, cancel := context.WithCancel(context.Background())
 
 	if protocol == "udp" {
+		// Legacy sessions only (v2 refused above).
 		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: localPort})
 		if err != nil {
 			cancel()
-			_ = brokerConn.Close()
+			closeBroker()
 			return errResultf(errCodeInternal, "listening on udp 127.0.0.1:%d: %s", localPort, err.Error()), nil
 		}
-		session, err := mcpOpenDatagramSession(tunnelCtx, brokerConn, auth, asset.GetId())
+		session, err := mcpOpenDatagramSession(tunnelCtx, brokerConn, auth, device.legacyID)
 		if err != nil {
 			cancel()
 			_ = pc.Close()
-			_ = brokerConn.Close()
-			return errResult(errCodeDeviceUnreachable, mcpDatagramOpenError(err, asset.GetName()).Error()), nil
+			closeBroker()
+			return errResult(errCodeDeviceUnreachable, mcpDatagramOpenError(err, device.GetName()).Error()), nil
 		}
 
 		tunnel := &mcpCloudTunnel{cancel: cancel, udpConn: pc, session: session, brokerConn: brokerConn}
@@ -323,8 +379,8 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 			"id":          key,
 			"protocol":    protocol,
 			"local_addr":  pc.LocalAddr().String(),
-			"device_name": asset.GetName(),
-			"asset_id":    asset.GetId(),
+			"device_name": device.GetName(),
+			"device_id":   device.key,
 			"remote_port": remotePort,
 		}
 		return okResult(out), nil
@@ -334,7 +390,7 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		cancel()
-		_ = brokerConn.Close()
+		closeBroker()
 		return errResultf(errCodeInternal, "listening on %s: %s", listenAddr, err.Error()), nil
 	}
 	tunnel := &mcpCloudTunnel{cancel: cancel, listener: ln, brokerConn: brokerConn}
@@ -351,7 +407,9 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 			if err != nil {
 				return
 			}
-			go mcpServeTunnelConn(tunnelCtx, tcpConn, brokerConn, auth, asset.GetId(), uint32(remotePort))
+			go mcpServeTunnelConn(tunnelCtx, tcpConn, func(c context.Context) (net.Conn, error) {
+				return device.openTunnel(c, brokerConn, auth, uint32(remotePort))
+			})
 		}
 	}()
 
@@ -359,8 +417,8 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 		"id":          key,
 		"protocol":    protocol,
 		"local_addr":  ln.Addr().String(),
-		"device_name": asset.GetName(),
-		"asset_id":    asset.GetId(),
+		"device_name": device.GetName(),
+		"device_id":   device.key,
 		"remote_port": remotePort,
 	}
 	return okResult(out), nil
@@ -380,6 +438,20 @@ func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
+
+	// v2 sessions have no broker DATAGRAM/ping form (the v2 relay is TCP-only),
+	// so ping RTT is measured with an agent-RPC round-trip over the authorized
+	// tunnel, mirroring the CLI. Legacy sessions keep the v1 datagram echo.
+	if isV2Session(auth) {
+		conn, device, _, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), deviceName, stringParam(req, "broker_url"))
+		if err != nil {
+			return cloudErrResult(err), nil
+		}
+		defer conn.Close()
+		stats := mcpRunPingLoop(ctx, newMCPAgentRPCPingSession(ctx, conn), device.GetName(), count, time.Second, io.Discard)
+		return mcpPingResult(stats, device.GetName()), nil
+	}
+
 	asset, err := s.pickCloudAsset(ctx, auth, deviceName)
 	if err != nil {
 		return cloudErrResult(err), nil
@@ -397,17 +469,20 @@ func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolReque
 	defer session.close()
 
 	stats := mcpRunPingLoop(ctx, session, asset.GetName(), count, time.Second, io.Discard)
+	return mcpPingResult(stats, asset.GetName()), nil
+}
+
+// mcpPingResult renders ping stats into a tool result, shared by the v1
+// datagram and v2 agent-RPC arms. On zero replies it surfaces the transport
+// error (mcpDatagramOpenError folds DeadlineExceeded/Unavailable into the
+// offline/old-agent hint) or, for a silent device, the generic hint.
+func mcpPingResult(stats mcpPingStats, name string) *mcpgo.CallToolResult {
 	if stats.Received == 0 {
 		if stats.Err != nil {
-			// A genuine transport error (PermissionDenied, Unauthenticated,
-			// mesh-disabled, ...) ended the recv loop — surface it instead of
-			// the generic hint. mcpDatagramOpenError still folds
-			// DeadlineExceeded/Unavailable into that same hint.
-			return errResult(codeFromGRPC(stats.Err), mcpDatagramOpenError(stats.Err, asset.GetName()).Error()), nil
+			return errResult(codeFromGRPC(stats.Err), mcpDatagramOpenError(stats.Err, name).Error())
 		}
-		return errResultf(errCodeDeviceUnreachable, "no replies from %s: the device may be offline or need a WendyOS update for ping support", asset.GetName()), nil
+		return errResultf(errCodeDeviceUnreachable, "no replies from %s: the device may be offline or need a WendyOS update for ping support", name)
 	}
-
 	out := map[string]any{
 		"sent":       stats.Sent,
 		"received":   stats.Received,
@@ -415,7 +490,7 @@ func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolReque
 		"avg_rtt_ms": stats.Avg.Seconds() * 1000,
 		"max_rtt_ms": stats.Max.Seconds() * 1000,
 	}
-	return okResult(out), nil
+	return okResult(out)
 }
 
 func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -517,7 +592,7 @@ func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error)
 	return auth, err
 }
 
-func cloudCommandTarget(auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) commandTarget {
+func cloudCommandTarget(auth *config.AuthConfig, asset interface{ GetName() string }, brokerURL string) commandTarget {
 	if auth == nil || auth.CloudGRPC == "" || asset.GetName() == "" {
 		return commandTarget{}
 	}
@@ -529,45 +604,54 @@ func cloudCommandTarget(auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL
 	}
 }
 
-func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, *cloudpb.Asset, commandTarget, error) {
+func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, mcpCloudDevice, commandTarget, error) {
 	auth, err := s.cloudAuthEntry(cloudGRPC)
 	if err != nil {
-		return nil, nil, commandTarget{}, err
+		return nil, mcpCloudDevice{}, commandTarget{}, err
 	}
-	asset, err := s.pickCloudAsset(ctx, auth, deviceName)
+	device, err := s.resolveCloudDevice(ctx, auth, deviceName)
 	if err != nil {
-		return nil, nil, commandTarget{}, err
+		return nil, mcpCloudDevice{}, commandTarget{}, err
 	}
-	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
-	if err != nil {
-		return nil, nil, commandTarget{}, err
+
+	// Legacy sessions dial the v1 broker; the v2 relay picks its own broker, so
+	// there is no broker connection to hold for a v2 session.
+	var brokerConn *grpc.ClientConn
+	if !device.isV2 {
+		brokerConn, err = clouddefaults.DialBroker(auth, brokerURL)
+		if err != nil {
+			return nil, mcpCloudDevice{}, commandTarget{}, err
+		}
+	} else if brokerURL != "" {
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("Cloud selects the authorized relay; broker_url is supported only for legacy sessions")
 	}
 	cleanupBroker := true
 	defer func() {
-		if cleanupBroker {
+		if cleanupBroker && brokerConn != nil {
 			_ = brokerConn.Close()
 		}
 	}()
 
+	// Provisioned agents serve mTLS on agentPort+1 (50052) for remote clients.
 	dialOpt := clouddefaults.TunnelDialer(func(tunnelCtx context.Context) (net.Conn, error) {
-		return mcpOpenBrokerTunnel(tunnelCtx, brokerConn, auth, asset.GetId(), 50052)
+		return device.openTunnel(tunnelCtx, brokerConn, auth, 50052)
 	})
 
 	certInfo := auth.Certificates[0]
 	keyPEM, err := certInfo.PrivateKeyPEM()
 	if err != nil {
-		return nil, nil, commandTarget{}, fmt.Errorf("loading client key: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("loading client key: %w", err)
 	}
 	x509Cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(keyPEM))
 	if err != nil {
-		return nil, nil, commandTarget{}, fmt.Errorf("loading agent mTLS cert: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("loading agent mTLS cert: %w", err)
 	}
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
 		ChainPEM:      certInfo.PemCertificateChain,
 		ExpectedOrgID: int32(certInfo.OrganizationID),
 	})
 	if err != nil {
-		return nil, nil, commandTarget{}, fmt.Errorf("building TLS verifier: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("building TLS verifier: %w", err)
 	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{x509Cert},
@@ -581,17 +665,19 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
 	)
 	if err != nil {
-		return nil, nil, commandTarget{}, fmt.Errorf("creating tunnelled gRPC connection: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("creating tunnelled gRPC connection: %w", err)
 	}
 	agentConn := grpcclient.NewFromConn(grpcConn)
-	agentConn.Host = asset.GetName()
+	agentConn.Host = device.GetName()
 	agentConn.IsMTLS = true
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
-		return mcpOpenBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), uint32(port))
+		return device.openTunnel(ctx, brokerConn, auth, uint32(port))
 	}
-	agentConn.ExtraClosers = append(agentConn.ExtraClosers, brokerConn)
+	if brokerConn != nil {
+		agentConn.ExtraClosers = append(agentConn.ExtraClosers, brokerConn)
+	}
 	cleanupBroker = false
-	return agentConn, asset, cloudCommandTarget(auth, asset, brokerURL), nil
+	return agentConn, device, cloudCommandTarget(auth, device, brokerURL), nil
 }
 
 func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig, deviceName string) (*cloudpb.Asset, error) {
@@ -675,27 +761,6 @@ func (s *mcpServer) offlineDeviceErr(ctx context.Context, auth *config.AuthConfi
 	return &cloudResolveErr{code: errCodeDeviceUnreachable, msg: fmt.Sprintf("device %q is enrolled but currently reported offline; check the device's power and network connection, or call cloud_discover with online_only=false to list enrolled devices", deviceName)}
 }
 
-func mcpCreateAssetEnrollmentToken(ctx context.Context, auth *config.AuthConfig, name string) (*cloudpb.CreateAssetEnrollmentTokenResponse, error) {
-	conn, err := mcpDialCloudGRPC(auth)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	cloudCtx, err := mcpCloudContext(ctx, auth)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := cloudpb.NewCertificateServiceClient(conn).CreateAssetEnrollmentToken(cloudCtx, &cloudpb.CreateAssetEnrollmentTokenRequest{
-		OrganizationId: int32(auth.Certificates[0].OrganizationID),
-		Name:           name,
-		TtlSeconds:     600,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating enrollment token: %w", err)
-	}
-	return resp, nil
-}
-
 func mcpListCloudAssets(ctx context.Context, auth *config.AuthConfig, filter string, onlineOnly bool) ([]*cloudpb.Asset, error) {
 	conn, err := mcpDialCloudGRPC(auth)
 	if err != nil {
@@ -759,7 +824,10 @@ func mcpCloudContext(ctx context.Context, auth *config.AuthConfig) (context.Cont
 	}
 	certInfo := auth.Certificates[0]
 	md := metadata.MD{}
-	if auth.HasAPIKey() {
+	// A DPoP-bound token goes out as DPoP via the shared interceptor
+	// (mcpDialCloudGRPC installs it); only unbound API-key/legacy sessions carry
+	// Bearer here (WDY-3107).
+	if auth.HasAPIKey() && !cloudrequest.IsDPoPBound(auth) {
 		bearerToken, err := auth.BearerToken()
 		if err != nil {
 			return nil, fmt.Errorf("loading API token: %w", err)
@@ -799,11 +867,40 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	} else {
 		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
 	}
-	conn, err := grpc.NewClient(auth.CloudGRPC, transport)
+	dialOptions := []grpc.DialOption{transport}
+	signingOption, err := cloudrequest.DialOption(auth)
+	if err != nil {
+		return nil, fmt.Errorf("configuring Cloud request signing: %w", err)
+	}
+	if signingOption != nil {
+		dialOptions = append(dialOptions, signingOption)
+	}
+	// Per-RPC DPoP proof for a cnf-bound token; nil for unbound sessions. The
+	// MCP provider uses the stored token without refreshing (WDY-3107).
+	dialOptions = append(dialOptions, cloudrequest.DPoPDialOptions(auth, mcpDPoPTokenProvider(auth))...)
+	conn, err := grpc.NewClient(auth.CloudGRPC, dialOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
 	}
 	return conn, nil
+}
+
+// mcpDPoPTokenProvider returns the stored access token and its bound ML-DSA key
+// for a DPoP proof. Unlike the CLI it does NOT auto-refresh — the MCP tools path
+// has never refreshed OAuth tokens, so this only adds the proof (no behavior
+// change); an expired token still fails the same way it does today.
+func mcpDPoPTokenProvider(auth *config.AuthConfig) cloudrequest.DPoPTokenProvider {
+	return func(context.Context) (string, crypto.Signer, error) {
+		keyPEM, err := auth.OAuthDPoPKey()
+		if err != nil {
+			return "", nil, fmt.Errorf("DPoP: loading bound key: %w", err)
+		}
+		key, err := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
+		if err != nil {
+			return "", nil, fmt.Errorf("DPoP: parsing bound key: %w", err)
+		}
+		return auth.APIKey, key, nil
+	}
 }
 
 func mcpOpenBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) (net.Conn, error) {
@@ -880,9 +977,9 @@ func mcpOpenBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth 
 	return tunnel, nil
 }
 
-func mcpServeTunnelConn(ctx context.Context, tcpConn net.Conn, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) {
+func mcpServeTunnelConn(ctx context.Context, tcpConn net.Conn, dial func(context.Context) (net.Conn, error)) {
 	defer tcpConn.Close()
-	tunnelConn, err := mcpOpenBrokerTunnel(ctx, brokerConn, auth, assetID, remotePort)
+	tunnelConn, err := dial(ctx)
 	if err != nil {
 		return
 	}

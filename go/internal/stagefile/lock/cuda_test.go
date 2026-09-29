@@ -1,6 +1,7 @@
 package lock
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
@@ -59,17 +60,8 @@ func TestResolveCUDAUnknownArchNamesTheKnownOnes(t *testing.T) {
 		t.Fatal("ResolveCUDA: error = nil, want one for an unknown architecture")
 	}
 	for _, known := range gpu.KnownArches() {
-		if !contains(err.Error(), known) {
+		if !strings.Contains(err.Error(), known) {
 			t.Errorf("ResolveCUDA: error %q does not mention known arch %q", err, known)
 		}
 	}
-}
-
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }

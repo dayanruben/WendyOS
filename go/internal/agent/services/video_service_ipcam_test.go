@@ -41,6 +41,14 @@ type fakeLoopback struct {
 	credChanged        []uint32
 	removed            []uint32
 	shutdownCalled     bool
+
+	// Auxiliary-node state backs the two-plane camera data path. auxNext is the
+	// number the next allocation hands out; auxErr forces the band-exhausted
+	// path; auxCreated and auxRemoved record the calls.
+	auxNext    int
+	auxErr     error
+	auxCreated []int
+	auxRemoved []int
 }
 
 func newFakeLoopback() *fakeLoopback {
@@ -49,6 +57,33 @@ func newFakeLoopback() *fakeLoopback {
 		acquireCount: make(map[uint32]int),
 		releaseCount: make(map[uint32]int),
 	}
+}
+
+func (f *fakeLoopback) AllocateAuxNodeNumber() (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.auxErr != nil {
+		return 0, f.auxErr
+	}
+	if f.auxNext == 0 {
+		f.auxNext = 255
+	}
+	nr := f.auxNext
+	f.auxNext--
+	return nr, nil
+}
+
+func (f *fakeLoopback) EnsureAuxNode(_ context.Context, nr int, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.auxCreated = append(f.auxCreated, nr)
+	return nil
+}
+
+func (f *fakeLoopback) RemoveAuxNode(nr int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.auxRemoved = append(f.auxRemoved, nr)
 }
 
 func (f *fakeLoopback) Available() error {
@@ -632,6 +667,28 @@ func TestListCameras_SkipsGlobNodesInIPCameraBand(t *testing.T) {
 	}
 	if devices[0].GetId() != cam.ID || devices[0].GetTransport() != agentpb.VideoTransport_VIDEO_TRANSPORT_IP {
 		t.Fatalf("device = %+v, want the single IP-transport registry entry", devices[0])
+	}
+}
+
+// A sensor-pairing camera's node sits in the MCU band, which no registry lists,
+// so the glob enumeration must: skipping it like the ROS 2 and IP bands would
+// leave a mounted camera out of the listing altogether.
+func TestListCameras_ListsGlobNodesInMCUBand(t *testing.T) {
+	s := newIPTestService(t)
+	nodePath := fmt.Sprintf("/dev/video%d", ipcam.MCUBandStart)
+	s.globDevices = func() ([]string, error) { return []string{nodePath}, nil }
+	s.hasVideoCapture = func(path string) bool { return path == nodePath }
+	s.readDeviceName = func(string) (string, error) { return "garden:cam0", nil }
+
+	devices, err := s.listCameras(context.Background())
+	if err != nil {
+		t.Fatalf("listCameras: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("got %d devices, want exactly the MCU-band node: %+v", len(devices), devices)
+	}
+	if d := devices[0]; d.GetId() != ipcam.MCUBandStart || d.GetPath() != nodePath || d.GetName() != "garden:cam0" {
+		t.Fatalf("device = %+v, want id %d at %s named garden:cam0", d, ipcam.MCUBandStart, nodePath)
 	}
 }
 
