@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/chunkupload"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	_ "google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -137,7 +139,7 @@ func TestPushLayersResumingTunnelDropsReconnectsAndRetries(t *testing.T) {
 		return nil, nil
 	}
 
-	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil)
+	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil, gzipChunkUploadConfig)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -176,7 +178,7 @@ func TestPushLayersResumingTunnelDropsDoesNotRetryUnimplemented(t *testing.T) {
 		return nil, nil
 	}
 
-	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), conn, nil, nil)
+	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), conn, nil, nil, gzipChunkUploadConfig)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -228,7 +230,7 @@ func TestPushLayersResumingTunnelDropsGivesUpAfterAttempts(t *testing.T) {
 		return nil, nil
 	}
 
-	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, nil, nil)
+	gotConn, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, nil, nil, gzipChunkUploadConfig)
 	if err == nil {
 		t.Fatal("expected an error after exhausting all attempts")
 	}
@@ -246,6 +248,94 @@ func TestPushLayersResumingTunnelDropsGivesUpAfterAttempts(t *testing.T) {
 	}
 	if cClosed {
 		t.Error("the final conn is the caller's to close, not pushLayersResumingTunnelDrops's")
+	}
+}
+
+// TestPushLayersResumingTunnelDropsWrapsAFailedReconnectAfterAStall is M3: the
+// reconnect that follows a stall can itself fail (the agent is slow to come
+// back, or unreachable). The returned error must still say the upload
+// stalled — errors.Is(err, chunkupload.ErrStalled) — rather than surfacing
+// only the reconnect failure and hiding what actually triggered it.
+func TestPushLayersResumingTunnelDropsWrapsAFailedReconnectAfterAStall(t *testing.T) {
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "16")
+	manifestCacheTestDir = t.TempDir()
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = ""; chunkStallTestDir = "" })
+
+	layerTar := variedChunkTestData(200 * 64 << 10)
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}
+	agent := &probeAgent{dev: &probeDevice{staged: map[[32]byte]int{}}, stallAfter: 5}
+	conn, _ := startProbeAgent(t, agent)
+	// No Reconnect closure: reconnectAgentAfterRestart falls to the LAN
+	// redial path (waitForAgentRestart), which re-dials this bogus address,
+	// never finds an agent, and fails once ctx expires.
+	conn.Addr = "127.0.0.1:1"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	cfg := chunkUploadConfig{stallTimeout: 30 * time.Millisecond, stallKey: "0123abcd@0.19.3"}
+
+	_, _, err := pushLayersResumingTunnelDrops(ctx, conn, layers, nil, cfg)
+	if !errors.Is(err, chunkupload.ErrStalled) {
+		t.Fatalf("error = %v, want it to still satisfy errors.Is(err, chunkupload.ErrStalled)\n%s", err, out.String())
+	}
+	if !chunkUploadStalledRecently(cfg.stallKey, time.Now()) {
+		t.Fatal("the stall was not remembered even though the reconnect failed")
+	}
+}
+
+// TestPushLayersResumingTunnelDropsRemembersAStallOnTheFinalAttempt is M7:
+// attempts 1 and 2 fail the capability probe outright (a tunnel drop, so the
+// loop reconnects without ever touching cfg), and attempt 3 — the loop's
+// last, chunkPushResumeAttempts — stalls. The attempt-exhausted return must
+// still remember the stall; before the M7 fix it returned straight past the
+// block that does, and the device's next deploy would try uncompressed again
+// instead of skipping straight to gzip.
+func TestPushLayersResumingTunnelDropsRemembersAStallOnTheFinalAttempt(t *testing.T) {
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "16")
+	manifestCacheTestDir = t.TempDir()
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = ""; chunkStallTestDir = "" })
+
+	layerTar := variedChunkTestData(200 * 64 << 10)
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}
+
+	connA := &grpcclient.AgentConnection{ContainerService: &unavailableContainerClient{}}
+	connB := &grpcclient.AgentConnection{ContainerService: &unavailableContainerClient{}}
+	agentC := &probeAgent{dev: &probeDevice{staged: map[[32]byte]int{}}, stallAfter: 5}
+	connC, _ := startProbeAgent(t, agentC)
+	connA.Reconnect = func(context.Context) (*grpcclient.AgentConnection, error) { return connB, nil }
+	connB.Reconnect = func(context.Context) (*grpcclient.AgentConnection, error) { return connC, nil }
+
+	cfg := chunkUploadConfig{stallTimeout: 200 * time.Millisecond, stallKey: "0123abcd@0.19.3"}
+	if chunkPushResumeAttempts != 3 {
+		t.Fatalf("this test assumes chunkPushResumeAttempts == 3 (connA -> connB -> connC), got %d", chunkPushResumeAttempts)
+	}
+
+	_, _, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil, cfg)
+	if !errors.Is(err, chunkupload.ErrStalled) {
+		t.Fatalf("error = %v, want ErrStalled\n%s", err, out.String())
+	}
+	if !chunkUploadStalledRecently(cfg.stallKey, time.Now()) {
+		t.Fatal("the stall on the final (attempt-exhausted) attempt was not remembered")
 	}
 }
 
@@ -272,7 +362,41 @@ type probeAgent struct {
 	dropAfter int64
 	drop      func()
 	dropOnce  sync.Once
+
+	// stallAfter > 0 wedges this agent like the #1765 link: once it has
+	// received stallAfter chunks, every WriteChunks handler stops reading and
+	// waits for its stream to end, so no stream makes progress.
+	stallAfter int64
+	encMu      sync.Mutex
+	encs       []string // grpc-encoding of each WriteChunks stream, in arrival order
 }
+
+// encodings returns the grpc-encoding each WriteChunks stream arrived with
+// ("" for uncompressed).
+func (a *probeAgent) encodings() []string {
+	a.encMu.Lock()
+	defer a.encMu.Unlock()
+	return append([]string(nil), a.encs...)
+}
+
+// encodingRecorder is a server stats.Handler that records the compression
+// each WriteChunks stream arrived with.
+type encodingRecorder struct{ a *probeAgent }
+
+func (r encodingRecorder) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context {
+	return ctx
+}
+func (r encodingRecorder) HandleRPC(_ context.Context, s stats.RPCStats) {
+	if in, ok := s.(*stats.InHeader); ok && strings.HasSuffix(in.FullMethod, "/WriteChunks") {
+		r.a.encMu.Lock()
+		r.a.encs = append(r.a.encs, in.Compression)
+		r.a.encMu.Unlock()
+	}
+}
+func (r encodingRecorder) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context {
+	return ctx
+}
+func (r encodingRecorder) HandleConn(context.Context, stats.ConnStats) {}
 
 func (a *probeAgent) QueryChunks(_ context.Context, req *agentpb.QueryChunksRequest) (*agentpb.QueryChunksResponse, error) {
 	a.dev.mu.Lock()
@@ -311,6 +435,10 @@ func (a *probeAgent) WriteChunks(stream grpc.ClientStreamingServer[agentpb.Write
 		}
 		var h [32]byte
 		copy(h[:], msg.GetHash())
+		if a.stallAfter > 0 && a.received.Load() >= a.stallAfter {
+			<-stream.Context().Done()
+			return stream.Context().Err()
+		}
 		a.dev.mu.Lock()
 		a.dev.staged[h]++
 		a.dev.mu.Unlock()
@@ -327,7 +455,7 @@ func (a *probeAgent) WriteChunks(stream grpc.ClientStreamingServer[agentpb.Write
 func startProbeAgent(t *testing.T, a *probeAgent) (*grpcclient.AgentConnection, *grpc.Server) {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer(grpc.InitialWindowSize(8<<20), grpc.InitialConnWindowSize(16<<20))
+	srv := grpc.NewServer(grpc.InitialWindowSize(8<<20), grpc.InitialConnWindowSize(16<<20), grpc.StatsHandler(encodingRecorder{a: a}))
 	agentpb.RegisterWendyContainerServiceServer(srv, a)
 	go func() { _ = srv.Serve(lis) }()
 	cc, err := grpc.NewClient("passthrough:///bufnet",
@@ -379,7 +507,7 @@ func TestPushLayersResumingTunnelDropsResumesWithSeveralStreamsOpen(t *testing.T
 			MediaType: "application/vnd.oci.image.layer.v1.tar",
 			Blob:      layerTar,
 		}}
-		got, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil)
+		got, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil, gzipChunkUploadConfig)
 		if err != nil {
 			t.Fatalf("iter %d: push failed: %v\n%s", iter, err, out.String())
 		}
@@ -412,5 +540,76 @@ func TestPushLayersResumingTunnelDropsResumesWithSeveralStreamsOpen(t *testing.T
 		if dups != 0 {
 			t.Fatalf("iter %d: the resume re-sent %d chunk(s) the device already had", iter, dups)
 		}
+	}
+}
+
+// TestPushLayersResumingTunnelDropsFallsBackToGzipAfterAStall is Review Focus
+// #1: an uncompressed push wedges with several streams open. The watchdog
+// fires, the device's stall is remembered, and the retry reconnects and sends
+// only what the device is still missing, with gzip.
+func TestPushLayersResumingTunnelDropsFallsBackToGzipAfterAStall(t *testing.T) {
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+	t.Setenv("WENDY_CHUNK_UPLOAD_BATCH", "16")
+	manifestCacheTestDir = t.TempDir()
+	chunkStallTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = ""; chunkStallTestDir = "" })
+
+	layerTar := variedChunkTestData(300 * 64 << 10)
+	dev := &probeDevice{staged: map[[32]byte]int{}}
+	agentA := &probeAgent{dev: dev, stallAfter: 100}
+	connA, _ := startProbeAgent(t, agentA)
+	agentB := &probeAgent{dev: dev}
+	connB, _ := startProbeAgent(t, agentB)
+	reconnects := 0
+	connA.Reconnect = func(context.Context) (*grpcclient.AgentConnection, error) {
+		reconnects++
+		return connB, nil
+	}
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}
+	cfg := chunkUploadConfig{stallTimeout: 300 * time.Millisecond, stallKey: "0123abcd@0.19.3"}
+
+	got, headers, err := pushLayersResumingTunnelDrops(context.Background(), connA, layers, nil, cfg)
+	if err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out.String())
+	}
+	if got != connB || reconnects != 1 || len(headers) != 1 {
+		t.Fatalf("conn=%v reconnects=%d headers=%d", got == connB, reconnects, len(headers))
+	}
+	for _, enc := range agentA.encodings() {
+		if enc != "" {
+			t.Fatalf("the first attempt opened a %q stream, want uncompressed", enc)
+		}
+	}
+	encs := agentB.encodings()
+	if len(encs) == 0 {
+		t.Fatal("the retry opened no streams")
+	}
+	for _, enc := range encs {
+		if enc != "gzip" {
+			t.Fatalf("the retry opened a %q stream, want gzip", enc)
+		}
+	}
+	if !chunkUploadStalledRecently("0123abcd@0.19.3", time.Now()) {
+		t.Fatal("the stall was not remembered")
+	}
+	// cliNotice writes the fallback notice to os.Stderr, not to out; Task 6's
+	// hardware run checks it by eye.
+	dev.mu.Lock()
+	defer dev.mu.Unlock()
+	for h, n := range dev.staged {
+		if n > 1 {
+			t.Fatalf("chunk %x was sent %d times; the retry must skip staged chunks", h[:4], n)
+		}
+	}
+	if agentB.received.Load() >= int64(len(dev.staged)) {
+		t.Fatal("the retry re-sent everything")
 	}
 }

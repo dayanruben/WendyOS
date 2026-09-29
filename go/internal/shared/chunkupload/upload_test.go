@@ -25,10 +25,11 @@ import (
 type fakeClient struct {
 	agentpb.WendyContainerServiceClient
 
-	sendDelay time.Duration // per Send, to make concurrent streams overlap
-	failAfter int           // when > 0, the Send that would receive chunk N+1 fails with failErr
-	failErr   error
-	closeErr  error
+	sendDelay  time.Duration // per Send, to make concurrent streams overlap
+	failAfter  int           // when > 0, the Send that would receive chunk N+1 fails with failErr
+	failErr    error
+	closeErr   error
+	stallAfter int // when > 0, every Send after the first stallAfter sends blocks until its stream's ctx ends
 
 	mu          sync.Mutex
 	received    map[[32]byte][]byte
@@ -67,6 +68,15 @@ type fakeStream struct {
 }
 
 func (s *fakeStream) Send(req *agentpb.WriteChunksRequest) error {
+	if s.f.stallAfter > 0 {
+		s.f.mu.Lock()
+		stall := s.f.sends >= s.f.stallAfter
+		s.f.mu.Unlock()
+		if stall {
+			<-s.ctx.Done()
+			return s.ctx.Err()
+		}
+	}
 	if s.f.sendDelay > 0 {
 		select {
 		case <-time.After(s.f.sendDelay):

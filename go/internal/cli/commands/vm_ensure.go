@@ -271,7 +271,8 @@ func connectSimulatorChoice(ctx context.Context, choice *simulatorChoice, suppre
 			return nil, err
 		}
 	}
-	if err := reconcileSimulatorRobotFn(ctx, picked.Agent); err != nil {
+	picked.Agent, err = reconcileSimulatorRobotWithAgentUpdate(ctx, picked.Agent)
+	if err != nil {
 		picked.Agent.Close()
 		return nil, markSimulatorUnavailable(err)
 	}

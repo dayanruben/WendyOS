@@ -1219,6 +1219,11 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		}
 		device = loaded.DefaultDevice
 	}
+	if cfg.readOnlyMonitoring {
+		if conn, matched, err := connectRunningSimulator(ctx, device); matched {
+			return conn, err
+		}
+	}
 	if picked, matched, err := connectNamedDeviceSelector(ctx, device, cfg.suppressUpdateCheck); matched {
 		if err != nil {
 			return nil, err
@@ -1311,6 +1316,11 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 	startedAt := time.Now()
 	provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
 	conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+	if cfg.readOnlyMonitoring {
+		// Monitoring must report connection errors without clock changes,
+		// certificate-refresh prompts, or a picker that can select another device.
+		return conn, false, connErr
+	}
 	if connErr != nil {
 		if errors.Is(connErr, ErrUserCancelled) {
 			return nil, false, connErr
@@ -3115,6 +3125,7 @@ type resolveConfig struct {
 	disableSessionBroker     bool
 	disablePickerEnroll      bool
 	sameTargetFallback       defaultDeviceSameTargetFallback
+	readOnlyMonitoring       bool
 }
 
 var (
