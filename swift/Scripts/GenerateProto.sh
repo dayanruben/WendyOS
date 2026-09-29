@@ -82,10 +82,22 @@ swift package --allow-writing-to-package-directory generate-grpc-code-from-proto
     "$PROTO_DIR/cloud/tunnel.proto" \
     "$PROTO_DIR/cloud/users.proto"
 
+echo "Generating Wendy Cloud v2 mesh gRPC code..."
+rm -rf Sources/WendyCloudV2GRPC/Proto
+mkdir -p Sources/WendyCloudV2GRPC/Proto
+swift package --allow-writing-to-package-directory generate-grpc-code-from-protos \
+    --access-level public \
+    --output-path Sources/WendyCloudV2GRPC/Proto \
+    --import-path "$PROTO_DIR" \
+    -- \
+    "$PROTO_DIR/wendycloud/v2/mesh.proto" \
+    "$PROTO_DIR/wendycloud/v2/tunnel.proto"
+
 echo "Marking generated public API imports..."
 publicize_generated_imports \
     Sources/WendyAgentGRPC/Proto \
     Sources/OpenTelemetryGRPC/Proto \
-    Sources/WendyCloudGRPC/Proto
+    Sources/WendyCloudGRPC/Proto \
+    Sources/WendyCloudV2GRPC/Proto
 
 echo "Proto generation complete."
