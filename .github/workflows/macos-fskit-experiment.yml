@@ -1,0 +1,43 @@
+name: macOS FSKit reflash experiment
+
+# Throwaway: probes Spotlight + the FSKit FAT driver on a re-flashed card image.
+# Runs on disposable GitHub-hosted runners only, because it toggles Spotlight.
+on:
+  push:
+    branches: [feat/WDY-3219_macos-reflash-hang]
+    paths:
+      - .github/workflows/macos-fskit-experiment.yml
+      - .github/scripts/macos-fskit-experiment.sh
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    name: ${{ matrix.mode }}
+    runs-on: macos-26
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [index, repro, fix-marker, fix-mdutil]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Run experiment
+        env:
+          MODE: ${{ matrix.mode }}
+        run: bash .github/scripts/macos-fskit-experiment.sh "$MODE" "$RUNNER_TEMP/out"
+
+      - name: Summary
+        if: always()
+        run: cat "$RUNNER_TEMP/out/summary.md" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fskit-${{ matrix.mode }}
+          path: ${{ runner.temp }}/out
+          retention-days: 7
