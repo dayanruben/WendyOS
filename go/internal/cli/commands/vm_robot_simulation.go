@@ -2,9 +2,10 @@ package commands
 
 import (
 	"fmt"
-	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"maps"
 	"slices"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 // Resolve only after the selected connection has a managed robot profile.

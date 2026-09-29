@@ -122,6 +122,10 @@ in the application's `wendy.json`. The reserved runtime app ID is
 
 ## Apps with hardware drivers
 
+For a complete autonomous app, try [R2 Explorer](../../../Examples/R2Explorer).
+It builds an observed map and drives using lidar, depth and odometry, with a
+dashboard for bounded runs and explicit stop control.
+
 The simulator does not emulate USB camera firmware or the STM32 serial device.
 Apps can declare a `simulation` backend in each service of `wendy.json`. Wendy
 selects it only on the matching managed robot VM, before building or deploying.
@@ -182,4 +186,3 @@ expiry, reset and stop revoke motion. These tests reset the simulated world.
 This is a kinematic simulator with separate acceleration and braking limits.
 Tire slip, suspension, uneven terrain, `Rosmaster_Lib` serial commands, voice,
 and factory firmware are unsupported. Camera optics and depth noise are idealized.
-

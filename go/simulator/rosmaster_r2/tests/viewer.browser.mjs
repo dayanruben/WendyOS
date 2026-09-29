@@ -1,5 +1,7 @@
 // Run only against a disposable local simulator. This test drives and resets it.
 import assert from 'node:assert/strict';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 const {chromium} = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const url = process.argv[2] || 'http://127.0.0.1:8895';
 assert(['localhost','127.0.0.1'].includes(new URL(url).hostname));
@@ -51,7 +53,7 @@ try {
   assert.equal((await status()).state.x,0);
   for (const view of ['top','driver','orbit']) {
     await page.click(`#${view}`); await page.waitForTimeout(200);
-    await page.screenshot({path:`/private/tmp/rosmaster-r2-${view}.png`});
+    await page.screenshot({path:join(tmpdir(),`rosmaster-r2-${view}.png`)});
   }
   await page.click('#lidar'); await page.click('#lidar');
   await page.click('#follow'); await page.click('#follow');
@@ -65,7 +67,7 @@ try {
   await page.waitForTimeout(400);
   assert.equal((await status()).state.speed,0,'losing focus stops the car');
   await page.click('#reset'); await page.waitForTimeout(150);
-  await page.screenshot({path:'/private/tmp/rosmaster-r2-desktop.png'});
+  await page.screenshot({path:join(tmpdir(),'rosmaster-r2-desktop.png')});
   await page.setViewportSize({width:390,height:844});
   await page.waitForTimeout(150);
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'mobile layout fits');
@@ -80,7 +82,7 @@ try {
   assert((await status()).state.x>.02,'pointer controls moved the car');
   await page.click('#stop');
   await page.waitForFunction(()=>document.querySelector('#owner').textContent==='None' && document.querySelector('#speed').textContent==='0.00');
-  await page.screenshot({path:'/private/tmp/rosmaster-r2-mobile.png',fullPage:true});
+  await page.screenshot({path:join(tmpdir(),'rosmaster-r2-mobile.png'),fullPage:true});
   assert.deepEqual(errors,[]);
   const failedPage = await browser.newPage();
   await failedPage.route('**/vendor/OrbitControls.js', route => route.abort('connectionreset'));
