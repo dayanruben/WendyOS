@@ -19,7 +19,7 @@ Use this for Wendy Labs PR, CI, and review cleanup work.
 For `wendy-agent` Go changes:
 
 ```bash
-cd /Users/maximilianalexander/wendylabsinc/wendy-agent/go
+cd <wendyos-checkout>/go
 gofmt -w <changed-go-files>
 go test ./internal/cli/commands ./internal/agent/services
 git diff --check

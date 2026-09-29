@@ -47,7 +47,7 @@ For app deployment, `wendy run` loads and validates `wendy.json`, resolves a tar
 ## Useful local commands
 
 ```bash
-cd /Users/maximilianalexander/wendylabsinc/wendy-agent/go
+cd <wendyos-checkout>/go
 go test ./internal/cli/commands ./internal/agent/services
 gofmt -w <changed-go-files>
 wendy-dev --help
