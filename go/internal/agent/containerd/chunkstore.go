@@ -38,8 +38,9 @@ const defaultChunkStagingDir = "/var/lib/wendy/chunk-staging"
 
 // staging persists chunk bytes received via StageChunk to disk, keyed by hash,
 // until the next AssembleLayerFromChunks streams them into the content store.
-// Disk — not the agent heap — is the staging budget, so peak memory during a
-// deploy is one chunk rather than the whole uncompressed layer (×2 with the old
+// Disk — not the agent heap — is the staging budget, so reassembly's memory is
+// bounded by the segment buffer pool every assembly shares (assemblyBuffers,
+// 48 MiB for the whole agent), not by the uncompressed layer (×2 with the old
 // reconstruct buffer). Distinct chunks map to distinct files, so concurrent
 // deploys staging different content do not collide.
 type staging struct {
@@ -158,9 +159,8 @@ type chunkSource func(h [32]byte) ([]byte, error)
 
 // chunkStream is an io.Reader that yields the chunks named by order in sequence,
 // holding at most one chunk in memory at a time and verifying each chunk's
-// SHA-256 as it is served. Feeding it to content.WriteBlob reassembles a layer
-// without ever buffering the whole layer in RAM; WriteBlob independently
-// verifies the overall layer digest as it streams.
+// SHA-256 as it is served. OpenChunkStream returns it to callers that want the
+// bytes themselves; layer assembly reads segments instead (readSegments).
 type chunkStream struct {
 	order [][32]byte
 	src   chunkSource
@@ -195,12 +195,6 @@ func (s *chunkStream) Read(p []byte) (int, error) {
 		}
 		s.cur = bytes.NewReader(b)
 	}
-}
-
-// consumed reports whether every chunk was loaded, verified and read out: only
-// then did the reader receive exactly the bytes the manifest names.
-func (s *chunkStream) consumed() bool {
-	return s.idx == len(s.order) && (s.cur == nil || s.cur.Len() == 0)
 }
 
 func (c *Client) MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]byte, error) {
@@ -374,18 +368,6 @@ func (c *Client) readIndexedChunk(ctx context.Context, loc chunkLoc) ([]byte, er
 	return b, nil
 }
 
-// chunkLen returns a chunk's length from its staged file or its indexed blob
-// range, without reading the bytes. ok is false when the chunk is unavailable.
-func (c *Client) chunkLen(h [32]byte) (int64, bool) {
-	if n, ok := c.staging.statLen(h); ok {
-		return n, true
-	}
-	if loc, ok := c.chunkIndex.Has(h); ok {
-		return int64(loc.Len), true
-	}
-	return 0, false
-}
-
 // OpenChunkStream returns a reader over the chunks named by hashes, in order,
 // verifying each chunk's SHA-256 as it is served and holding at most one chunk
 // in memory.
@@ -436,75 +418,60 @@ func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, has
 		}
 	}
 
-	// Total layer size is the sum of the chunk lengths, resolved without reading
-	// any bytes; content.WriteBlob needs the size up front to commit the blob.
-	// The same lengths place every chunk in the new blob by prefix sum.
-	refs := make([]chunk.Ref, len(hashes))
-	var total int64
-	for i, h := range hashes {
-		n, ok := c.chunkLen(h)
-		if !ok {
-			return fmt.Errorf("chunk %d (%x) unavailable", i, h)
-		}
-		refs[i] = chunk.Ref{Hash: h, Offset: uint64(total), Len: uint64(n)}
-		total += n
-	}
-
-	// Stream the chunks straight into the content store. WriteBlob verifies the
-	// reassembled bytes hash to diffID as it writes (so a corrupt or forged
-	// stream fails the commit), which subsumes the old whole-buffer digest check.
-	src := func(h [32]byte) ([]byte, error) {
-		if b, err := c.staging.read(h); err == nil {
-			return b, nil
-		} else if !os.IsNotExist(err) {
-			return nil, err
-		}
-		if loc, ok := c.chunkIndex.Has(h); ok {
-			return c.readIndexedChunk(nsCtx, loc)
-		}
-		return nil, nil
-	}
-	stream := &chunkStream{order: hashes, src: src}
-	if err := c.WriteLayer(nsCtx, diffID, stream, total); err != nil {
+	start := time.Now()
+	segs, refs, total, err := c.planAssembly(hashes)
+	if err != nil {
 		return err
 	}
-
-	// Staged chunks go only once the index holds them. Until then a concurrent
-	// assembly of another layer may rely on them: its waitForChunks, or its
-	// CLI's MissingChunks, already counted them present. When this returns
-	// early, retire and the sweep reclaim them.
-	if !stream.consumed() {
-		// WriteLayer found the blob already committed, by a concurrent
-		// assembly of the same layer, and never read the stream, so nothing
-		// checked this manifest against the blob. The assembly that wrote
-		// the blob indexed it.
-		return nil
+	stats, err := c.writeAssembledLayer(nsCtx, diffID, total, segs)
+	if err != nil {
+		return err
 	}
+	// Nothing proved that an unverified manifest describes the committed
+	// blob: a concurrent assembly of the same layer committed it first, or
+	// the prefix this call resumed does not match. Indexing it would send
+	// later assemblies to ranges that fail their hashes.
+	if stats.verified {
+		c.indexAssembledLayer(diffID, refs, hashes)
+	}
+	// WDY-3213's acceptance is measured on devices from this line.
+	c.logger.Info("Assembled layer",
+		zap.String("diff_id", diffID),
+		zap.Int64("size", total),
+		zap.Duration("took", time.Since(start)),
+		zap.Int("segments", stats.segments),
+		zap.Int64("staged_bytes", stats.stagedBytes),
+		zap.Int64("indexed_bytes", stats.indexedBytes),
+		zap.Int64("resumed_bytes", stats.resumedBytes),
+		zap.Int("blobs", stats.blobs),
+		zap.Bool("verified", stats.verified))
+	return nil
+}
 
-	// Index the new blob from its manifest. WriteLayer verified the blob digest
-	// and chunkStream verified each chunk's hash in order, so these ranges are
-	// exact; re-reading and re-chunking the blob to rediscover them cost ~1 s
-	// per 430 MB on an Orin Nano (WDY-3214).
-	//
-	// One residual: when content.Copy resumes an interrupted write of the
-	// same layer, it discards the stream's prefix (still verifying each chunk),
-	// and the blob digest vouches for the earlier write's bytes there, not for
-	// these. A manifest wrong in exactly that prefix, from a buggy or hostile
-	// client, could then index ranges that do not hold their chunks. Every
-	// read re-verifies the chunk's hash, so an assembly relying on such an
-	// entry fails rather than using wrong bytes, until the blob is collected.
+// indexAssembledLayer indexes a verified layer's blob from its manifest, then
+// releases the staged chunks the index now holds.
+//
+// Staged chunks go only once the index holds them. Until then a concurrent
+// assembly of another layer may rely on them: its waitForChunks, or its CLI's
+// MissingChunks, already counted them present. When this returns early, or
+// is never called, retire and the sweep reclaim them.
+func (c *Client) indexAssembledLayer(diffID string, refs []chunk.Ref, hashes [][32]byte) {
+	// Commit verified the blob digest and the segment reader verified each
+	// chunk's hash as it read it, so these ranges are exact; re-reading and
+	// re-chunking the blob to rediscover them cost ~1 s per 430 MB on an Orin
+	// Nano (WDY-3214). A resumed prefix, which the reader skips, is read back
+	// from the blob and checked, so the index never records a range this call
+	// did not verify.
 	if err := c.chunkIndex.AddLayer(diffID, refs); err != nil {
 		c.logger.Warn("failed to index reassembled layer", zap.String("diff_id", diffID), zap.Error(err))
-		return nil
+		return
 	}
 	if c.chunkIndex.disabled() {
-		return nil // nothing was recorded
+		return // nothing was recorded
 	}
 
 	// Release the staged chunks now embedded in the blob and indexed.
 	for _, h := range hashes {
 		c.staging.remove(h)
 	}
-
-	return nil
 }

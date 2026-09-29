@@ -342,14 +342,9 @@ func TestMissingChunksSurvivesAFailedDrop(t *testing.T) {
 	}
 }
 
-// newLocalStoreClient builds a Client over containerd's on-disk content store,
-// so assembly runs the real WriteBlob/Commit path without a daemon.
-func newLocalStoreClient(t *testing.T) (*Client, content.Store) {
+// newStoreClient builds a Client over the provided content store.
+func newStoreClient(t *testing.T, store content.Store) *Client {
 	t.Helper()
-	store, err := local.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	client, err := containerdclient.New("",
 		containerdclient.WithDefaultNamespace("default"),
 		containerdclient.WithServices(containerdclient.WithContentStore(store)),
@@ -364,7 +359,18 @@ func newLocalStoreClient(t *testing.T) (*Client, content.Store) {
 		namespace:  "default",
 		chunkIndex: newTestChunkIndex(t),
 		staging:    newStaging(filepath.Join(t.TempDir(), "staging")),
-	}, store
+	}
+}
+
+// newLocalStoreClient builds a Client over containerd's on-disk content store,
+// so assembly runs the real WriteBlob/Commit path without a daemon.
+func newLocalStoreClient(t *testing.T) (*Client, content.Store) {
+	t.Helper()
+	store, err := local.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newStoreClient(t, store), store
 }
 
 // TestAssembleLayerFromChunksIndexesTheManifestRanges proves the index entries
@@ -420,18 +426,24 @@ func stageLayer(t *testing.T, c *Client, size int, seed int64) (digest.Digest, [
 	t.Helper()
 	layer := make([]byte, size)
 	rand.New(rand.NewSource(seed)).Read(layer)
-	refs, err := chunk.ChunkBytes(layer)
+	return digest.FromBytes(layer), stageChunks(t, c, layer)
+}
+
+// stageChunks stages data's chunks and returns their hashes, in order.
+func stageChunks(t *testing.T, c *Client, data []byte) [][32]byte {
+	t.Helper()
+	refs, err := chunk.ChunkBytes(data)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hashes := make([][32]byte, len(refs))
 	for i, r := range refs {
 		hashes[i] = r.Hash
-		if err := c.StageChunk(context.Background(), r.Hash, layer[r.Offset:r.Offset+r.Len]); err != nil {
+		if err := c.StageChunk(context.Background(), r.Hash, data[r.Offset:r.Offset+r.Len]); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return digest.FromBytes(layer), hashes
+	return hashes
 }
 
 // TestAssembleLayerFromChunksKeepsStagedChunksItCouldNotIndex: staged chunks
