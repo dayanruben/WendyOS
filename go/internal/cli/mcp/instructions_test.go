@@ -97,18 +97,20 @@ var instructionResultFields = []string{"running_state", "termination_reason", "n
 
 func TestServerInstructionsNameOnlyRegisteredTools(t *testing.T) {
 	tools := startedProtocolServer(t).ListTools()
-	registered := func(name string) bool { _, ok := tools[name]; return ok }
+	// Only core tools are advertised before the agent enables a group, and a
+	// client cannot call a tool it was never shown.
+	registered := func(name string) bool { _, ok := tools[name]; return ok && slices.Contains(toolGroups["core"], name) }
 
 	// Every backticked bare identifier is a tool reference.
 	for _, m := range regexp.MustCompile("`([a-z][a-z0-9_]*)`").FindAllStringSubmatch(serverInstructions, -1) {
 		if !registered(m[1]) {
-			t.Errorf("instructions reference unregistered tool %q", m[1])
+			t.Errorf("instructions reference %q, which is not a registered core tool", m[1])
 		}
 	}
-	// Any other snake_case word must be a tool or a known argument/field.
+	// Any other snake_case word must be a core tool or a known argument/field.
 	for _, word := range regexp.MustCompile(`\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b`).FindAllString(serverInstructions, -1) {
 		if !registered(word) && !slices.Contains(instructionRunArgs, word) && !slices.Contains(instructionResultFields, word) {
-			t.Errorf("instructions mention %q, which is neither a registered tool nor an allowlisted argument/field", word)
+			t.Errorf("instructions mention %q, which is neither a registered core tool nor an allowlisted argument/field", word)
 		}
 	}
 	run := tools["run"]

@@ -321,12 +321,13 @@ func TestRunAlwaysDetaches(t *testing.T) {
 	}
 }
 
-// device_list reports cloud devices by name, but the spawned CLI resolves an
-// explicit device directly (no cloud fallback). The schema says so, and a
-// failed bare name points the agent at cloud_connect.
+// The spawned CLI resolves an explicit device directly (no cloud fallback), so
+// a cloud device's bare name fails. The schema asks for device_list's
+// selector, and a failed bare name points the agent at that selector or, for
+// a row without one, cloud_connect.
 func TestRunPointsCloudDeviceNamesAtCloudConnect(t *testing.T) {
 	desc := startedProtocolServer(t).ListTools()["run"].Tool.InputSchema.Properties["device"].(map[string]any)["description"].(string)
-	for _, want := range []string{"host:port", "vm:NAME", "cloud://", "cloud_connect"} {
+	for _, want := range []string{"device_list", "host:port", "vm:NAME", "cloud://"} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("device description %q does not mention %s", desc, want)
 		}

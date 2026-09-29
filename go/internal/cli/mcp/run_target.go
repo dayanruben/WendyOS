@@ -103,14 +103,14 @@ func runTargetIdentity(target commandTarget) string {
 	return target.Device
 }
 
-// runFailureNextStep points a failed explicit bare device name at
-// cloud_connect. device_list reports cloud devices by name, but the spawned
-// CLI resolves an explicit device only directly (it never falls back to the
-// cloud), so a cloud name fails there with a resolution error.
+// runFailureNextStep points a failed explicit bare device name at the cloud
+// selector device_list returns, or at cloud_connect when a row has none. The
+// spawned CLI resolves an explicit device only directly (it never falls back
+// to the cloud), so a cloud device's name fails there with a resolution error.
 func runFailureNextStep(target commandTarget, code errorCode) string {
 	device := target.Device
 	if target.Transport != "selector" || code != errCodeInternal || strings.Contains(device, ":") {
 		return ""
 	}
-	return fmt.Sprintf("If the error above is a connection or name-resolution failure and %q is a cloud device (a device_list row with source \"cloud\"), call cloud_connect(device_name=%q), then run again without device. For a LAN device, pass its host:port address from device_list.", device, device)
+	return fmt.Sprintf("If the error above is a connection or name-resolution failure and %q is a cloud device (a device_list row with source \"cloud\"), pass that row's device value, a cloud:// selector, as device. If the row has none, enable the cloud group with wendy_tools, call cloud_connect(device_name=%q), then run again without device. For a LAN device, pass its host:port address from device_list.", device, device)
 }

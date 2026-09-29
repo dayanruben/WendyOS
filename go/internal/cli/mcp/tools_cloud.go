@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshname"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
@@ -31,34 +33,45 @@ import (
 )
 
 type mcpCloudTunnel struct {
+	info       cloudTunnelInfo
+	closeOnce  sync.Once
+	closeErr   error
 	cancel     context.CancelFunc
 	listener   net.Listener
 	udpConn    *net.UDPConn
 	session    *mcpDatagramSession
 	brokerConn *grpc.ClientConn
+	brokerURL  string
 }
 
 func (t *mcpCloudTunnel) Close() error {
 	if t == nil {
 		return nil
 	}
-	if t.cancel != nil {
-		t.cancel()
-	}
-	var errs []error
-	if t.listener != nil {
-		errs = append(errs, t.listener.Close())
-	}
-	if t.udpConn != nil {
-		errs = append(errs, t.udpConn.Close())
-	}
-	if t.session != nil {
-		t.session.close()
-	}
-	if t.brokerConn != nil {
-		errs = append(errs, t.brokerConn.Close())
-	}
-	return errors.Join(errs...)
+	t.closeOnce.Do(func() {
+		if t.cancel != nil {
+			t.cancel()
+		}
+		var errs []error
+		if t.listener != nil {
+			errs = append(errs, t.listener.Close())
+		}
+		if t.udpConn != nil {
+			errs = append(errs, t.udpConn.Close())
+		}
+		if t.session != nil {
+			t.session.close()
+		}
+		if t.brokerConn != nil {
+			errs = append(errs, t.brokerConn.Close())
+		}
+		for _, err := range errs {
+			if err != nil && !errors.Is(err, net.ErrClosed) {
+				t.closeErr = errors.Join(t.closeErr, err)
+			}
+		}
+	})
+	return t.closeErr
 }
 
 func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
@@ -97,7 +110,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("cloud_connect", connectOpts...), s.handleCloudConnect)
 
 	enrollOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Enroll the currently connected device with Wendy Cloud"),
+		mcpgo.WithDescription("Enroll the connected device using your current cloud login. Use provisioning_start only with an externally supplied enrollment token."),
 		mcpgo.WithString("name",
 			mcpgo.Required(),
 			mcpgo.Description("Name to assign to the device in Wendy Cloud"),
@@ -113,12 +126,14 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 
 	tunnelOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Forward a local TCP or UDP port to a port on a cloud-enrolled device"),
-		mcpgo.WithNumber("local_port",
+		mcpgo.WithInteger("local_port",
 			mcpgo.Required(),
-			mcpgo.Description("Local port to listen on (1-65535)"),
+			mcpgo.Min(1), mcpgo.Max(65535),
+			mcpgo.Description("Local loopback port to listen on"),
 		),
-		mcpgo.WithNumber("remote_port",
-			mcpgo.Description("Remote device port (1-65535); defaults to local_port"),
+		mcpgo.WithInteger("remote_port",
+			mcpgo.Min(1), mcpgo.Max(65535),
+			mcpgo.Description("Remote device port; defaults to local_port"),
 		),
 		mcpgo.WithString("protocol",
 			mcpgo.Enum("tcp", "udp"),
@@ -138,6 +153,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	tunnelOpts = append(tunnelOpts, idempotent()...)
 	tunnelOpts = append(tunnelOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("cloud_tunnel", tunnelOpts...), s.handleCloudTunnel)
+	s.registerCloudTunnelManagementTools(srv)
 
 	pingOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Ping a cloud-enrolled device through the Wendy Cloud tunnel broker using an echo request/reply over the datagram session (no ICMP sockets or privileges required)"),
@@ -162,7 +178,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	runOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Build and deploy a local project to device or the connected target. Returns status and build-log tail. Check container_list and telemetry_logs for application readiness."),
 		mcpgo.WithString("project_path", mcpgo.Required(), mcpgo.Description("Project directory to build and deploy")),
-		mcpgo.WithString("device", mcpgo.Description("LAN address from device_list (host:port), vm:NAME, or a cloud:// selector; omit to reuse the connection. For a cloud device listed by name, call cloud_connect first and omit device")),
+		mcpgo.WithString("device", mcpgo.Description("device selector from device_list (host:port, vm:NAME, or a cloud:// selector); omit to reuse the connection")),
 		mcpgo.WithString("build_type", mcpgo.Enum("docker", "compose", "swift", "python"), mcpgo.Description("Build system; omit for automatic detection")),
 		mcpgo.WithString("product", mcpgo.Description("Swift package product")),
 		mcpgo.WithBoolean("debug", mcpgo.Description("Start under a debugger")),
@@ -182,6 +198,14 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 	}
 	filter := stringParam(req, "filter")
 	onlineOnly := req.GetBool("online_only", true)
+	out, err := discoverCloudDevices(ctx, auth, filter, onlineOnly)
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	return okListBounded("devices", out, intParam(req, "max_bytes", 100000)), nil
+}
+
+func discoverCloudDevices(ctx context.Context, auth *config.AuthConfig, filter string, onlineOnly bool) ([]map[string]any, error) {
 	// A v2 (UUID-identity) session must use the v2 AssetService — the v1 arm
 	// sends cert.OrganizationID (0 for these sessions) and silently returns an
 	// empty roster (WDY-3146). Legacy sessions keep the v1 arm.
@@ -189,23 +213,27 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 	if len(auth.Certificates) > 0 && auth.Certificates[0].TenantUUID() != "" {
 		assets, err := mcpListCloudAssetsV2(ctx, auth, filter, onlineOnly)
 		if err != nil {
-			return cloudErrResult(err), nil
+			return nil, err
 		}
 		out = make([]map[string]any, 0, len(assets))
 		for _, a := range assets {
-			out = append(out, cloudAssetV2ToMap(a))
+			entry := cloudAssetV2ToMap(a)
+			entry["device"] = cloudCommandTarget(auth, mcpCloudDevice{name: a.GetName(), key: a.GetId(), isV2: true}, "").Selector
+			out = append(out, entry)
 		}
 	} else {
 		assets, err := mcpListCloudAssets(ctx, auth, filter, onlineOnly)
 		if err != nil {
-			return cloudErrResult(err), nil
+			return nil, err
 		}
 		out = make([]map[string]any, 0, len(assets))
 		for _, a := range assets {
-			out = append(out, cloudAssetToMap(a))
+			entry := cloudAssetToMap(a)
+			entry["device"] = cloudCommandTarget(auth, mcpCloudDevice{name: a.GetName(), legacyID: a.GetId()}, "").Selector
+			out = append(out, entry)
 		}
 	}
-	return okListBounded("devices", out, intParam(req, "max_bytes", 100000)), nil
+	return out, nil
 }
 
 func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -269,13 +297,16 @@ func (s *mcpServer) handleCloudEnrollDevice(ctx context.Context, req mcpgo.CallT
 }
 
 func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	localPort := intParam(req, "local_port", 0)
-	remotePort := intParam(req, "remote_port", localPort)
-	if err := validatePort(localPort); err != nil {
-		return errResult(errCodeInvalidArgument, "local_port "+err.Error()), nil
+	localPort, err := ros2Int(req, "local_port", 0, 1, 65535)
+	if err != nil {
+		return errResult(errCodeInvalidArgument, err.Error()), nil
 	}
-	if err := validatePort(remotePort); err != nil {
-		return errResult(errCodeInvalidArgument, "remote_port "+err.Error()), nil
+	if localPort == 0 {
+		return errResult(errCodeInvalidArgument, "local_port is required"), nil
+	}
+	remotePort, err := ros2Int(req, "remote_port", localPort, 1, 65535)
+	if err != nil {
+		return errResult(errCodeInvalidArgument, err.Error()), nil
 	}
 	protocol := stringParam(req, "protocol")
 	if protocol == "" {
@@ -298,6 +329,16 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 	if protocol == "udp" && device.isV2 {
 		return errResult(errCodeInvalidArgument, "Cloud's authorized service catalog does not expose UDP forwarding over v2 sessions"), nil
 	}
+	target := cloudCommandTarget(auth, device, stringParam(req, "broker_url"))
+	s.mu.RLock()
+	for _, existing := range s.cloudTunnels {
+		if existing.info.Device == target.Selector && existing.brokerURL == stringParam(req, "broker_url") && existing.info.Protocol == protocol && existing.info.LocalPort == localPort && existing.info.RemotePort == remotePort {
+			info := existing.info
+			s.mu.RUnlock()
+			return okResult(info), nil
+		}
+	}
+	s.mu.RUnlock()
 	// The v1 datagram and v1 broker tunnel need a broker connection; the v2
 	// relay selects its own broker, so brokerConn stays nil there.
 	var brokerConn *grpc.ClientConn
@@ -315,7 +356,8 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 		}
 	}
 
-	key := fmt.Sprintf("%s:%s:%d:%d", protocol, device.GetName(), localPort, remotePort)
+	key := uuid.NewString()
+	info := cloudTunnelInfo{ID: key, Protocol: protocol, Device: target.Selector, DeviceName: device.GetName(), DeviceID: device.key, CloudGRPC: target.CloudGRPC, LocalPort: localPort, RemotePort: remotePort, CreatedAt: time.Now().UTC()}
 	tunnelCtx, cancel := context.WithCancel(context.Background())
 
 	if protocol == "udp" {
@@ -334,29 +376,18 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 			return errResult(errCodeDeviceUnreachable, mcpDatagramOpenError(err, device.GetName()).Error()), nil
 		}
 
-		tunnel := &mcpCloudTunnel{cancel: cancel, udpConn: pc, session: session, brokerConn: brokerConn}
-		s.mu.Lock()
-		if existing := s.cloudTunnels[key]; existing != nil {
-			_ = existing.Close()
+		info.LocalAddr = pc.LocalAddr().String()
+		tunnel := &mcpCloudTunnel{info: info, cancel: cancel, udpConn: pc, session: session, brokerConn: brokerConn, brokerURL: stringParam(req, "broker_url")}
+		if !s.addCloudTunnel(key, tunnel) {
+			return errResult(errCodeInternal, "MCP server is shutting down"), nil
 		}
-		s.cloudTunnels[key] = tunnel
-		s.mu.Unlock()
 
 		go func() {
-			defer pc.Close()
-			defer session.close()
+			defer s.removeCloudTunnel(key, tunnel)
 			_ = mcpServeUDPForward(tunnelCtx, pc, session, uint32(remotePort), mcpUDPFlowIdleTimeout)
 		}()
 
-		out := map[string]any{
-			"id":          key,
-			"protocol":    protocol,
-			"local_addr":  pc.LocalAddr().String(),
-			"device_name": device.GetName(),
-			"device_id":   device.key,
-			"remote_port": remotePort,
-		}
-		return okResult(out), nil
+		return okResult(info), nil
 	}
 
 	listenAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
@@ -366,15 +397,14 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 		closeBroker()
 		return errResultf(errCodeInternal, "listening on %s: %s", listenAddr, err.Error()), nil
 	}
-	tunnel := &mcpCloudTunnel{cancel: cancel, listener: ln, brokerConn: brokerConn}
-	s.mu.Lock()
-	if existing := s.cloudTunnels[key]; existing != nil {
-		_ = existing.Close()
+	info.LocalAddr = ln.Addr().String()
+	tunnel := &mcpCloudTunnel{info: info, cancel: cancel, listener: ln, brokerConn: brokerConn, brokerURL: stringParam(req, "broker_url")}
+	if !s.addCloudTunnel(key, tunnel) {
+		return errResult(errCodeInternal, "MCP server is shutting down"), nil
 	}
-	s.cloudTunnels[key] = tunnel
-	s.mu.Unlock()
 
 	go func() {
+		defer s.removeCloudTunnel(key, tunnel)
 		for {
 			tcpConn, err := ln.Accept()
 			if err != nil {
@@ -386,15 +416,7 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 		}
 	}()
 
-	out := map[string]any{
-		"id":          key,
-		"protocol":    protocol,
-		"local_addr":  ln.Addr().String(),
-		"device_name": device.GetName(),
-		"device_id":   device.key,
-		"remote_port": remotePort,
-	}
-	return okResult(out), nil
+	return okResult(info), nil
 }
 
 func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -535,6 +557,11 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 	if err != nil {
 		return nil, mcpCloudDevice{}, commandTarget{}, err
 	}
+	return connectPinnedMCPCloudAgent(ctx, auth, device, brokerURL)
+}
+
+func connectPinnedMCPCloudAgent(ctx context.Context, auth *config.AuthConfig, device mcpCloudDevice, brokerURL string) (*grpcclient.AgentConnection, mcpCloudDevice, commandTarget, error) {
+	var err error
 
 	// Legacy sessions dial the v1 broker; the v2 relay picks its own broker, so
 	// there is no broker connection to hold for a v2 session.
@@ -591,9 +618,16 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 	}
 	agentConn := grpcclient.NewFromConn(grpcConn)
 	agentConn.Host = device.GetName()
+	if !device.isV2 {
+		agentConn.MeshHost = meshname.Device(device.legacyID)
+	}
 	agentConn.IsMTLS = true
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
 		return device.openTunnel(ctx, brokerConn, auth, uint32(port))
+	}
+	agentConn.Reconnect = func(ctx context.Context) (*grpcclient.AgentConnection, error) {
+		next, _, _, err := connectPinnedMCPCloudAgent(ctx, auth, device, brokerURL)
+		return next, err
 	}
 	if brokerConn != nil {
 		agentConn.ExtraClosers = append(agentConn.ExtraClosers, brokerConn)
@@ -900,6 +934,10 @@ func mcpOpenBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth 
 }
 
 func mcpServeTunnelConn(ctx context.Context, tcpConn net.Conn, dial func(context.Context) (net.Conn, error)) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopClose := context.AfterFunc(ctx, func() { _ = tcpConn.Close() })
+	defer stopClose()
 	defer tcpConn.Close()
 	tunnelConn, err := dial(ctx)
 	if err != nil {
@@ -913,7 +951,10 @@ func mcpServeTunnelConn(ctx context.Context, tcpConn net.Conn, dial func(context
 	}
 	go relay(tunnelConn, tcpConn)
 	go relay(tcpConn, tunnelConn)
-	<-done
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 func cloudAssetToMap(a *cloudpb.Asset) map[string]any {

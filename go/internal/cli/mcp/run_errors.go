@@ -14,7 +14,7 @@ import (
 func (s *mcpServer) runTargetErrResult(req mcpgo.CallToolRequest, err error) *mcpgo.CallToolResult {
 	conn, _, _ := s.connectionSnapshot()
 	if conn == nil && !runHasExplicitTarget(req) {
-		return errResult(errCodeNotConnected, "no device connected and no device given: call device_list, then device_connect or cloud_connect, or pass device (host:port, vm:NAME or a cloud:// selector)")
+		return errResult(errCodeNotConnected, "no device connected and no device given: call device_list, then device_connect with a returned device selector, or pass it as device (host:port, vm:NAME or a cloud:// selector)")
 	}
 	return errResult(errCodeInvalidArgument, err.Error())
 }
