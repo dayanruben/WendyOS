@@ -3084,8 +3084,9 @@ func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryD
 // what the user is told. Transport-level drops (bare io.EOF, Unavailable,
 // Canceled) carry no verdict and map to errAgentUpdateUnconfirmed; a real
 // server status is surfaced with its message, with an actionable hint for the
-// stale-lock FailedPrecondition (an interrupted update on an older agent can
-// leave the lock held until the device is rebooted).
+// busy-lock FailedPrecondition: usually another OS or agent update is running,
+// but an interrupted update on an older agent can leave the lock held until the
+// device is rebooted.
 func agentUpdateTerminalError(recvErr error) error {
 	if errors.Is(recvErr, io.EOF) {
 		return errAgentUpdateUnconfirmed
@@ -3102,8 +3103,8 @@ func agentUpdateTerminalError(recvErr error) error {
 		// half-applied update. Add the reboot hint only where it fits: for the
 		// sysext-overlay refusal a reboot is the one action that makes it worse.
 		if strings.Contains(s.Message(), "update is already in progress") {
-			return fmt.Errorf("%s — if this repeats, a previous update likely applied without the agent restarting; "+
-				"reboot the device to finish it, then retry", s.Message())
+			return fmt.Errorf("%s — another OS or agent update may still be running; wait for it to finish, then retry. "+
+				"If this repeats with nothing running, reboot the device, then retry", s.Message())
 		}
 		return errors.New(s.Message())
 	default:
