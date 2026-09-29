@@ -2035,6 +2035,7 @@ func waitForDeviceReady(ctx context.Context, p providers.DeviceProvider, device 
 
 // runWithAgent is the existing gRPC agent pipeline.
 func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
+	opts = opts.withConfiguredRestartPolicy(appCfg.RestartPolicy)
 	if err := registerCloudApps(ctx, conn, []string{appCfg.AppID}, opts.skipCloudRegistration); err != nil {
 		return err
 	}
