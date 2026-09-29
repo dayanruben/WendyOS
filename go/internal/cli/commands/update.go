@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -20,19 +21,29 @@ const cliUpdateCheckInterval = 24 * time.Hour
 // hasn't finished by the time a fast command completes.
 func scheduleCLIUpdateCheck() {
 	go func() {
-		latest, err := checkLatestRelease()
+		latest, checkErr := checkLatestRelease()
 		// Best-effort: if we can't save, we'll retry on the next check.
-		_ = recordCLIUpdateCheck(latest, err, time.Now())
+		_ = persistCLIUpdateCheckResult(time.Now(), latest, checkErr)
 	}()
 }
 
-// recordCLIUpdateCheck persists one check's outcome by changing only its own
-// two fields on the CURRENT config. It used to save the snapshot root loaded
-// at startup, seconds after the command had saved its own changes — a new
-// default device, a fresh pin, a login — and silently revert them.
-func recordCLIUpdateCheck(latest string, checkErr error, now time.Time) error {
+// persistCLIUpdateCheckResult persists one check's outcome by changing only its
+// own two fields on the CURRENT config. It used to save the snapshot root
+// loaded at startup, seconds after the command had saved its own changes — a
+// new default device, a fresh pin, a login — and silently revert them. It also
+// holds the auth refresh lock: the HTTP request can overlap an OAuth refresh,
+// and saving a config read before that refresh finished would restore the
+// consumed refresh token and cause wendy-auth to revoke the rotated token
+// family on its next use.
+func persistCLIUpdateCheckResult(checkedAt time.Time, latest string, checkErr error) error {
+	unlock, err := acquireAuthRefreshLock(context.Background())
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	return config.Update(func(cfg *config.Config) (bool, error) {
-		cfg.LastCLIUpdateCheck = now.UTC().Format(time.RFC3339)
+		cfg.LastCLIUpdateCheck = checkedAt.UTC().Format(time.RFC3339)
 		if checkErr == nil {
 			if version.CompareVersions(latest, version.Version) > 0 {
 				cfg.AvailableCLIUpdate = latest

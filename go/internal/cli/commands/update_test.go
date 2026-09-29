@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -30,14 +31,14 @@ func TestDueCLIUpdateCheckSkipsDevBuilds(t *testing.T) {
 // The background update check used to save the config root loaded at startup,
 // seconds later — reverting a default device, pin or login the command itself
 // had just saved. It must change only its own two fields on the current config.
-func TestRecordCLIUpdateCheckKeepsNewerConfig(t *testing.T) {
+func TestPersistCLIUpdateCheckResultKeepsNewerConfig(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 	if err := config.Save(&config.Config{DefaultDevice: "saved-by-the-command.local"}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
-	if err := recordCLIUpdateCheck("", errors.New("offline"), now); err != nil {
-		t.Fatalf("recordCLIUpdateCheck: %v", err)
+	if err := persistCLIUpdateCheckResult(now, "", errors.New("offline")); err != nil {
+		t.Fatalf("persistCLIUpdateCheckResult: %v", err)
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -48,5 +49,31 @@ func TestRecordCLIUpdateCheckKeepsNewerConfig(t *testing.T) {
 	}
 	if cfg.LastCLIUpdateCheck != "2026-09-28T12:00:00Z" {
 		t.Fatalf("LastCLIUpdateCheck = %q, want 2026-09-28T12:00:00Z", cfg.LastCLIUpdateCheck)
+	}
+}
+
+func TestCLIUpdateCheckPreservesRotatedOAuthSession(t *testing.T) {
+	originalVersion := version.Version
+	version.Version = "2026.09.26-062348"
+	t.Cleanup(func() { version.Version = originalVersion })
+
+	auth, calls := rotatingOAuthSession(t)
+	if err := ensureOAuthAccessToken(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	checkedAt := time.Date(2026, time.September, 27, 12, 0, 0, 0, time.FixedZone("test", 2*60*60))
+	if err := persistCLIUpdateCheckResult(checkedAt, "2026.09.27-215032", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 || cfg.Auth[0].RefreshToken != "refresh-2" {
+		t.Fatal("update check restored the consumed refresh token")
+	}
+	if cfg.LastCLIUpdateCheck != "2026-09-27T10:00:00Z" || cfg.AvailableCLIUpdate != "2026.09.27-215032" {
+		t.Fatalf("update metadata = %q, %q", cfg.LastCLIUpdateCheck, cfg.AvailableCLIUpdate)
 	}
 }
