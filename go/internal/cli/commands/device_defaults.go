@@ -238,8 +238,12 @@ func connectMCPDevice(ctx context.Context, device string) (*grpcclient.AgentConn
 			return nil, err
 		}
 	}
-	return connectWithAutoTLS(ctx, device)
+	// Dial a bare host as host:port, like the startup default device: that is
+	// the form an mTLS device accepts here, and the target the run tool replays.
+	return connectMCPDirectFn(ctx, mcpStartupAddress(device))
 }
+
+var connectMCPDirectFn = connectWithAutoTLS
 
 // pickDeviceForDefaultFn is a seam so tests can prove the picker is never
 // opened where it cannot work.
