@@ -1009,16 +1009,61 @@ func isInteractiveTerminal() bool {
 	return isInteractiveTerminalFn()
 }
 
-// handleDefaultDeviceRecovery runs the recovery flow after a default device
-// connection failure. Shows a warning and immediately opens the device picker
-// where the user can select a new device and optionally set/unset default
-// via 'd'/'x' shortcuts.
-func handleDefaultDeviceRecovery(ctx context.Context, hostname string, elapsed time.Duration, _ error, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool, disableEnroll bool) (*SelectedDevice, error) {
-	warnStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
-	fmt.Println(warnStyle.Render(fmt.Sprintf("⚠ Default device %q is unreachable after %s.", hostname, formatElapsedSeconds(elapsed))))
-	fmt.Println()
+var pickDefaultRecoveryDeviceFn = pickDevice
 
-	return pickDevice(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck, disableEnroll)
+var confirmDefaultRecoveryFn = func(question string) (bool, error) {
+	return tui.Confirm(question, tea.WithOutput(os.Stderr))
+}
+
+// defaultDeviceRecoveryStoppedError prevents another target-selection path
+// from running after recovery was declined or its prompt failed. It retains
+// the underlying failure so the command reports why it did not run.
+type defaultDeviceRecoveryStoppedError struct{ cause error }
+
+func (e *defaultDeviceRecoveryStoppedError) Error() string { return e.cause.Error() }
+func (e *defaultDeviceRecoveryStoppedError) Unwrap() error { return e.cause }
+
+type defaultDeviceSameTargetFallback func(context.Context, string) (*SelectedDevice, error)
+
+// handleDefaultDeviceRecovery runs the recovery flow after a default device
+// connection failure. A caller may first try another transport for the saved
+// default. Ask before opening the picker: selecting a row connects to it and
+// can offer an agent update, before the original command runs. The confirmation
+// defaults to No so repeated Enter presses cannot silently move a command from
+// its saved default to the first listed device. This shared path covers both
+// connectToAgent and resolveTarget, including future callers.
+// The picker still lets the user set or clear the default with 'd'/'x'.
+func handleDefaultDeviceRecovery(ctx context.Context, hostname string, elapsed time.Duration, cause error, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool, disableEnroll bool, sameTargetFallback defaultDeviceSameTargetFallback) (*SelectedDevice, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, &defaultDeviceRecoveryStoppedError{cause: err}
+	}
+	if sameTargetFallback != nil {
+		if selected, err := sameTargetFallback(ctx, hostname); err == nil {
+			return selected, nil
+		} else if errors.Is(err, ErrUserCancelled) || errors.Is(err, tui.ErrCancelled) {
+			return nil, ErrUserCancelled
+		} else if errors.Is(err, errDeviceIdentityRefused) {
+			return nil, &defaultDeviceRecoveryStoppedError{cause: err}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, &defaultDeviceRecoveryStoppedError{cause: err}
+		}
+	}
+	question := fmt.Sprintf("Default device %q is unreachable after %s. Pick a different device for this command?", hostname, formatElapsedSeconds(elapsed))
+	confirmed, err := confirmDefaultRecoveryFn(question)
+	if errors.Is(err, tui.ErrCancelled) {
+		return nil, ErrUserCancelled
+	}
+	if err != nil {
+		return nil, &defaultDeviceRecoveryStoppedError{cause: fmt.Errorf("confirming default device recovery: %w", err)}
+	}
+	if !confirmed {
+		return nil, &defaultDeviceRecoveryStoppedError{cause: defaultDeviceUnreachableError(hostname, cause)}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, &defaultDeviceRecoveryStoppedError{cause: err}
+	}
+	return pickDefaultRecoveryDeviceFn(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck, disableEnroll)
 }
 
 func defaultDeviceSearchLabel(hostname string) string {
@@ -1305,7 +1350,7 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 		} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 			// Default device is unreachable — offer interactive recovery.
 			hostname, _, _ := net.SplitHostPort(addr)
-			target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
+			target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll, cfg.sameTargetFallback)
 			if recErr != nil {
 				return nil, true, recErr
 			}
@@ -3039,6 +3084,7 @@ type resolveConfig struct {
 	device                   string
 	disableSessionBroker     bool
 	disablePickerEnroll      bool
+	sameTargetFallback       defaultDeviceSameTargetFallback
 }
 
 var (
@@ -3311,7 +3357,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 					conn = refreshedConn
 				} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 					// Default device is unreachable — offer interactive recovery.
-					recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
+					recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll, cfg.sameTargetFallback)
 					if recErr != nil {
 						return nil, recErr
 					}
