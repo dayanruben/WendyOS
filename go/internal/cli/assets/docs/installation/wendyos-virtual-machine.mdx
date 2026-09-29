@@ -246,31 +246,24 @@ processes running as your user (and root) can connect and have full QEMU control
 
 Prefer `--device vm:<name>` (or save it with `wendy device set-default
 vm:<name>`) over a literal loopback address. The alias follows the VM's current
-port and keeps enrolled-device trust pins separate for each VM. While a VM is
-running, a literal `127.0.0.1:<port>` on its forwarded agent port, or on the
-mTLS port after it, connects to that VM under its `vm:<name>` key too, and
-reconnects to it by name after an agent update.
+port and keeps enrolled-device trust pins separate for each VM, so two VMs on
+different ports never share one. While a VM is running, a literal
+`127.0.0.1:<port>` on its forwarded agent port, or on the mTLS port after it,
+is that VM too: it is pinned as `vm:<name>`, and reconnects to the VM by name
+after an agent update.
 
-Every connection to a VM also pins the VM's identity at both addresses it
-forwards (the agent port and the mTLS port after it), unless an older pin
-there names a different device. Those address pins keep the addresses
-protected while the VM is stopped, and they outlive the VM: they stay until
-you unpin them. Every other loopback address (another port, `localhost`,
-`::1`) is pinned per address and port (`localhost:50051`). A connection there
-also pins the port that actually answered it, usually the next one, where a
-provisioned agent serves mTLS, so the reconnect after an agent update stays
-protected too. A pin saved under plain `127.0.0.1` or `localhost` by an older
-CLI keeps applying to every port of that address. Once the device it names
-connects through that address again, the pin moves to that address and port.
-A pin that names only an organization, not a device, stays where it is.
+Every other loopback address (another port, `localhost`, `::1`) shares the pin
+of its bare host (`127.0.0.1`, `localhost` or `::1`), as it always has, whatever
+the port. That includes the VM's own addresses once the VM is stopped. A
+connection to a running VM through its typed `127.0.0.1` address also records
+the VM's identity in the shared `127.0.0.1` pin when that pin is not set yet,
+or names only the VM's organization, so the address stays protected while the
+VM is stopped; it never replaces a `127.0.0.1` pin that names another device.
 
 To replace an enrolled VM intentionally, run `wendy device unpin vm:<name>`
-before connecting to the replacement. It clears the VM's pin and the
-`127.0.0.1` address pins that name the same device, and nothing else. An
-address pin that no VM pin covers any more, such as one left by a VM you
-already unpinned or deleted, is cleared by its address: stop any VM using
-that port, then run `wendy device unpin 127.0.0.1:<port>`, and repeat for the
-next port if a refusal names it.
+before connecting to the replacement. It clears only the VM's own pin, never
+the shared `127.0.0.1` pin that other loopback addresses use. That pin is
+cleared by `wendy device unpin 127.0.0.1`.
 
 The agent's port is often already in use on a development machine. Move the
 host side of the forward:

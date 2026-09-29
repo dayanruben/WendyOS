@@ -594,9 +594,10 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			//
 			// dialPinKeyForDevice, not the raw argument: `set-default
 			// my-mac.local:50051` is a legal default, and enforcement keys that
-			// host under "my-mac.local"; `set-default 127.0.0.1` is dialled — and
-			// pinned — as 127.0.0.1:50051. Clearing any other key would leave the
-			// refusal with no way out.
+			// host under "my-mac.local"; `set-default 127.0.0.1` is dialled as
+			// 127.0.0.1:50051, which is checked under vm:<name> while a running VM
+			// forwards that port. Clearing any other key would leave the refusal
+			// with no way out.
 			clearDevicePinForRepin(dialPinKeyForDevice(device))
 
 			// WDY-1149: pin the device's (organisation, cloud host, asset)

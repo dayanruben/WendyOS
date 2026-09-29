@@ -172,10 +172,7 @@ func connectSimulatorAgent(ctx context.Context, name, addr string) (*grpcclient.
 	if err != nil {
 		return nil, nil, err
 	}
-	// addr is the VM's forwarded 127.0.0.1 endpoint; both of its forwards
-	// are pinned beside vm:<name>, so a typed address stays pinned while the
-	// VM is stopped.
-	if err := enforceDevicePinAt(vmDeviceIDPrefix+name, addr, conn); err != nil {
+	if err := enforceDevicePin(vmDeviceIDPrefix+name, conn); err != nil {
 		conn.Close()
 		return nil, nil, err
 	}

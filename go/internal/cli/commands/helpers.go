@@ -1247,11 +1247,10 @@ func connectToAgentInner(ctx context.Context, opts ...resolveOption) (*grpcclien
 		// upload an agent binary, which must never happen against a device whose
 		// identity we are about to reject.
 		//
-		// The dialled endpoint goes with it: a loopback connection also pins
-		// the endpoint that answered it (the mTLS port a reconnect after an
-		// agent update dials), and a running VM's forwarded ports beside
-		// vm:<name> (see endpointPinKeys). A substituted connection reached
-		// none of them.
+		// The typed address goes with it: a running VM reached at its typed
+		// 127.0.0.1 forward, judged as vm:<name>, also records its identity
+		// under the bare 127.0.0.1 key main pinned that address under (see
+		// typedVMBarePinKey). A substituted connection was never dialled there.
 		if pinErr := enforceDevicePinAt(pinKey, dialled, conn); pinErr != nil {
 			conn.Close()
 			return nil, pinErr
@@ -1333,8 +1332,8 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 			conn = refreshedConn
 		} else if usbConn, ok := usbDirectFallback(ctx, hostname); ok {
 			// The stored address is unreachable but the same device (verified
-			// by hostname) is on USB — use it directly. It is not the endpoint
-			// that was asked for, so it is never recorded as one.
+			// by hostname) is on USB — use it directly. It is not the address
+			// that was asked for, so it is never treated as the typed one.
 			conn, dialled = usbConn, ""
 		} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 			// Default device is unreachable — offer interactive recovery.
@@ -1413,9 +1412,6 @@ func enforceSelectedDevicePin(target *SelectedDevice) error {
 	if target == nil || target.Agent == nil || target.PinKey == "" {
 		return nil
 	}
-	// No dialled endpoint: a picked LAN device is keyed by hostname, never
-	// vm:<name>, and a picked VM was already checked at its forwarded endpoint
-	// by connectSimulatorAgent.
 	if err := enforceDevicePin(target.PinKey, target.Agent); err != nil {
 		target.Agent.Close()
 		target.Agent = nil
@@ -2066,9 +2062,9 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string, ex
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	// A direct dial of a running VM's mTLS forward — a reconnect's conn.Addr,
 	// or any other caller's — goes to the VM's agent forward under vm:<name>,
-	// never under the endpoint key, whose ladder would also try a port QEMU
-	// does not forward. Front doors apply it first, so their own pin check
-	// uses the same key.
+	// never under the bare 127.0.0.1 key, and never with a ladder that would
+	// also try a port QEMU does not forward. Front doors apply it first, so
+	// their own pin check uses the same key.
 	plaintextAddr = vmForwardDialAddr(plaintextAddr)
 	originalAddr := plaintextAddr
 	// The pin key is the host the caller was ASKED to reach, captured before
@@ -3121,8 +3117,9 @@ var (
 // cannot tell them apart, and a host-keyed broker would route an explicit
 // :51000 request to whichever agent a previous default-port command brokered.
 // The pin lookup, by contrast, is host-keyed on purpose — identity is a
-// property of the device, not of the port it answers on — except on loopback,
-// where the host names no device (see pinKeyForAddr).
+// property of the device, not of the port it answers on — except for a running
+// local VM's own 127.0.0.1 forward, which is keyed as that VM (see
+// pinKeyForAddr).
 func connectPinnedSession(ctx context.Context, addr string) (*grpcclient.AgentConnection, bool) {
 	// The GOOS check lives here as well as in sessionbroker.Connect: bailing
 	// only inside Connect would still charge Windows the expectedIdentityFor
@@ -3407,8 +3404,8 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		// Same pin key as connectToAgent's: the host of the address dialled, via
 		// the same pinKeyForAddr the ladder uses. resolveTarget reaches devices
 		// connectToAgent never sees, and an unchecked path is the whole attack.
-		// Same dialled endpoint too, for the loopback endpoints a connection
-		// also pins (see endpointPinKeys).
+		// Same typed address too, for a running VM's bare-key record (see
+		// typedVMBarePinKey).
 		pinKey := pinKeyForAddr(addr)
 		if pinErr := enforceDevicePinAt(pinKey, addr, conn); pinErr != nil {
 			conn.Close()

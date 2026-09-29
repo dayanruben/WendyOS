@@ -16,7 +16,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
-	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -43,7 +42,28 @@ func stubLoopbackVMs(t *testing.T, byPort map[int]string) {
 
 var pinA, pinB = config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"}, config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "43"}
 
-func TestPinKeyDerivationKeysLoopbackPerEndpoint(t *testing.T) {
+func assetObs(asset string) observedDeviceIdentity {
+	return observedDeviceIdentity{mTLS: true, orgID: 7, assetID: asset}
+}
+
+// mainPinKeyForAddr is pinKeyForAddr exactly as origin/main shipped it, before
+// any VM was keyed by its forward: the reference every non-VM loopback key is
+// held to.
+func mainPinKeyForAddr(addr string) string {
+	if name, matched, err := simulatorName(addr); err == nil && matched {
+		return vmDeviceIDPrefix + name
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return strings.TrimSpace(addr)
+	}
+	return host
+}
+
+// Strict loopback keys: only the literal 127.0.0.1 on a running VM's plaintext
+// agent port is the VM (vm:<name>); every other loopback host:port keys by its
+// bare host, exactly as main did.
+func TestPinKeyDerivationKeysOnlyARunningVMsForward(t *testing.T) {
 	calls := 0
 	orig := loopbackVMNameFn
 	loopbackVMNameFn = func(port int) (string, bool) {
@@ -57,21 +77,26 @@ func TestPinKeyDerivationKeysLoopbackPerEndpoint(t *testing.T) {
 
 	for addr, want := range map[string]string{
 		"127.0.0.1:50151": "vm:dev",
+		// The mTLS port beside it is not the VM's key: a front door re-aims a
+		// dial there first (vmForwardDialAddr); keyed on its own it is main's.
+		"127.0.0.1:50152": "127.0.0.1",
 		// Only the IPv4 address QEMU's forward binds names the VM: localhost
 		// may resolve to ::1 first, and ::1 / 127.0.0.x / an IPv4-mapped
 		// address are other sockets that something else can answer on.
-		"localhost:50151":          "localhost:50151",
-		"[::1]:50151":              "[::1]:50151",
-		"127.0.0.2:50151":          "127.0.0.2:50151",
-		"[::ffff:127.0.0.1]:50151": "[::ffff:127.0.0.1]:50151",
+		"localhost:50151":          "localhost",
+		"[::1]:50151":              "::1",
+		"127.0.0.2:50151":          "127.0.0.2",
+		"[::ffff:127.0.0.1]:50151": "::ffff:127.0.0.1",
 		// Only the literal text 127.0.0.1 is the forward: a trailing dot is
 		// looked up as a DNS name, and padding is not an address at all.
-		"127.0.0.1.:50151": "127.0.0.1:50151",
-		" 127.0.0.1:50151": "127.0.0.1:50151",
-		"127.0.0.1:50051":  "127.0.0.1:50051",
-		"localhost:50051":  "localhost:50051",
-		"LOCALHOST.:50051": "localhost:50051",
-		"[::1]:50051":      "[::1]:50051",
+		"127.0.0.1.:50151": "127.0.0.1.",
+		" 127.0.0.1:50151": " 127.0.0.1",
+		// Every port no VM forwards: the bare host.
+		"127.0.0.1:50051":  "127.0.0.1",
+		"127.0.0.1:50061":  "127.0.0.1",
+		"localhost:50051":  "localhost",
+		"LOCALHOST.:50051": "LOCALHOST.",
+		"[::1]:50051":      "::1",
 		"127.0.0.1":        "127.0.0.1",
 		"vm:dev":           "vm:dev",
 		"sim":              "vm:sim",
@@ -79,13 +104,19 @@ func TestPinKeyDerivationKeysLoopbackPerEndpoint(t *testing.T) {
 		if got := pinKeyForAddr(addr); got != want {
 			t.Errorf("pinKeyForAddr(%q) = %q, want %q", addr, got, want)
 		}
+		// Every address but the VM's own forward keys exactly as main keyed it.
+		if addr != "127.0.0.1:50151" {
+			if got, main := pinKeyForAddr(addr), mainPinKeyForAddr(addr); got != main {
+				t.Errorf("pinKeyForAddr(%q) = %q, main keyed it %q", addr, got, main)
+			}
+		}
 	}
 	calls = 0
-	for _, addr := range []string{"localhost:50151", "[::1]:50151", "127.0.0.2:50151", "127.0.0.1.:50151", " 127.0.0.1:50151"} {
+	for _, addr := range []string{"localhost:50151", "[::1]:50151", "127.0.0.2:50151", "127.0.0.1.:50151", " 127.0.0.1:50151", "127.0.0.1"} {
 		pinKeyForAddr(addr)
 	}
 	if calls != 0 {
-		t.Errorf("the VM store was consulted %d times for loopback spellings QEMU's forward never answers", calls)
+		t.Errorf("the VM store was consulted %d times for addresses QEMU's forward never answers", calls)
 	}
 	calls = 0
 	for addr, want := range map[string]string{
@@ -142,13 +173,16 @@ func TestRunningVMOnLoopbackPort(t *testing.T) {
 	}
 }
 
-func TestPinCandidateKeysAddsTheLegacyBareLoopbackHost(t *testing.T) {
+// Loopback keys add no lookup candidates of their own: pinCandidateKeys is
+// main's for every key.
+func TestPinCandidateKeysHasNoLoopbackSpecialCase(t *testing.T) {
 	setPinCache(t)
 	for key, want := range map[string][]string{
-		"127.0.0.1:50051": {"127.0.0.1:50051", "127.0.0.1"},
-		"[::1]:50051":     {"[::1]:50051", "::1"},
-		"vm:dev":          {"vm:dev"},
-		"rpi5.local":      {"rpi5.local"},
+		"127.0.0.1":  {"127.0.0.1"},
+		"::1":        {"::1"},
+		"localhost":  {"localhost"},
+		"vm:dev":     {"vm:dev"},
+		"rpi5.local": {"rpi5.local"},
 	} {
 		if got := pinCandidateKeys(key); !reflect.DeepEqual(got, want) {
 			t.Errorf("pinCandidateKeys(%q) = %q, want %q", key, got, want)
@@ -156,29 +190,61 @@ func TestPinCandidateKeysAddsTheLegacyBareLoopbackHost(t *testing.T) {
 	}
 }
 
-// Migration: a pin an older CLI filed under bare "127.0.0.1" keeps governing a
-// loopback endpoint after the upgrade — the upgrade must not turn it into a
-// first use.
-func TestLegacyBareLoopbackPinStillGovernsItsEndpoint(t *testing.T) {
-	setPinCache(t)
-	stubLoopbackVMs(t, nil)
-	setPinConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA})
-	target := newDialTarget(pinKeyForAddr("127.0.0.1:50051"), "127.0.0.1:50051")
-	if target.PinKey != "127.0.0.1:50051" {
-		t.Fatalf("PinKey = %q, want 127.0.0.1:50051", target.PinKey)
-	}
-	if !target.pinned() || target.PinnedKey != "127.0.0.1" || target.Expected == nil || target.Expected.EntityID != "42" {
-		t.Fatalf("legacy pin no longer governs the endpoint: %+v", target)
-	}
-}
+// T-a: an unknown loopback port (no VM forwards it) under a legacy bare pin is
+// judged exactly as on main: keyed by the bare host, whose pin governs the dial
+// (Expected set, plaintext rung blocked) and refuses a different device and an
+// unprovisioned one, naming the bare key.
+func TestUnknownLoopbackPortIsGovernedByTheBarePin(t *testing.T) {
+	for _, tc := range []struct {
+		addr, bare string
+		frontDoor  bool
+	}{
+		{"127.0.0.1:50061", "127.0.0.1", true},
+		{"localhost:50061", "localhost", false},
+		{"[::1]:50061", "::1", false},
+	} {
+		t.Run(tc.addr, func(t *testing.T) {
+			restoreDeviceGlobals(t)
+			stubNonInteractive(t)
+			setPinCache(t)
+			// A VM runs, on another port.
+			stubLoopbackVMs(t, map[int]string{50151: "dev"})
+			legacy := map[string]config.DevicePin{tc.bare: pinA}
+			readPins := writePinTestConfig(t, legacy)
 
-func TestEndpointPinOutranksTheLegacyBareLoopbackPin(t *testing.T) {
-	setPinCache(t)
-	stubLoopbackVMs(t, nil)
-	setPinConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA, "127.0.0.1:50061": pinB})
-	target := newDialTarget("127.0.0.1:50061", "127.0.0.1:50061")
-	if target.PinnedKey != "127.0.0.1:50061" || target.Expected == nil || target.Expected.EntityID != "43" {
-		t.Fatalf("target = %+v, want the endpoint's own pin (asset 43)", target)
+			key := pinKeyForAddr(tc.addr)
+			if key != tc.bare {
+				t.Fatalf("pinKeyForAddr(%q) = %q, want the bare host %q (as main)", tc.addr, key, tc.bare)
+			}
+			target := newDialTarget(key, tc.addr)
+			if !target.pinned() || target.PinnedKey != tc.bare || target.Expected == nil || target.Expected.EntityID != "42" {
+				t.Fatalf("dial target %+v, want the bare pin (asset 42) governing it", target)
+			}
+			assertPlaintextRungRefused(t, target)
+			for _, obs := range []observedDeviceIdentity{{}, assetObs("99")} {
+				err := enforceDeviceIdentity(key, obs)
+				if !errors.Is(err, errDeviceIdentityRefused) {
+					t.Fatalf("%s answered as %+v: got %v, want a refusal", tc.addr, obs, err)
+				}
+				if !strings.Contains(err.Error(), "wendy device unpin "+tc.bare+"\n") {
+					t.Errorf("refusal must name the bare key %q:\n%s", tc.bare, err)
+				}
+			}
+			if tc.frontDoor {
+				for _, obs := range []observedDeviceIdentity{{}, assetObs("99")} {
+					dialled, err := connectTypedLoopback(t, tc.addr, obs)
+					if !errors.Is(err, errDeviceIdentityRefused) {
+						t.Fatalf("typed %s answered as %+v: got %v, want a refusal", tc.addr, obs, err)
+					}
+					if dialled.PinKey != tc.bare || dialled.Expected == nil || dialled.Expected.EntityID != "42" || !dialled.pinned() {
+						t.Fatalf("typed %s dial target = %+v, want the bare pin (asset 42) governing it", tc.addr, dialled)
+					}
+				}
+			}
+			if pins := readPins(); !reflect.DeepEqual(pins, legacy) {
+				t.Fatalf("pins = %+v, want the legacy pin untouched", pins)
+			}
+		})
 	}
 }
 
@@ -200,171 +266,113 @@ func TestTypedLoopbackAddressOfARunningVMUsesItsVMPin(t *testing.T) {
 	}
 }
 
-func TestEnforceDeviceIdentityMovesALegacyLoopbackPinToItsEndpoint(t *testing.T) {
-	stubNonInteractive(t)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA, "localhost": pinA})
-	if err := enforceDeviceIdentity("127.0.0.1:50051", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-		t.Fatalf("the device the legacy pin names was refused: %v", err)
+// connectVMAlias drives connectSimulatorAgent — the vm:<name> alias's path —
+// with the ladder answering as obs where it is dialled.
+func connectVMAlias(t *testing.T, name, addr string, obs observedDeviceIdentity) error {
+	t.Helper()
+	origLadder, origObserve := dialAgentLadderFn, observeDeviceIdentityFn
+	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		return &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: target.Addr,
+			AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}}}, nil, nil
 	}
-	pins := readPins()
-	if pins["127.0.0.1:50051"].AssetID != "42" {
-		t.Fatalf("endpoint pin = %+v, want asset 42 moved onto it", pins["127.0.0.1:50051"])
+	observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity { return obs }
+	defer func() { dialAgentLadderFn, observeDeviceIdentityFn = origLadder, origObserve }()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, _, err := connectSimulatorAgent(ctx, name, addr)
+	if conn != nil {
+		conn.Close()
 	}
-	if _, ok := pins["127.0.0.1"]; ok {
-		t.Error("the legacy 127.0.0.1 pin survived its move to 127.0.0.1:50051")
-	}
-	// A connection at 127.0.0.1 proves nothing about localhost, which can
-	// resolve to ::1 — another socket, which something else can listen on.
-	if pins["localhost"].AssetID != "42" {
-		t.Error("a 127.0.0.1 connection retired the localhost pin, leaving localhost:50051 unpinned")
+	return err
+}
+
+// T-b: two VMs on different ports each keep their own pin, in either order and
+// through either door. The bare 127.0.0.1 pin the first typed connection files
+// (as main did) never blocks the second VM, and is never overwritten by it.
+func TestTwoVMsOnDifferentPortsNeverCollide(t *testing.T) {
+	type vmConn struct{ name, addr, asset string }
+	dev := vmConn{"dev", "127.0.0.1:50051", "42"}
+	dev2 := vmConn{"dev2", "127.0.0.1:50061", "77"}
+	for _, order := range [][2]vmConn{{dev, dev2}, {dev2, dev}} {
+		t.Run(order[0].name+" first", func(t *testing.T) {
+			restoreDeviceGlobals(t)
+			stubNonInteractive(t)
+			setPinCache(t)
+			stubLoopbackVMs(t, map[int]string{50051: "dev", 50061: "dev2"})
+			readPins := writePinTestConfig(t, map[string]config.DevicePin{})
+
+			for _, c := range order {
+				target, err := connectTypedLoopback(t, c.addr, assetObs(c.asset))
+				if err != nil {
+					t.Fatalf("typed %s (vm:%s) as asset %s: %v", c.addr, c.name, c.asset, err)
+				}
+				if target.PinKey != vmDeviceIDPrefix+c.name || target.pinned() {
+					t.Fatalf("first typed dial of vm:%s = %+v, want it keyed vm:%s and governed by no pin", c.name, target, c.name)
+				}
+			}
+			// Again, through both doors: neither VM is ever refused.
+			for _, c := range order {
+				if _, err := connectTypedLoopback(t, c.addr, assetObs(c.asset)); err != nil {
+					t.Fatalf("typed %s again: %v", c.addr, err)
+				}
+				if err := connectVMAlias(t, c.name, c.addr, assetObs(c.asset)); err != nil {
+					t.Fatalf("vm:%s alias: %v", c.name, err)
+				}
+			}
+			want := map[string]string{"vm:dev": "42", "vm:dev2": "77", "127.0.0.1": order[0].asset}
+			pins := readPins()
+			if len(pins) != len(want) {
+				t.Fatalf("pins = %+v, want exactly %v", pins, want)
+			}
+			for key, asset := range want {
+				if pins[key].AssetID != asset {
+					t.Errorf("pin %s = %+v, want asset %s", key, pins[key], asset)
+				}
+			}
+		})
 	}
 }
 
-// A connection retires only the bare pin of the host it reached, so a legacy
-// pin under another loopback spelling keeps governing that spelling's
-// endpoints on the same port.
-func TestAConnectionRetiresOnlyItsOwnHostsBarePin(t *testing.T) {
-	stubNonInteractive(t)
-	setPinCache(t)
-	stubLoopbackVMs(t, map[int]string{50051: "dev"})
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA, "localhost": pinA, "::1": pinA})
-	if err := connectAsVMAt("127.0.0.1:50051", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-		t.Fatal(err)
-	}
-	pins := readPins()
-	if _, ok := pins["127.0.0.1"]; ok {
-		t.Error("the VM's own bare 127.0.0.1 pin was not retired")
-	}
-	for _, other := range []string{"localhost", "::1"} {
-		if pins[other].AssetID != "42" {
-			t.Errorf("the %s pin was retired by a connection that never reached %s", other, other)
-		}
-	}
-	for _, addr := range []string{"localhost:50051", "[::1]:50051"} {
-		key := pinKeyForAddr(addr)
-		if target := newDialTarget(key, addr); !target.pinned() || target.Expected == nil || target.Expected.EntityID != "42" {
-			t.Errorf("%s is no longer governed by its legacy pin: %+v", addr, target)
-		}
-		if err := enforceDeviceIdentity(key, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}); !errors.Is(err, errDeviceIdentityRefused) {
-			t.Errorf("%s: asset 99 got %v, want a refusal", addr, err)
-		}
-	}
-}
-
-func TestEnforceDeviceIdentityRefusesAMismatchUnderALegacyLoopbackPin(t *testing.T) {
-	stubNonInteractive(t)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA})
-	err := enforceDeviceIdentity("127.0.0.1:50051", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "43"})
-	if !errors.Is(err, errDeviceIdentityRefused) {
-		t.Fatalf("a different device at a legacy-pinned endpoint: got %v, want a refusal", err)
-	}
-	if !strings.Contains(err.Error(), "wendy device unpin 127.0.0.1\n") {
-		t.Errorf("refusal must name the key the governing pin is filed under:\n%s", err)
-	}
-	pins := readPins()
-	if _, ok := pins["127.0.0.1:50051"]; ok {
-		t.Error("a refused device was pinned under the endpoint")
-	}
-	if pins["127.0.0.1"].AssetID != "42" {
-		t.Error("the legacy pin was changed by a refusal")
-	}
-
-	unprovisioned := enforceDeviceIdentity("127.0.0.1:50051", observedDeviceIdentity{})
-	if !errors.Is(unprovisioned, errDeviceIdentityRefused) {
-		t.Fatalf("an unprovisioned answer at a legacy-pinned endpoint: got %v, want a refusal", unprovisioned)
-	}
-}
-
-func TestEnforceDeviceIdentityAdoptsAnOrgOnlyLegacyLoopbackPin(t *testing.T) {
-	stubNonInteractive(t)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": {OrgID: 7, CloudGRPC: "grpc.a.sh:443"}})
-	if err := enforceDeviceIdentity("127.0.0.1:50051", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-		t.Fatal(err)
-	}
-	pins := readPins()
-	if pins["127.0.0.1:50051"].AssetID != "42" {
-		t.Fatalf("endpoint pin = %+v, want the observed asset adopted", pins["127.0.0.1:50051"])
-	}
-	// An org-only pin names no device, so this device cannot show it is the
-	// one the pin protects elsewhere: it keeps governing every other port.
-	if pin, ok := pins["127.0.0.1"]; !ok || pin.OrgID != 7 || pin.AssetID != "" {
-		t.Errorf("the org-only legacy pin = %+v (present %v), want it kept as it was", pin, ok)
-	}
-}
-
-// R19, the reviewer's sequence: adopting an org-only legacy pin at one port
-// must not leave another port unpinned.
-func TestAdoptingAnOrgOnlyLegacyPinKeepsOtherPortsPinned(t *testing.T) {
+// T-c: unpinning one VM clears that VM's pin only. The bare 127.0.0.1 pin every
+// other loopback port shares, and the other VM's pin, stay; a non-VM loopback
+// port is still governed by the bare pin afterwards.
+func TestUnpinVMLeavesTheBareLoopbackPinAndOtherVMs(t *testing.T) {
 	stubNonInteractive(t)
 	setPinCache(t)
-	stubLoopbackVMs(t, nil)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": {OrgID: 7, CloudGRPC: "grpc.a.sh:443"}})
-	if err := enforceDeviceIdentity("127.0.0.1:50061", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "43"}); err != nil {
-		t.Fatal(err)
-	}
+	stubLoopbackVMs(t, map[int]string{50051: "dev", 50061: "dev2"})
+	pin77 := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "77"}
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{"vm:dev": pinA, "vm:dev2": pin77, "127.0.0.1": pinA})
+
+	runUnpin(t, "vm:dev")
 	pins := readPins()
-	if pins["127.0.0.1:50061"].AssetID != "43" {
-		t.Fatalf("pins = %+v, want 127.0.0.1:50061 pinned to asset 43", pins)
+	if _, ok := pins["vm:dev"]; ok {
+		t.Error("unpin vm:dev left its pin")
 	}
-	if _, ok := pins["127.0.0.1"]; !ok {
-		t.Fatal("the org-only bare pin was cleared by a device at another port")
+	if pins["127.0.0.1"].AssetID != "42" || pins["vm:dev2"].AssetID != "77" || len(pins) != 2 {
+		t.Fatalf("pins = %+v, want the bare 127.0.0.1 pin and vm:dev2 untouched", pins)
 	}
-	if target := newDialTarget(pinKeyForAddr("127.0.0.1:50051"), "127.0.0.1:50051"); !target.pinned() {
-		t.Fatalf("127.0.0.1:50051 lost its pin, so the plaintext rung is open: %+v", target)
+
+	const other = "127.0.0.1:50071"
+	key := pinKeyForAddr(other)
+	if key != "127.0.0.1" {
+		t.Fatalf("pinKeyForAddr(%q) = %q, want the bare host", other, key)
 	}
-	if err := enforceDeviceIdentity("127.0.0.1:50051", observedDeviceIdentity{}); !errors.Is(err, errDeviceIdentityRefused) {
-		t.Fatalf("an unprovisioned answer at 127.0.0.1:50051: got %v, want a refusal", err)
+	if target := newDialTarget(key, other); !target.pinned() || target.Expected == nil || target.Expected.EntityID != "42" {
+		t.Fatalf("%s after unpin vm:dev: dial target %+v, want the bare pin (asset 42) governing it", other, target)
+	}
+	if err := enforceDeviceIdentity(key, assetObs("99")); !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("asset 99 at %s after unpin vm:dev: got %v, want a refusal", other, err)
 	}
 }
 
-func TestEnforceDeviceIdentityRetiresALegacyPinOnlyForTheSameVM(t *testing.T) {
-	stubNonInteractive(t)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA})
-	if err := enforceDeviceIdentity("vm:dev", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-		t.Fatal(err)
+// stubSetDefaultOffline keeps set-default's post-save reachability probe off
+// the network and off the VM store: every dial fails cleanly.
+func stubSetDefaultOffline(t *testing.T) {
+	t.Helper()
+	origConnect := connectSimulatorChoiceFn
+	connectSimulatorChoiceFn = func(context.Context, *simulatorChoice, bool) (*SelectedDevice, error) {
+		return nil, errors.New("VM offline in test")
 	}
-	if _, ok := readPins()["127.0.0.1"]; ok {
-		t.Error("a bare 127.0.0.1 pin naming vm:dev's own identity was not retired")
-	}
-
-	readPins = writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinB})
-	if err := enforceDeviceIdentity("vm:dev", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-		t.Fatalf("vm:dev refused over another device's bare localhost pin: %v", err)
-	}
-	pins := readPins()
-	if pins["vm:dev"].AssetID != "42" || pins["127.0.0.1"].AssetID != "43" {
-		t.Fatalf("pins = %+v: want vm:dev pinned and the unrelated bare pin kept", pins)
-	}
-}
-
-// Unpinning one loopback endpoint must not drop another endpoint's pin — the
-// old `wendy device unpin 127.0.0.1` dropped every VM's at once.
-func TestUnpinLoopbackEndpointsIndependently(t *testing.T) {
-	stubLoopbackVMs(t, nil)
-	setPinCache(t)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA, "127.0.0.1:50061": pinB})
-	runUnpin(t, "127.0.0.1:50061")
-	pins := readPins()
-	if _, ok := pins["127.0.0.1:50061"]; ok {
-		t.Error("unpin 127.0.0.1:50061 left its pin")
-	}
-	if pins["127.0.0.1"].AssetID != "42" {
-		t.Error("unpin 127.0.0.1:50061 dropped a different device's bare pin")
-	}
-
-	readPins = writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA})
-	runUnpin(t, "127.0.0.1:50051")
-	if _, ok := readPins()["127.0.0.1"]; ok {
-		t.Error("unpin of an endpoint left the legacy pin that governs it")
-	}
-}
-
-func TestSetDefaultOnBareLoopbackClearsTheEndpointPin(t *testing.T) {
-	restoreDeviceGlobals(t)
-	stubNonInteractive(t)
-	stubLoopbackVMs(t, nil)
-	setPinCache(t)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1:50051": pinA, "127.0.0.1:50061": pinB})
 	origLookup, origBrowse, origLadder, origDiscover := osLookupHostFn, lanBrowseFn, dialAgentLadderFn, discoverLANDevices
 	osLookupHostFn = func(context.Context, string) ([]string, error) { return nil, errors.New("no resolver in test") }
 	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
@@ -378,82 +386,62 @@ func TestSetDefaultOnBareLoopbackClearsTheEndpointPin(t *testing.T) {
 	origUSB := usbDirectCandidatesFn
 	usbDirectCandidatesFn = func() []discovery.USBDirectCandidate { return nil }
 	t.Cleanup(func() {
-		osLookupHostFn, lanBrowseFn, dialAgentLadderFn, discoverLANDevices = origLookup, origBrowse, origLadder, origDiscover
-		usbDirectCandidatesFn = origUSB
-	})
-
-	cmd := newDeviceSetDefaultCmd()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd.SetContext(ctx)
-	if err := cmd.RunE(cmd, []string{"127.0.0.1"}); err != nil {
-		t.Fatal(err)
-	}
-	pins := readPins()
-	if _, ok := pins["127.0.0.1:50051"]; ok {
-		t.Error("set-default 127.0.0.1 did not clear the pin its dial (127.0.0.1:50051) is checked under")
-	}
-	if _, ok := pins["127.0.0.1:50061"]; !ok {
-		t.Error("set-default 127.0.0.1 cleared another endpoint's pin")
-	}
-}
-
-// D2 (safe option): only `wendy device unpin vm:<name>` clears a VM's
-// 127.0.0.1 endpoint pins; `wendy device set-default vm:<name>` still clears
-// the vm:<name> pin itself (a fresh identity re-pins on the next connect) but
-// must leave the endpoint pins alone. A reviewer showed that running
-// set-default while the VM is stopped, with another local account holding the
-// port span, previously left 127.0.0.1:<port> unpinned by falling through to
-// the same clearVMEndpointPins call unpin uses.
-func TestSetDefaultOnVMKeepsItsEndpointPins(t *testing.T) {
-	restoreDeviceGlobals(t)
-	stubNonInteractive(t)
-	stubLoopbackVMs(t, nil) // the VM is stopped
-	setPinCache(t)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{
-		"vm:dev":          pinA,
-		"127.0.0.1:50051": pinA,
-		"127.0.0.1:50052": pinA,
-	})
-
-	// Nothing here should boot the VM or touch the network: the reachability
-	// probe set-default runs after re-pinning must fail cleanly.
-	origConnect := connectSimulatorChoiceFn
-	connectSimulatorChoiceFn = func(context.Context, *simulatorChoice, bool) (*SelectedDevice, error) {
-		return nil, errors.New("VM offline in test")
-	}
-	origLookup, origBrowse, origLadder, origDiscover := osLookupHostFn, lanBrowseFn, dialAgentLadderFn, discoverLANDevices
-	osLookupHostFn = func(context.Context, string) ([]string, error) { return nil, errors.New("no resolver in test") }
-	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
-	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
-		return nil, nil, errors.New("device offline in test")
-	}
-	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
-	origUSB := usbDirectCandidatesFn
-	usbDirectCandidatesFn = func() []discovery.USBDirectCandidate { return nil }
-	t.Cleanup(func() {
 		connectSimulatorChoiceFn = origConnect
 		osLookupHostFn, lanBrowseFn, dialAgentLadderFn, discoverLANDevices = origLookup, origBrowse, origLadder, origDiscover
 		usbDirectCandidatesFn = origUSB
 	})
+}
 
+func runSetDefault(t *testing.T, device string) {
+	t.Helper()
 	cmd := newDeviceSetDefaultCmd()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd.SetContext(ctx)
-	if err := cmd.RunE(cmd, []string{"vm:dev"}); err != nil {
+	if err := cmd.RunE(cmd, []string{device}); err != nil {
 		t.Fatal(err)
 	}
+}
 
+// set-default of a bare loopback host clears the bare pin its dial is checked
+// under — as main — and never a VM's.
+func TestSetDefaultOnBareLoopbackClearsTheBarePin(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	stubLoopbackVMs(t, nil)
+	setPinCache(t)
+	stubSetDefaultOffline(t)
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA, "vm:dev": pinB})
+
+	runSetDefault(t, "127.0.0.1")
+	pins := readPins()
+	if _, ok := pins["127.0.0.1"]; ok {
+		t.Error("set-default 127.0.0.1 did not clear the bare pin its dial is checked under")
+	}
+	if _, ok := pins["vm:dev"]; !ok {
+		t.Error("set-default 127.0.0.1 cleared a VM's pin")
+	}
+}
+
+// T-c (set-default): `wendy device set-default vm:<name>` clears the VM's own
+// pin and nothing else — not the bare 127.0.0.1 pin other loopback ports
+// share, and not another VM's.
+func TestSetDefaultOnVMLeavesTheBareLoopbackPin(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	stubLoopbackVMs(t, nil) // the VMs are stopped
+	setPinCache(t)
+	stubSetDefaultOffline(t)
+	pin77 := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "77"}
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{"vm:dev": pinA, "vm:dev2": pin77, "127.0.0.1": pinA})
+
+	runSetDefault(t, "vm:dev")
 	pins := readPins()
 	if _, ok := pins["vm:dev"]; ok {
 		t.Error("set-default vm:dev did not clear the VM's own pin")
 	}
-	if _, ok := pins["127.0.0.1:50051"]; !ok {
-		t.Error("set-default vm:dev cleared the VM's endpoint pin at 127.0.0.1:50051 — only unpin should")
-	}
-	if _, ok := pins["127.0.0.1:50052"]; !ok {
-		t.Error("set-default vm:dev cleared the VM's endpoint pin at 127.0.0.1:50052 — only unpin should")
+	if pins["127.0.0.1"].AssetID != "42" || pins["vm:dev2"].AssetID != "77" || len(pins) != 2 {
+		t.Fatalf("pins = %+v, want the bare 127.0.0.1 pin and vm:dev2 untouched", pins)
 	}
 }
 
@@ -472,11 +460,11 @@ func TestVMPrintReachabilityNamesTheVMAlias(t *testing.T) {
 	}
 }
 
-// I2: localhost resolves to ::1 as well as 127.0.0.1, and the dial ladder
-// moves on to the next address when one fails, so a VM's forward on
-// 127.0.0.1 does not make localhost:PORT that VM. A legacy localhost pin keeps
-// governing it, and a different device answering there is refused.
-func TestLocalhostOnAVMPortStaysUnderItsLegacyPin(t *testing.T) {
+// localhost resolves to ::1 as well as 127.0.0.1, and the dial ladder moves on
+// to the next address when one fails, so a VM's forward on 127.0.0.1 does not
+// make localhost:PORT that VM. Its bare pin keeps governing it, as on main,
+// and a different device answering there is refused.
+func TestLocalhostOnAVMPortStaysUnderItsBarePin(t *testing.T) {
 	stubNonInteractive(t)
 	setPinCache(t)
 	stubLoopbackVMs(t, map[int]string{50151: "dev"})
@@ -489,11 +477,11 @@ func TestLocalhostOnAVMPortStaysUnderItsLegacyPin(t *testing.T) {
 		}
 		target := newDialTarget(key, addr)
 		if !target.pinned() || target.Expected == nil || target.Expected.EntityID != "42" {
-			t.Fatalf("%s: dial not governed by the legacy bare pin: %+v", addr, target)
+			t.Fatalf("%s: dial not governed by the bare pin: %+v", addr, target)
 		}
-		err := enforceDeviceIdentity(key, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"})
+		err := enforceDeviceIdentity(key, assetObs("99"))
 		if !errors.Is(err, errDeviceIdentityRefused) {
-			t.Fatalf("%s: asset 99 under a legacy pin for 42: got %v, want a refusal", addr, err)
+			t.Fatalf("%s: asset 99 under a bare pin for 42: got %v, want a refusal", addr, err)
 		}
 	}
 	pins := readPins()
@@ -501,200 +489,205 @@ func TestLocalhostOnAVMPortStaysUnderItsLegacyPin(t *testing.T) {
 		t.Error("a refused device was pinned as vm:dev")
 	}
 	if pins["localhost"].AssetID != "42" || pins["::1"].AssetID != "42" {
-		t.Errorf("legacy pins changed by a refusal: %+v", pins)
+		t.Errorf("bare pins changed by a refusal: %+v", pins)
 	}
 }
 
-// I3: the endpoint key is built from the normalised host, so a pin moved from
-// a legacy bare host under one spelling is found under every other.
-func TestLoopbackEndpointKeyIgnoresHostSpelling(t *testing.T) {
+// T-d: a typed connection to a running VM also files its identity under the
+// bare 127.0.0.1 key, which main filed for the same connection. Once the VM
+// stops, its address keys as the bare host again and is governed by that pin:
+// a different device and an unprovisioned one are refused there, as on main.
+func TestTypedVMConnectionFilesTheBarePinForWhenTheVMStops(t *testing.T) {
+	restoreDeviceGlobals(t)
 	stubNonInteractive(t)
 	setPinCache(t)
-	stubLoopbackVMs(t, nil)
-	if a, b := pinKeyForAddr("LOCALHOST.:50051"), pinKeyForAddr("localhost:50051"); a != b {
-		t.Fatalf("pinKeyForAddr: %q vs %q for the same endpoint", a, b)
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{})
+	const addr = "127.0.0.1:50051"
+	stubLoopbackVMs(t, map[int]string{50051: "dev"})
+
+	// Only an accepted mTLS judgement records: an unprovisioned VM writes
+	// nothing, under either key (main recorded nothing for it either).
+	if _, err := connectTypedLoopback(t, addr, observedDeviceIdentity{}); err != nil {
+		t.Fatalf("an unprovisioned VM on first contact: %v", err)
 	}
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"localhost": pinA})
-	for _, addr := range []string{"LOCALHOST.:50051", "localhost:50051"} {
-		target := newDialTarget(pinKeyForAddr(addr), addr)
-		if target.PinnedKey != "localhost" || target.Expected == nil || target.Expected.EntityID != "42" {
-			t.Fatalf("%s: legacy localhost pin does not govern: %+v", addr, target)
+	if pins := readPins(); len(pins) != 0 {
+		t.Fatalf("pins = %+v after an unprovisioned answer, want none", pins)
+	}
+
+	if _, err := connectTypedLoopback(t, addr, assetObs("42")); err != nil {
+		t.Fatalf("the running VM was refused: %v", err)
+	}
+	pins := readPins()
+	if len(pins) != 2 || pins["vm:dev"].AssetID != "42" || pins["127.0.0.1"].AssetID != "42" {
+		t.Fatalf("pins = %+v, want exactly vm:dev and 127.0.0.1 naming asset 42", pins)
+	}
+	if src := pins["127.0.0.1"].Source; src != config.PinSourceLAN {
+		t.Errorf("bare pin source = %q, want %q", src, config.PinSourceLAN)
+	}
+
+	stubLoopbackVMs(t, nil) // the VM stops
+	for _, obs := range []observedDeviceIdentity{{}, assetObs("99")} {
+		target, err := connectTypedLoopback(t, addr, obs)
+		if !errors.Is(err, errDeviceIdentityRefused) {
+			t.Fatalf("the stopped VM's %s answered as %+v: got %v, want a refusal", addr, obs, err)
+		}
+		if target.PinKey != "127.0.0.1" || target.Expected == nil || target.Expected.EntityID != "42" || !target.pinned() {
+			t.Fatalf("dial target = %+v, want the bare pin (asset 42) governing it", target)
 		}
 	}
-	if err := enforceDeviceIdentity(pinKeyForAddr("LOCALHOST.:50051"), observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-		t.Fatal(err)
-	}
-	if pins := readPins(); pins["localhost:50051"].AssetID != "42" {
-		t.Fatalf("pins = %+v, want the legacy pin moved to localhost:50051", pins)
-	}
-	target := newDialTarget(pinKeyForAddr("localhost:50051"), "localhost:50051")
-	if target.PinnedKey != "localhost:50051" || target.Expected == nil || target.Expected.EntityID != "42" {
-		t.Fatalf("the moved pin is orphaned from the plain spelling: %+v", target)
+	assertPlaintextRungRefused(t, newDialTarget(pinKeyForAddr(addr), addr))
+	if pins := readPins(); len(pins) != 2 || pins["127.0.0.1"].AssetID != "42" {
+		t.Fatalf("pins = %+v, want them unchanged by the refusals", pins)
 	}
 }
 
-// connectAsVMAt runs the enforcement a connection to a typed loopback address
-// gets: keyed by pinKeyForAddr, and told which endpoint it was dialled at.
-func connectAsVMAt(addr string, obs observedDeviceIdentity) error {
-	key := pinKeyForAddr(addr)
-	return enforceDeviceIdentityAt(key, vmEndpointPinKeys(key, addr), obs)
-}
-
-// I1: 127.0.0.1:PORT is keyed as the VM only while the VM runs. Once it stops,
-// the same address is keyed per endpoint, so the endpoint must carry the VM's
-// identity too — or anything that binds the port then is a first use, where
-// the bare 127.0.0.1 key used to refuse it.
-func TestVMEndpointStaysPinnedWhileItsVMIsStopped(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		pins map[string]config.DevicePin
-	}{
-		{"legacy bare pin", map[string]config.DevicePin{"127.0.0.1": pinA}},
-		{"fresh user", map[string]config.DevicePin{}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			stubNonInteractive(t)
-			setPinCache(t)
-			readPins := writePinTestConfig(t, tc.pins)
-			const addr = "127.0.0.1:50051"
-
-			stubLoopbackVMs(t, map[int]string{50051: "dev"})
-			if err := connectAsVMAt(addr, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-				t.Fatalf("the running VM was refused: %v", err)
-			}
-			pins := readPins()
-			if pins["vm:dev"].AssetID != "42" || pins[addr].AssetID != "42" {
-				t.Fatalf("pins = %+v, want vm:dev and %s both naming asset 42", pins, addr)
-			}
-			if _, ok := pins["127.0.0.1"]; ok {
-				t.Error("the same-identity bare pin was not retired")
-			}
-
-			stubLoopbackVMs(t, nil) // the VM stops
-			key := pinKeyForAddr(addr)
-			if key != addr {
-				t.Fatalf("pinKeyForAddr(%q) = %q with no VM running", addr, key)
-			}
-			target := newDialTarget(key, addr)
-			if !target.pinned() || target.Expected == nil || target.Expected.EntityID != "42" {
-				t.Fatalf("stopped VM's endpoint lost its pin, so the plaintext rung is open: %+v", target)
-			}
-			if err := enforceDeviceIdentity(key, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}); !errors.Is(err, errDeviceIdentityRefused) {
-				t.Fatalf("asset 99 on the stopped VM's endpoint: got %v, want a refusal", err)
-			}
-			if err := enforceDeviceIdentity(key, observedDeviceIdentity{}); !errors.Is(err, errDeviceIdentityRefused) {
-				t.Fatalf("an unprovisioned answer on the stopped VM's endpoint: got %v, want a refusal", err)
-			}
-		})
-	}
-}
-
-func TestVMEndpointPinNeverOverwritesTheEndpointsOwnPin(t *testing.T) {
+// T-d (alias): the vm:<name> alias records the VM's own pin only — main never
+// filed a bare pin for it — and a typed connection refused under vm:<name>
+// records nothing at all.
+func TestVMAliasNeverFilesTheBarePin(t *testing.T) {
 	stubNonInteractive(t)
 	setPinCache(t)
 	stubLoopbackVMs(t, map[int]string{50051: "dev"})
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1:50051": pinB})
-	if err := connectAsVMAt("127.0.0.1:50051", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-		t.Fatalf("vm:dev refused over its endpoint's own pin for another device: %v", err)
-	}
-	pins := readPins()
-	if pins["vm:dev"].AssetID != "42" {
-		t.Errorf("vm:dev = %+v, want asset 42", pins["vm:dev"])
-	}
-	if pins["127.0.0.1:50051"].AssetID != "43" {
-		t.Errorf("the endpoint's own pin was overwritten: %+v", pins["127.0.0.1:50051"])
-	}
-}
-
-func TestVMEndpointPinRetiresOnlySameIdentityBarePins(t *testing.T) {
-	stubNonInteractive(t)
-	setPinCache(t)
-	stubLoopbackVMs(t, map[int]string{50051: "dev"})
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA, "localhost": pinB})
-	if err := connectAsVMAt("127.0.0.1:50051", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{})
+	if err := connectVMAlias(t, "dev", "127.0.0.1:50051", assetObs("42")); err != nil {
 		t.Fatal(err)
 	}
-	pins := readPins()
-	if _, ok := pins["127.0.0.1"]; ok {
-		t.Error("the bare pin naming the VM's identity survived")
+	if pins := readPins(); len(pins) != 1 || pins["vm:dev"].AssetID != "42" {
+		t.Fatalf("pins = %+v, want only vm:dev (asset 42)", pins)
 	}
-	if pins["localhost"].AssetID != "43" {
-		t.Error("a bare pin naming another device was retired")
+
+	restoreDeviceGlobals(t)
+	if _, err := connectTypedLoopback(t, "127.0.0.1:50051", assetObs("99")); !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("asset 99 at vm:dev's forward: got %v, want a refusal", err)
 	}
-	if pins["127.0.0.1:50051"].AssetID != "42" {
-		t.Errorf("endpoint pin = %+v, want asset 42", pins["127.0.0.1:50051"])
+	if pins := readPins(); len(pins) != 1 || pins["vm:dev"].AssetID != "42" {
+		t.Fatalf("pins = %+v after a refusal, want only vm:dev (asset 42)", pins)
 	}
 }
 
-// A VM reached some other way than the IPv4 forward — or with no dialled
-// endpoint at all — pins nothing but vm:<name>.
-func TestVMEndpointKeyIsOnlyTheIPv4Forward(t *testing.T) {
+// T-d (asset-less): an mTLS VM whose certificate names no asset files an
+// org-only bare pin, as main did — so an unprovisioned answer is refused once
+// the VM stops — and a later connection naming the asset adopts it in place.
+func TestAssetlessTypedVMConnectionFilesAnOrgOnlyBarePin(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	setPinCache(t)
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{})
+	const addr = "127.0.0.1:50051"
+
 	stubLoopbackVMs(t, map[int]string{50051: "dev"})
-	both := []string{"127.0.0.1:50051", "127.0.0.1:50052"}
-	for _, tc := range []struct {
-		key, addr string
-		want      []string
-	}{
-		// Both ports QEMU forwards for the VM, from either of them.
-		{"vm:dev", "127.0.0.1:50051", both},
-		{"vm:dev", "127.0.0.1:50052", both},
-		// A port the store says is not this VM's forward.
-		{"vm:dev", "127.0.0.1:50061", nil},
-		// A VM the store cannot place: only the address dialled.
-		{"vm:other", "127.0.0.1:50071", []string{"127.0.0.1:50071"}},
-		{"vm:dev", "127.0.0.1.:50051", nil},
-		{"vm:dev", " 127.0.0.1:50051", nil},
-		{"vm:dev", "localhost:50051", nil},
-		{"vm:dev", "[::1]:50051", nil},
-		{"vm:dev", "127.0.0.2:50051", nil},
-		{"vm:dev", "", nil},
-		{"127.0.0.1:50051", "127.0.0.1:50051", nil},
-		{"rpi5.local", "127.0.0.1:50051", nil},
+	if _, err := connectTypedLoopback(t, addr, observedDeviceIdentity{mTLS: true, orgID: 7}); err != nil {
+		t.Fatal(err)
+	}
+	orgOnly := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", Source: config.PinSourceLAN}
+	if pins := readPins(); len(pins) != 2 || pins["127.0.0.1"] != orgOnly || pins["vm:dev"] != orgOnly {
+		t.Fatalf("pins = %+v, want vm:dev and 127.0.0.1 both org-only %+v", pins, orgOnly)
+	}
+	stubLoopbackVMs(t, nil) // the VM stops
+	if target := newDialTarget(pinKeyForAddr(addr), addr); !target.pinned() {
+		t.Fatalf("the stopped VM's address is unpinned: %+v", target)
+	}
+	if _, err := connectTypedLoopback(t, addr, observedDeviceIdentity{}); !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("an unprovisioned answer at the stopped VM's address: got %v, want a refusal", err)
+	}
+
+	stubLoopbackVMs(t, map[int]string{50051: "dev"}) // it runs again
+	if _, err := connectTypedLoopback(t, addr, assetObs("42")); err != nil {
+		t.Fatal(err)
+	}
+	adopted := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42", Source: config.PinSourceLAN}
+	if pins := readPins(); pins["127.0.0.1"] != adopted || pins["vm:dev"].AssetID != "42" {
+		t.Fatalf("pins = %+v, want the bare pin adopted in place as %+v", pins, adopted)
+	}
+	stubLoopbackVMs(t, nil) // and stops
+	target, err := connectTypedLoopback(t, addr, assetObs("99"))
+	if !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("asset 99 at the stopped VM's address: got %v, want a refusal", err)
+	}
+	if target.Expected == nil || target.Expected.EntityID != "42" {
+		t.Fatalf("dial target = %+v, want Expected asset 42", target)
+	}
+}
+
+// T-g: an org-only bare 127.0.0.1 pin (an older CLI's, naming no device)
+// adopts the asset a typed VM connection proves, in place, as main's
+// connection did. A VM from another organisation leaves it alone and is still
+// accepted under its own vm:<name> key.
+func TestTypedVMConnectionAdoptsAnOrgOnlyBarePin(t *testing.T) {
+	restoreDeviceGlobals(t)
+	stubNonInteractive(t)
+	setPinCache(t)
+	orgOnly := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", Source: config.PinSourceLAN}
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": orgOnly})
+	const addr = "127.0.0.1:50051"
+
+	stubLoopbackVMs(t, map[int]string{50051: "dev"})
+	if _, err := connectTypedLoopback(t, addr, assetObs("42")); err != nil {
+		t.Fatalf("the running VM was refused: %v", err)
+	}
+	adopted := orgOnly
+	adopted.AssetID = "42"
+	pins := readPins()
+	if pins["127.0.0.1"] != adopted || pins["vm:dev"].AssetID != "42" || len(pins) != 2 {
+		t.Fatalf("pins = %+v, want the org-only bare pin adopted in place as %+v, and vm:dev", pins, adopted)
+	}
+	stubLoopbackVMs(t, nil) // the VM stops
+	target, err := connectTypedLoopback(t, addr, assetObs("99"))
+	if !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("asset 99 at the stopped VM's address: got %v, want a refusal", err)
+	}
+	if target.Expected == nil || target.Expected.EntityID != "42" || !target.pinned() {
+		t.Fatalf("dial target = %+v, want Expected asset 42 and the plaintext rung blocked", target)
+	}
+
+	readPins = writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": orgOnly})
+	stubLoopbackVMs(t, map[int]string{50051: "dev"})
+	if _, err := connectTypedLoopback(t, addr, observedDeviceIdentity{mTLS: true, orgID: 8, assetID: "42"}); err != nil {
+		t.Fatalf("a VM of organisation 8 was refused under its own key: %v", err)
+	}
+	pins = readPins()
+	if pins["127.0.0.1"] != orgOnly {
+		t.Fatalf("bare pin = %+v, want it untouched (%+v): another organisation's VM names nothing it covers", pins["127.0.0.1"], orgOnly)
+	}
+	if pins["vm:dev"].OrgID != 8 {
+		t.Fatalf("vm:dev = %+v, want organisation 8", pins["vm:dev"])
+	}
+}
+
+// Only a vm:<name> judgement dialled at the typed literal 127.0.0.1 forward
+// records under the bare key; the alias, a substituted connection and every
+// other key record nothing extra.
+func TestOnlyATypedVMForwardRecordsTheBarePin(t *testing.T) {
+	for _, tc := range []struct{ key, dialled, want string }{
+		{"vm:dev", "127.0.0.1:50051", "127.0.0.1"},
+		{"vm:dev", "127.0.0.1:50052", "127.0.0.1"},
+		{"vm:dev", "127.0.0.1.:50051", ""},
+		{"vm:dev", " 127.0.0.1:50051", ""},
+		{"vm:dev", "localhost:50051", ""},
+		{"vm:dev", "[::1]:50051", ""},
+		{"vm:dev", "127.0.0.2:50051", ""},
+		{"vm:dev", "vm:dev", ""},
+		// A connection some fallback substituted for the dial.
+		{"vm:dev", "", ""},
+		// Keys that are already the bare host, or not loopback at all.
+		{"127.0.0.1", "127.0.0.1:50061", ""},
+		{"localhost", "localhost:50061", ""},
+		{"rpi5.local", "rpi5.local:50051", ""},
+		{"10.0.0.5", "10.0.0.5:50051", ""},
 	} {
-		if got := vmEndpointPinKeys(tc.key, tc.addr); !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("vmEndpointPinKeys(%q, %q) = %q, want %q", tc.key, tc.addr, got, tc.want)
+		if got := typedVMBarePinKey(tc.key, tc.dialled); got != tc.want {
+			t.Errorf("typedVMBarePinKey(%q, %q) = %q, want %q", tc.key, tc.dialled, got, tc.want)
 		}
 	}
 }
 
-// R15: a certificate with no asset id proves an organisation, not a device. It
-// may pass a legacy pin, but it must not move it, retire bare pins, or pin a
-// VM's endpoint — or a same-org device would clear the way for another.
-func TestAnAssetlessMatchLeavesLegacyLoopbackPinsInPlace(t *testing.T) {
-	stubNonInteractive(t)
-	setPinCache(t)
-	stubLoopbackVMs(t, nil)
-	legacy := map[string]config.DevicePin{"127.0.0.1": pinA, "localhost": pinA}
-	readPins := writePinTestConfig(t, legacy)
-	if err := enforceDeviceIdentity("127.0.0.1:50071", observedDeviceIdentity{mTLS: true, orgID: 7}); err != nil {
-		t.Fatalf("an asset-less same-org answer under a legacy pin: %v", err)
-	}
-	if pins := readPins(); !reflect.DeepEqual(pins, legacy) {
-		t.Fatalf("pins = %+v, want the legacy pins untouched", pins)
-	}
-	if err := enforceDeviceIdentity("127.0.0.1:50051", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "43"}); !errors.Is(err, errDeviceIdentityRefused) {
-		t.Fatalf("asset 43 after an asset-less match elsewhere: got %v, want a refusal", err)
-	}
-
-	readPins = writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA})
-	if err := enforceDeviceIdentityAt("vm:dev", []string{"127.0.0.1:50051"}, observedDeviceIdentity{mTLS: true, orgID: 7}); err != nil {
-		t.Fatal(err)
-	}
-	pins := readPins()
-	if _, ok := pins["127.0.0.1:50051"]; ok {
-		t.Error("an asset-less VM answer pinned its endpoint")
-	}
-	if pins["127.0.0.1"].AssetID != "42" {
-		t.Error("an asset-less VM answer retired a bare pin")
-	}
-}
-
-// The endpoint reaches the pin check from every front door a VM's forwarded
-// address can be dialled through.
-func TestEveryVMFrontDoorPinsItsEndpoint(t *testing.T) {
+// T-b/T-d through every door: the typed front doors (connectToAgent,
+// resolveTarget) file the bare pin beside vm:<name>; the alias does not.
+func TestTypedFrontDoorsFileTheBarePinTheAliasDoesNot(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		connect func(ctx context.Context) error
+		name     string
+		connect  func(ctx context.Context) error
+		wantBare bool
 	}{
 		{"vm alias", func(ctx context.Context) error {
 			conn, _, err := connectSimulatorAgent(ctx, "dev", "127.0.0.1:50151")
@@ -702,7 +695,7 @@ func TestEveryVMFrontDoorPinsItsEndpoint(t *testing.T) {
 				conn.Close()
 			}
 			return err
-		}},
+		}, false},
 		{"connectToAgent", func(ctx context.Context) error {
 			deviceFlag = "127.0.0.1:50151"
 			conn, err := connectToAgent(ctx, SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive(), DisableSessionBroker())
@@ -710,7 +703,7 @@ func TestEveryVMFrontDoorPinsItsEndpoint(t *testing.T) {
 				conn.Close()
 			}
 			return err
-		}},
+		}, true},
 		{"resolveTarget", func(ctx context.Context) error {
 			deviceFlag = "127.0.0.1:50151"
 			sel, err := resolveTarget(ctx, SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive(), DisableSessionBroker())
@@ -718,7 +711,7 @@ func TestEveryVMFrontDoorPinsItsEndpoint(t *testing.T) {
 				sel.Close()
 			}
 			return err
-		}},
+		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			restoreDeviceGlobals(t)
@@ -732,9 +725,7 @@ func TestEveryVMFrontDoorPinsItsEndpoint(t *testing.T) {
 				return &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: target.Addr,
 					AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}}}, nil, nil
 			}
-			observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity {
-				return observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}
-			}
+			observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity { return assetObs("42") }
 			discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
 			t.Cleanup(func() {
 				dialAgentLadderFn, observeDeviceIdentityFn, discoverLANDevices = origLadder, origObserve, origDiscover
@@ -745,77 +736,32 @@ func TestEveryVMFrontDoorPinsItsEndpoint(t *testing.T) {
 			if err := tc.connect(ctx); err != nil {
 				t.Fatal(err)
 			}
+			want := map[string]string{"vm:dev": "42"}
+			if tc.wantBare {
+				want["127.0.0.1"] = "42"
+			}
 			pins := readPins()
-			if pins["vm:dev"].AssetID != "42" || pins["127.0.0.1:50151"].AssetID != "42" {
-				t.Fatalf("pins = %+v, want vm:dev and 127.0.0.1:50151 both naming asset 42", pins)
+			if len(pins) != len(want) {
+				t.Fatalf("pins = %+v, want exactly %v", pins, want)
+			}
+			for key, asset := range want {
+				if pins[key].AssetID != asset {
+					t.Errorf("pin %s = %+v, want asset %s", key, pins[key], asset)
+				}
 			}
 		})
 	}
 }
 
-// R17, OPEN 1: an mTLS VM whose certificate names no asset still pins its
-// endpoint when nothing else governs it, so an unprovisioned answer there is
-// refused once the VM stops — as the bare 127.0.0.1 key refused it.
-func TestAnAssetlessVMStillPinsItsEndpoint(t *testing.T) {
-	stubNonInteractive(t)
-	setPinCache(t)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{})
-	const addr = "127.0.0.1:50051"
-	stubLoopbackVMs(t, map[int]string{50051: "dev"})
-	if err := connectAsVMAt(addr, observedDeviceIdentity{mTLS: true, orgID: 7}); err != nil {
-		t.Fatal(err)
-	}
-	pins := readPins()
-	if pins["vm:dev"].OrgID != 7 || pins[addr].OrgID != 7 {
-		t.Fatalf("pins = %+v, want vm:dev and %s both pinned to org 7", pins, addr)
-	}
-	stubLoopbackVMs(t, nil) // the VM stops
-	if target := newDialTarget(pinKeyForAddr(addr), addr); !target.pinned() {
-		t.Fatalf("the stopped VM's endpoint is unpinned: %+v", target)
-	}
-	if err := enforceDeviceIdentity(pinKeyForAddr(addr), observedDeviceIdentity{}); !errors.Is(err, errDeviceIdentityRefused) {
-		t.Fatalf("an unprovisioned answer on the stopped VM's endpoint: got %v, want a refusal", err)
-	}
-}
-
-// R17, OPEN 2: an identity only ever verified under vm:<name> must not become
-// the endpoint's own pin where a legacy pin governs that endpoint — it would
-// outrank the pin the old CLI applied there.
-func TestVMEndpointIsNotFiledWhereALegacyPinGoverns(t *testing.T) {
-	stubNonInteractive(t)
-	setPinCache(t)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": pinA})
-	const addr = "127.0.0.1:50061"
-	stubLoopbackVMs(t, map[int]string{50061: "dev2"})
-	if err := connectAsVMAt(addr, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}); err != nil {
-		t.Fatalf("vm:dev2 is judged under its own key: %v", err)
-	}
-	pins := readPins()
-	if _, ok := pins[addr]; ok {
-		t.Fatalf("pins = %+v: the endpoint got its own pin over the legacy pin that governs it", pins)
-	}
-	if pins["vm:dev2"].AssetID != "99" || pins["127.0.0.1"].AssetID != "42" {
-		t.Fatalf("pins = %+v, want vm:dev2=99 and the bare 42 kept", pins)
-	}
-	stubLoopbackVMs(t, nil) // the VM stops
-	target := newDialTarget(pinKeyForAddr(addr), addr)
-	if target.PinnedKey != "127.0.0.1" || target.Expected == nil || target.Expected.EntityID != "42" {
-		t.Fatalf("stopped VM's endpoint is not governed by the bare pin: %+v", target)
-	}
-	if err := enforceDeviceIdentity(pinKeyForAddr(addr), observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}); !errors.Is(err, errDeviceIdentityRefused) {
-		t.Fatalf("asset 99 at %s under the bare 42 pin: got %v, want a refusal", addr, err)
-	}
-}
-
-// R18, OPEN 3: a VM is never on USB. A typed address keyed as vm:<name> whose
-// ladder fails must not fall back to a USB gadget that merely reports that
-// name — it would be judged under a key that consults no loopback pin.
+// R18: a VM is never on USB. A typed address keyed as vm:<name> whose ladder
+// fails must not fall back to a USB gadget that merely reports that name — it
+// would be judged under a key that consults no loopback pin.
 func TestNoUSBFallbackForAVMKey(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		obs  observedDeviceIdentity
 	}{
-		{"same-org gadget", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}},
+		{"same-org gadget", assetObs("99")},
 		{"unprovisioned gadget", observedDeviceIdentity{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -866,7 +812,7 @@ func TestNoUSBFallbackForAVMKey(t *testing.T) {
 }
 
 // R18: a connection the USB-direct fallback substituted is not the dialled
-// endpoint, so it can never be recorded as one.
+// endpoint, so it is never treated as the typed address.
 func TestUSBFallbackConnectionIsNotTheDialledEndpoint(t *testing.T) {
 	restoreDeviceGlobals(t)
 	stubNonInteractive(t)
@@ -935,110 +881,10 @@ func connectTypedLoopback(t *testing.T, addr string, obs observedDeviceIdentity)
 	return dialled, err
 }
 
-// R21, B1: a VM that names its asset while an org-only legacy pin covers its
-// endpoint gets that asset pinned at the endpoint (the org-only pin names no
-// device, so it cannot block it) — otherwise, once the VM stops, the endpoint
-// constrains only the organisation and any same-org device is adopted there.
-func TestVMAssetIsPinnedAtItsEndpointOverAnOrgOnlyLegacyPin(t *testing.T) {
-	restoreDeviceGlobals(t)
-	stubNonInteractive(t)
-	setPinCache(t)
-	orgOnly := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443"}
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1": orgOnly})
-	const addr = "127.0.0.1:50051"
-
-	stubLoopbackVMs(t, map[int]string{50051: "dev"})
-	if _, err := connectTypedLoopback(t, addr, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-		t.Fatalf("the running VM was refused: %v", err)
-	}
-	pins := readPins()
-	if pins["vm:dev"].AssetID != "42" || pins[addr].AssetID != "42" {
-		t.Fatalf("pins = %+v, want vm:dev and %s both naming asset 42", pins, addr)
-	}
-	if pin, ok := pins["127.0.0.1"]; !ok || pin.AssetID != "" {
-		t.Errorf("the org-only bare pin = %+v (present %v), want it kept (R19)", pin, ok)
-	}
-
-	stubLoopbackVMs(t, nil) // the VM stops
-	target, err := connectTypedLoopback(t, addr, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"})
-	if !errors.Is(err, errDeviceIdentityRefused) {
-		t.Fatalf("asset 99 on the stopped VM's endpoint: got %v, want a refusal", err)
-	}
-	if target.Expected == nil || target.Expected.EntityID != "42" || !target.pinned() {
-		t.Fatalf("dial target = %+v, want Expected asset 42 and the plaintext rung blocked", target)
-	}
-}
-
-// R21, B1b: an endpoint pinned org-only by an asset-less VM answer is upgraded
-// in place once the VM names its asset.
-func TestVMAssetUpgradesItsOrgOnlyEndpointPin(t *testing.T) {
-	restoreDeviceGlobals(t)
-	stubNonInteractive(t)
-	setPinCache(t)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{})
-	const addr = "127.0.0.1:50051"
-
-	stubLoopbackVMs(t, map[int]string{50051: "dev"})
-	if _, err := connectTypedLoopback(t, addr, observedDeviceIdentity{mTLS: true, orgID: 7}); err != nil {
-		t.Fatal(err)
-	}
-	if pins := readPins(); pins[addr].OrgID != 7 || pins[addr].AssetID != "" {
-		t.Fatalf("pins = %+v, want %s pinned org-only first", pins, addr)
-	}
-	if _, err := connectTypedLoopback(t, addr, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-		t.Fatal(err)
-	}
-	pins := readPins()
-	if pins["vm:dev"].AssetID != "42" || pins[addr].AssetID != "42" {
-		t.Fatalf("pins = %+v, want vm:dev and %s upgraded to asset 42", pins, addr)
-	}
-	if pins[addr].Source != config.PinSourceLAN {
-		t.Errorf("endpoint pin source = %q, want it kept (%q)", pins[addr].Source, config.PinSourceLAN)
-	}
-
-	stubLoopbackVMs(t, nil) // the VM stops
-	target, err := connectTypedLoopback(t, addr, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"})
-	if !errors.Is(err, errDeviceIdentityRefused) {
-		t.Fatalf("asset 99 on the stopped VM's endpoint: got %v, want a refusal", err)
-	}
-	if target.Expected == nil || target.Expected.EntityID != "42" {
-		t.Fatalf("dial target = %+v, want Expected asset 42", target)
-	}
-}
-
-// R22: only the VM's plaintext agent port is keyed as the VM. A dial at its
-// mTLS forward (AgentPort+1) also tries AgentPort+2, which QEMU does not
-// forward, so it is keyed per endpoint — and pinned to the VM's identity by
-// any connection to the VM, so an answer from AgentPort+2 is refused.
-func TestVMMTLSForwardIsKeyedAndPinnedAsAnEndpoint(t *testing.T) {
-	stubNonInteractive(t)
-	setPinCache(t)
-	stubLoopbackVMs(t, map[int]string{50151: "dev"})
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"vm:dev": pinA})
-	const mtls = "127.0.0.1:50152"
-	if key := pinKeyForAddr(mtls); key != mtls {
-		t.Fatalf("pinKeyForAddr(%q) = %q, want the endpoint", mtls, key)
-	}
-	if err := connectAsVMAt("127.0.0.1:50151", observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}); err != nil {
-		t.Fatal(err)
-	}
-	pins := readPins()
-	if pins["127.0.0.1:50151"].AssetID != "42" || pins[mtls].AssetID != "42" {
-		t.Fatalf("pins = %+v, want both of the VM's forwards naming asset 42", pins)
-	}
-	target := newDialTarget(pinKeyForAddr(mtls), mtls)
-	if !target.pinned() || target.Expected == nil || target.Expected.EntityID != "42" {
-		t.Fatalf("dial target for %s = %+v, want Expected 42 and the plaintext rung blocked", mtls, target)
-	}
-	// As if AgentPort+2 answered the ladder's port+1 rung.
-	if err := enforceDeviceIdentity(pinKeyForAddr(mtls), observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}); !errors.Is(err, errDeviceIdentityRefused) {
-		t.Fatalf("asset 99 at %s: got %v, want a refusal", mtls, err)
-	}
-}
-
-// R22: a VM reconnect after an agent update passes conn.Addr, which is the
+// R25: a VM reconnect after an agent update passes conn.Addr, which is the
 // mTLS forward. It is dialled at the plaintext forward instead, so the ladder
-// only ever tries the two ports QEMU forwards, and both are pinned.
+// only ever tries the two ports QEMU forwards; the alias path pins only
+// vm:<name>.
 func TestVMReconnectAtItsMTLSForwardDialsThePlaintextForward(t *testing.T) {
 	stubNonInteractive(t)
 	setPinCache(t)
@@ -1051,9 +897,7 @@ func TestVMReconnectAtItsMTLSForwardDialsThePlaintextForward(t *testing.T) {
 		return &grpcclient.AgentConnection{Host: "127.0.0.1", Addr: target.Addr,
 			AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{}}}, nil, nil
 	}
-	observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity {
-		return observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}
-	}
+	observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity { return assetObs("42") }
 	t.Cleanup(func() { dialAgentLadderFn, observeDeviceIdentityFn = origLadder, origObserve })
 
 	conn, _, err := connectSimulatorAgent(context.Background(), "dev", "127.0.0.1:50152")
@@ -1064,9 +908,8 @@ func TestVMReconnectAtItsMTLSForwardDialsThePlaintextForward(t *testing.T) {
 	if !reflect.DeepEqual(dialled, []string{"127.0.0.1:50151"}) {
 		t.Fatalf("dialled %q, want only the plaintext forward 127.0.0.1:50151", dialled)
 	}
-	pins := readPins()
-	if pins["vm:dev"].AssetID != "42" || pins["127.0.0.1:50151"].AssetID != "42" || pins["127.0.0.1:50152"].AssetID != "42" {
-		t.Fatalf("pins = %+v, want vm:dev and both forwards naming asset 42", pins)
+	if pins := readPins(); len(pins) != 1 || pins["vm:dev"].AssetID != "42" {
+		t.Fatalf("pins = %+v, want only vm:dev naming asset 42", pins)
 	}
 }
 
@@ -1172,14 +1015,13 @@ func assertPlaintextRungRefused(t *testing.T, target dialTarget) {
 	}
 }
 
-// R24 (C1): one agent answers a typed 127.0.0.1:P on P (plaintext) and P+1
-// (mTLS), so conn.Addr is P+1 after an authenticated connect — and the
-// reconnect after an agent update (device update, os update, the connect-time
-// update offer) dials exactly that address. It must be pinned to the identity
-// the connection just verified, as the single bare 127.0.0.1 key pinned it on
-// main: otherwise the plaintext rung is open there, and any same-org
-// certificate is accepted on P+1 or P+2, for the rest of the command.
-func TestTypedLoopbackReconnectAtTheMTLSPortStaysPinned(t *testing.T) {
+// T-e: a non-VM loopback agent reached at typed 127.0.0.1:P answers on P+1
+// once provisioned, so conn.Addr is P+1 — and the reconnect after an agent
+// update (device update, os update, the connect-time update offer) dials
+// exactly that address. Both are keyed by the one bare 127.0.0.1 pin, exactly
+// as on main: the reconnect is pinned (plaintext rung blocked, another device
+// refused) and nothing is filed under a port.
+func TestNonVMLoopbackReconnectStaysUnderTheBarePin(t *testing.T) {
 	orgOnly := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443"}
 	for _, tc := range []struct {
 		name string
@@ -1197,96 +1039,64 @@ func TestTypedLoopbackReconnectAtTheMTLSPortStaysPinned(t *testing.T) {
 			readPins := writePinTestConfig(t, tc.pins)
 			const typed, mtls = "127.0.0.1:50051", "127.0.0.1:50052"
 
-			conn, _, err := connectTypedAnsweringAtMTLS(t, typed, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"})
+			conn, first, err := connectTypedAnsweringAtMTLS(t, typed, assetObs("42"))
 			if err != nil {
 				t.Fatalf("first connect: %v", err)
 			}
 			defer conn.Close()
+			if first.PinKey != "127.0.0.1" {
+				t.Fatalf("typed %s dialled under %q, want the bare host", typed, first.PinKey)
+			}
 			if conn.Addr != mtls {
 				t.Fatalf("conn.Addr = %q, want the mTLS port %s", conn.Addr, mtls)
 			}
+			if pins := readPins(); len(pins) != 1 || pins["127.0.0.1"].AssetID != "42" {
+				t.Fatalf("pins = %+v, want only the bare 127.0.0.1 naming asset 42", pins)
+			}
 
-			targets, _, err := reconnectAfterUpdate(t, conn, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"})
+			targets, simulatorPath, err := reconnectAfterUpdate(t, conn, assetObs("42"))
 			if err != nil {
 				t.Fatalf("reconnect: %v", err)
+			}
+			if len(simulatorPath) != 0 {
+				t.Fatalf("a non-VM connection reconnected through the VM path %q", simulatorPath)
 			}
 			if len(targets) == 0 {
 				t.Fatal("the reconnect never dialled")
 			}
 			target := targets[0]
-			if target.Addr != mtls {
-				t.Fatalf("reconnect dialled %q, want %s (conn.Addr)", target.Addr, mtls)
+			if target.Addr != mtls || target.PinKey != "127.0.0.1" || target.PinnedKey != "127.0.0.1" {
+				t.Fatalf("reconnect target = %+v, want %s under the bare 127.0.0.1 pin", target, mtls)
 			}
 			if !target.pinned() || target.Expected == nil || target.Expected.EntityID != "42" {
 				t.Errorf("reconnect target at %s = %+v: want it pinned to asset 42 (plaintext blocked, another device refused)", mtls, target)
 			}
 			assertPlaintextRungRefused(t, target)
-
-			pins := readPins()
-			if pins[typed].AssetID != "42" || pins[mtls].AssetID != "42" {
-				t.Errorf("pins = %+v, want %s and %s both naming asset 42", pins, typed, mtls)
+			for _, obs := range []observedDeviceIdentity{{}, assetObs("99")} {
+				if err := enforceDeviceIdentity(pinKeyForAddr(mtls), obs); !errors.Is(err, errDeviceIdentityRefused) {
+					t.Errorf("%s answered as %+v: got %v, want a refusal", mtls, obs, err)
+				}
 			}
-			// Unprovisioned first: an accepted asset 99 would be recorded as a
-			// first use and then refuse it for the wrong reason.
-			for _, key := range []string{typed, mtls} {
-				if err := enforceDeviceIdentity(key, observedDeviceIdentity{}); !errors.Is(err, errDeviceIdentityRefused) {
-					t.Errorf("an unprovisioned answer at %s: got %v, want a refusal", key, err)
-				}
-				if err := enforceDeviceIdentity(key, observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "99"}); !errors.Is(err, errDeviceIdentityRefused) {
-					t.Errorf("asset 99 at %s: got %v, want a refusal", key, err)
-				}
+			if pins := readPins(); len(pins) != 1 || pins["127.0.0.1"].AssetID != "42" {
+				t.Fatalf("pins = %+v, want only the bare 127.0.0.1 naming asset 42", pins)
 			}
 		})
 	}
 }
 
-// R24: the endpoint that answered is recorded only as R21 records a VM's
-// forwards — a first use or an asset adoption. A pin there naming another
-// device is never overwritten, and a connection some fallback substituted for
-// the dial records nothing beside its own key.
-func TestAnsweredEndpointIsRecordedOnlyWhereNothingElseApplies(t *testing.T) {
-	stubNonInteractive(t)
-	setPinCache(t)
-	stubLoopbackVMs(t, nil)
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{"127.0.0.1:50052": pinB})
-	conn := &grpcclient.AgentConnection{Addr: "127.0.0.1:50052"}
-	orig := observeDeviceIdentityFn
-	observeDeviceIdentityFn = func(*grpcclient.AgentConnection) observedDeviceIdentity {
-		return observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}
-	}
-	t.Cleanup(func() { observeDeviceIdentityFn = orig })
-
-	if err := enforceDevicePinAt("127.0.0.1:50051", "127.0.0.1:50051", conn); err != nil {
-		t.Fatalf("a first use at :50051 was refused over another endpoint's pin: %v", err)
-	}
-	pins := readPins()
-	if pins["127.0.0.1:50051"].AssetID != "42" || pins["127.0.0.1:50052"].AssetID != "43" {
-		t.Fatalf("pins = %+v, want :50051=42 and :50052's own pin (43) untouched", pins)
-	}
-
-	readPins = writePinTestConfig(t, map[string]config.DevicePin{})
-	if err := enforceDevicePinAt("127.0.0.1:50051", "", conn); err != nil {
-		t.Fatal(err)
-	}
-	if pins := readPins(); len(pins) != 1 || pins["127.0.0.1:50051"].AssetID != "42" {
-		t.Fatalf("pins = %+v, want only :50051 — a substituted connection answered nowhere that was dialled", pins)
-	}
-}
-
-// R25 (C2, parked A1/A5): a FIRST connection typed at a running VM's mTLS
-// forward, 127.0.0.1:A+1, is dialled at the VM's agent forward A and keyed
-// vm:<name>, so it records both forwards like any connection to the VM.
-// Keyed as the endpoint A+1 instead, it moved (or adopted) the legacy bare pin
-// onto A+1 alone, and once the VM stopped, another local account binding A was
-// accepted where main refused it.
+// T-f / R25: a connection typed at a running VM's mTLS forward, 127.0.0.1:A+1,
+// is dialled at the VM's agent forward A and keyed vm:<name>, like a dial of A
+// or the alias; and, typed, it files the bare 127.0.0.1 pin as main did. Once
+// the VM stops, A and A+1 key as the bare host again and that pin refuses
+// another device and an unprovisioned one at both.
 func TestTypedMTLSForwardOfARunningVMConnectsAsTheVM(t *testing.T) {
 	orgOnly := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443"}
 	for _, tc := range []struct {
 		name string
 		pins map[string]config.DevicePin
 	}{
-		{"legacy bare pin (A1)", map[string]config.DevicePin{"127.0.0.1": pinA}},
-		{"legacy org-only bare pin (A5)", map[string]config.DevicePin{"127.0.0.1": orgOnly}},
+		{"legacy bare pin", map[string]config.DevicePin{"127.0.0.1": pinA}},
+		{"legacy org-only bare pin", map[string]config.DevicePin{"127.0.0.1": orgOnly}},
 		{"fresh user", map[string]config.DevicePin{}},
 	} {
 		for _, door := range []string{"connectToAgent", "resolveTarget"} {
@@ -1296,19 +1106,18 @@ func TestTypedMTLSForwardOfARunningVMConnectsAsTheVM(t *testing.T) {
 				setPinCache(t)
 				readPins := writePinTestConfig(t, tc.pins)
 				const agent, mtls = "127.0.0.1:50051", "127.0.0.1:50052"
-				obs42 := observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "42"}
 
 				stubLoopbackVMs(t, map[int]string{50051: "dev"})
 				var target dialTarget
 				var err error
 				if door == "connectToAgent" {
 					var conn *grpcclient.AgentConnection
-					conn, target, err = connectTypedAnsweringAtMTLS(t, mtls, obs42)
+					conn, target, err = connectTypedAnsweringAtMTLS(t, mtls, assetObs("42"))
 					if conn != nil {
 						conn.Close()
 					}
 				} else {
-					target, err = resolveTypedAnsweringAtMTLS(t, mtls, obs42)
+					target, err = resolveTypedAnsweringAtMTLS(t, mtls, assetObs("42"))
 				}
 				if err != nil {
 					t.Fatalf("the running VM was refused: %v", err)
@@ -1317,20 +1126,20 @@ func TestTypedMTLSForwardOfARunningVMConnectsAsTheVM(t *testing.T) {
 					t.Errorf("typed %s dialled %q under %q, want %s under vm:dev", mtls, target.Addr, target.PinKey, agent)
 				}
 				pins := readPins()
-				if pins["vm:dev"].AssetID != "42" || pins[agent].AssetID != "42" || pins[mtls].AssetID != "42" {
-					t.Errorf("pins = %+v, want vm:dev and both forwards naming asset 42", pins)
+				if len(pins) != 2 || pins["vm:dev"].AssetID != "42" || pins["127.0.0.1"].AssetID != "42" {
+					t.Errorf("pins = %+v, want exactly vm:dev and the bare 127.0.0.1 naming asset 42", pins)
 				}
 
 				stubLoopbackVMs(t, nil) // the VM stops
 				for _, addr := range []string{agent, mtls} {
 					key := pinKeyForAddr(addr)
+					if key != "127.0.0.1" {
+						t.Errorf("stopped VM's %s keys as %q, want the bare host", addr, key)
+					}
 					if target := newDialTarget(key, addr); !target.pinned() || target.Expected == nil || target.Expected.EntityID != "42" {
 						t.Errorf("stopped VM's %s: dial target %+v, want Expected 42 and the plaintext rung blocked", addr, target)
 					}
-					// Unprovisioned first: an accepted asset 99 would be
-					// recorded as a first use and then refuse it for the
-					// wrong reason.
-					for _, obs := range []observedDeviceIdentity{{}, {mTLS: true, orgID: 7, assetID: "99"}} {
+					for _, obs := range []observedDeviceIdentity{{}, assetObs("99")} {
 						if err := enforceDeviceIdentity(key, obs); !errors.Is(err, errDeviceIdentityRefused) {
 							t.Errorf("stopped VM's %s answered as %+v: got %v, want a refusal", addr, obs, err)
 						}
@@ -1369,12 +1178,12 @@ func resolveTypedAnsweringAtMTLS(t *testing.T, addr string, obs observedDeviceId
 
 // R25: the reconnect path (waitForAgentRestart → connectWithAutoTLS), and
 // every other direct dial through connectWithAutoTLS, dials a running VM's
-// mTLS forward as the VM too — never under the endpoint key, whose ladder
-// would also try A+2, which QEMU does not forward.
+// mTLS forward as the VM too — never under the bare key, and never with a
+// ladder that would also try A+2, which QEMU does not forward.
 func TestDirectDialOfARunningVMsMTLSForwardIsKeyedAsTheVM(t *testing.T) {
 	setPinCache(t)
 	stubLoopbackVMs(t, map[int]string{50051: "dev"})
-	setPinConfig(t, map[string]config.DevicePin{"vm:dev": pinA, "127.0.0.1:50052": pinB})
+	setPinConfig(t, map[string]config.DevicePin{"vm:dev": pinA, "127.0.0.1": pinB})
 	var targets []dialTarget
 	origLadder := dialAgentLadderFn
 	dialAgentLadderFn = func(_ context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
@@ -1402,6 +1211,9 @@ func TestDirectDialOfARunningVMsMTLSForwardIsKeyedAsTheVM(t *testing.T) {
 	if got := dialPinKeyForDevice("127.0.0.1:50052"); got != "vm:dev" {
 		t.Errorf("dialPinKeyForDevice(127.0.0.1:50052) = %q, want vm:dev (the key its dial is checked under)", got)
 	}
+	if got := dialPinKeyForDevice("127.0.0.1:50061"); got != "127.0.0.1" {
+		t.Errorf("dialPinKeyForDevice(127.0.0.1:50061) = %q, want the bare host", got)
+	}
 }
 
 // R27(1): a reconnect answered by a device that is refused must say so at
@@ -1413,7 +1225,7 @@ func TestWaitForAgentRestartReturnsAnIdentityRefusalImmediately(t *testing.T) {
 	origLadder := dialAgentLadderFn
 	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
 		calls++
-		return nil, nil, refuseDevicePin(devicePinDiagnostic{hostname: "127.0.0.1:50052", heading: "Connection blocked."})
+		return nil, nil, refuseDevicePin(devicePinDiagnostic{hostname: "127.0.0.1", heading: "Connection blocked."})
 	}
 	t.Cleanup(func() { dialAgentLadderFn = origLadder })
 	stubLoopbackVMs(t, nil)
@@ -1460,20 +1272,19 @@ func TestWaitForAgentRestartStillRetriesAnAgentThatIsNotBackYet(t *testing.T) {
 	}
 }
 
-// R27(2), I2: VM b runs on the port where VM a left endpoint pins. A typed
-// connection is keyed vm:b, and so must its reconnect after an agent update
-// be: it goes through the VM's own path, not through conn.Addr — the mTLS
-// forward, whose stale pin names VM a and would refuse b until a timeout.
+// R27(2): VM b runs on the port where an earlier VM a was reached, and the bare
+// 127.0.0.1 pin names VM a. A typed connection is keyed vm:b, and so must its
+// reconnect after an agent update be: it goes through the VM's own path, by
+// name, not through conn.Addr (the mTLS forward). VM a's bare pin is left as
+// it was — recording never overwrites it.
 func TestTypedVMConnectionReconnectsThroughTheVM(t *testing.T) {
 	restoreDeviceGlobals(t)
 	stubNonInteractive(t)
 	setPinCache(t)
 	stale := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"}
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{
-		"vm:a": stale, "127.0.0.1:50051": stale, "127.0.0.1:50052": stale,
-	})
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{"vm:a": stale, "127.0.0.1": stale})
 	stubLoopbackVMs(t, map[int]string{50051: "b"})
-	obs43 := observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "43"}
+	obs43 := assetObs("43")
 
 	conn, _, err := connectTypedAnsweringAtMTLS(t, "127.0.0.1:50051", obs43)
 	if err != nil {
@@ -1495,91 +1306,8 @@ func TestTypedVMConnectionReconnectsThroughTheVM(t *testing.T) {
 		t.Fatalf("reconnect targets = %+v, want 127.0.0.1:50051 under vm:b (asset 43)", targets)
 	}
 	pins := readPins()
-	if pins["vm:b"].AssetID != "43" || pins["127.0.0.1:50051"].AssetID != "42" || pins["127.0.0.1:50052"].AssetID != "42" {
-		t.Fatalf("pins = %+v, want vm:b=43 and VM a's endpoint pins untouched (never overwritten)", pins)
-	}
-}
-
-// R27(3): `wendy device unpin vm:<name>` — the recipe for replacing a VM —
-// also clears the endpoint pins its connections filed at 127.0.0.1, but only
-// those naming the same device; and `unpin 127.0.0.1:PORT` still clears a
-// stale endpoint pin while no VM runs there.
-func TestUnpinVMClearsItsSameIdentityEndpointPins(t *testing.T) {
-	stubLoopbackVMs(t, nil)
-	setPinCache(t)
-	orgOnly := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443"}
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{
-		"vm:a":            pinA,
-		"127.0.0.1:50051": pinA,
-		"127.0.0.1:50052": pinA,
-		"127.0.0.1:50061": pinB, // another device
-		"localhost:50051": pinA, // another address spelling: not a VM forward
-		"127.0.0.1":       pinA, // a bare legacy pin: not an endpoint
-		"vm:b":            orgOnly,
-		"127.0.0.1:50071": orgOnly,
-	})
-	out := runUnpin(t, "vm:a")
-	pins := readPins()
-	for _, gone := range []string{"vm:a", "127.0.0.1:50051", "127.0.0.1:50052"} {
-		if _, ok := pins[gone]; ok {
-			t.Errorf("unpin vm:a left %s", gone)
-		}
-		if !strings.Contains(out, `"`+gone+`"`) {
-			t.Errorf("unpin vm:a did not report clearing %s:\n%s", gone, out)
-		}
-	}
-	for _, kept := range []string{"127.0.0.1:50061", "localhost:50051", "127.0.0.1", "vm:b", "127.0.0.1:50071"} {
-		if _, ok := pins[kept]; !ok {
-			t.Errorf("unpin vm:a cleared %s, which it does not govern", kept)
-		}
-	}
-
-	// An org-only VM pin names no device, so no endpoint is "the same".
-	runUnpin(t, "vm:b")
-	if _, ok := readPins()["127.0.0.1:50071"]; !ok {
-		t.Error("unpin vm:b (org-only) cleared an org-only endpoint pin")
-	}
-
-	// A stale endpoint pin with no VM running there is cleared by address.
-	runUnpin(t, "127.0.0.1:50061")
-	if _, ok := readPins()["127.0.0.1:50061"]; ok {
-		t.Error("unpin 127.0.0.1:50061 left the stale endpoint pin")
-	}
-}
-
-// R24: which endpoints a connection records beside its own key. Only a VM key
-// or a port-qualified loopback key records any; the answered endpoint is added
-// only when it is another port-qualified loopback key (never vm:<name>, never
-// a non-loopback host); a substituted connection records none.
-func TestEndpointPinKeys(t *testing.T) {
-	stubLoopbackVMs(t, map[int]string{50051: "dev"})
-	for _, tc := range []struct {
-		key, dialled, answered string
-		want                   []string
-	}{
-		{"127.0.0.1:50061", "127.0.0.1:50061", "127.0.0.1:50062", []string{"127.0.0.1:50062"}},
-		{"localhost:50061", "localhost:50061", "[::1]:50062", []string{"[::1]:50062"}},
-		{"localhost:50061", "localhost:50061", "127.0.0.1:50062", []string{"127.0.0.1:50062"}},
-		// Answered where it was dialled: nothing beside the key itself.
-		{"127.0.0.1:50061", "127.0.0.1:50061", "127.0.0.1:50061", nil},
-		// A substituted connection answered nowhere that was dialled.
-		{"127.0.0.1:50061", "", "127.0.0.1:50062", nil},
-		// An answering port that keys as a running VM is never filed.
-		{"localhost:50050", "localhost:50050", "127.0.0.1:50051", nil},
-		// Non-loopback keys, and bare hosts, record nothing extra.
-		{"rpi5.local", "rpi5.local:50051", "10.0.0.5:50052", nil},
-		{"rpi5.local", "rpi5.local:50051", "127.0.0.1:50052", nil},
-		{"10.0.0.5", "10.0.0.5:50051", "10.0.0.5:50052", nil},
-		{"127.0.0.1", "127.0.0.1:50061", "127.0.0.1:50062", nil},
-		// A VM: both forwards, the answered one not repeated.
-		{"vm:dev", "127.0.0.1:50051", "127.0.0.1:50052", []string{"127.0.0.1:50051", "127.0.0.1:50052"}},
-		// A VM the store cannot place: the address dialled and the one that answered.
-		{"vm:other", "127.0.0.1:50071", "127.0.0.1:50072", []string{"127.0.0.1:50071", "127.0.0.1:50072"}},
-		{"vm:dev", "", "127.0.0.1:50052", nil},
-	} {
-		if got := endpointPinKeys(tc.key, tc.dialled, tc.answered); !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("endpointPinKeys(%q, %q, %q) = %q, want %q", tc.key, tc.dialled, tc.answered, got, tc.want)
-		}
+	if len(pins) != 3 || pins["vm:b"].AssetID != "43" || pins["vm:a"].AssetID != "42" || pins["127.0.0.1"].AssetID != "42" {
+		t.Fatalf("pins = %+v, want vm:b=43 and VM a's pins (vm:a, 127.0.0.1) untouched", pins)
 	}
 }
 
@@ -1592,26 +1320,5 @@ func TestVMForwardDialAddrLeavesAnotherVMsAgentPortAlone(t *testing.T) {
 	}
 	if key := pinKeyForAddr(vmForwardDialAddr("127.0.0.1:50052")); key != "vm:b" {
 		t.Fatalf("key = %q, want vm:b", key)
-	}
-}
-
-// R27(3): the endpoint pins go only with the vm:<name> pin itself. When a
-// cloud pin under another of the VM's names governs instead, naming another
-// device, the unpin leaves vm:<name> (it names a different device than the
-// one being unpinned), and so leaves the endpoint pins naming it too.
-func TestUnpinVMKeepsEndpointPinsWhenItKeepsTheVMPin(t *testing.T) {
-	stubLoopbackVMs(t, nil)
-	cloud99 := config.DevicePin{OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "99", Source: config.PinSourceCloud}
-	readPins := writePinTestConfig(t, map[string]config.DevicePin{
-		"vm:a": pinA, "a-alias": cloud99, "127.0.0.1:50051": pinA,
-	})
-	setPinCache(t, discoverycache.Entry{ID: "vm-a", DisplayName: "a-alias", Hostname: "vm:a"})
-	runUnpin(t, "vm:a")
-	pins := readPins()
-	if _, ok := pins["a-alias"]; ok {
-		t.Fatalf("pins = %+v: the governing alias pin was not cleared (test precondition)", pins)
-	}
-	if pins["vm:a"].AssetID != "42" || pins["127.0.0.1:50051"].AssetID != "42" {
-		t.Fatalf("pins = %+v, want vm:a and its endpoint pin both kept", pins)
 	}
 }

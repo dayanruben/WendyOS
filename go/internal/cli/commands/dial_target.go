@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -178,30 +177,28 @@ func governingPin(pinKey string) (config.DevicePin, string, bool) {
 // ordinary DHCP churn — but an address the user typed as a literal IP is the
 // name they asked for, so it keys a pin like any other host.
 //
-// Loopback is the one exception, because there the host names no device:
-// every local VM and every port forward answers on it. A loopback address is
-// keyed per endpoint, by its normalised host and port (localhost:50051,
-// 127.0.0.1:50051), with one refinement: the literal text 127.0.0.1 — the one
-// address QEMU's user-mode forward binds — on the forwarded plaintext agent
-// port of a running local VM is keyed as that VM, vm:<name>, the key its alias
-// already uses (not the mTLS port beside it; see runningVMOnLoopbackPort).
-// Nothing else is: localhost can resolve to ::1 first; ::1, 127.0.0.x and
-// IPv4-mapped addresses are other sockets, which something other than the VM
-// can answer on; and "127.0.0.1." or a padded " 127.0.0.1" is not dialled as
-// that address at all (the resolver looks it up as a name).
+// Loopback keeps the host key too: every local agent and port forward answers
+// on it, but every alternative was worse -- an empty key reads as "unpinned"
+// and disarms the guard against reaching a previously-authenticated host over
+// plaintext, and a port-qualified key orphans the pins existing users already
+// hold under the bare host, turning a mismatch into a silent first use. So
+// 127.0.0.1:50061, localhost:50051 and [::1]:50051 are keyed 127.0.0.1,
+// localhost and ::1, whatever the port.
 //
-// No loopback key is ever empty, so the plaintext-downgrade guard stays armed;
-// pins older CLIs filed under the bare host are not orphaned (pinCandidateKeys
-// still consults them for a port-qualified key, and enforceDeviceIdentity
-// moves one onto its endpoint once the device it names is the one answering);
-// a VM's two forwarded endpoints are pinned beside its vm:<name> key (see
-// vmEndpointPinKeys), so they stay pinned while the VM is stopped; and a
-// loopback connection also pins the endpoint that actually answered it —
-// usually the mTLS port after the one dialled, which a reconnect after an
-// agent update dials (see endpointPinKeys). A direct dial of a running VM's
-// mTLS forward is re-aimed at its agent forward before this is consulted (see
-// vmForwardDialAddr), so it is keyed as the VM too. Non-loopback hosts are
-// unchanged: one device per host, whatever the port.
+// The one exception is a running local VM's own forward: the literal text
+// 127.0.0.1 — the one address QEMU's user-mode forward binds — on the
+// forwarded plaintext agent port of a running user-mode VM is keyed as that
+// VM, vm:<name>, the key its alias already uses. That VM is known by name, so
+// two VMs on different ports never share a pin, and a bare 127.0.0.1 pin never
+// refuses a VM answering on its own forward — the same trust the alias gets
+// (see connectSimulatorAgent). Nothing else maps to a VM: the mTLS port beside
+// it is re-aimed at the agent port by the callers that dial it (see
+// vmForwardDialAddr), localhost can resolve to ::1 first, ::1, 127.0.0.x and
+// IPv4-mapped addresses are other sockets that something other than the VM can
+// answer on, and "127.0.0.1." or a padded " 127.0.0.1" is not dialled as that
+// address at all. Once the VM stops, its address is keyed 127.0.0.1 again; a
+// typed connection to the VM also records its identity there, as the bare key
+// always did (see typedVMBarePinKey).
 func pinKeyForAddr(addr string) string {
 	// SplitHostPort accepts non-numeric service names, so vm:dev would
 	// otherwise become just "vm" when set-default/unpin derives its key.
@@ -212,35 +209,21 @@ func pinKeyForAddr(addr string) string {
 	if err != nil {
 		return strings.TrimSpace(addr)
 	}
-	if !isLoopbackHost(host) {
-		return host
-	}
-	p, convErr := strconv.Atoi(port)
-	// Compared as typed, before normalisation: only the literal address
-	// reaches the forward.
-	if convErr == nil && host == vmForwardHost {
-		if name, ok := loopbackVMNameFn(p); ok {
-			return vmDeviceIDPrefix + name
+	// Compared as typed: only the literal address reaches the forward.
+	if host == vmForwardHost {
+		if p, convErr := strconv.Atoi(port); convErr == nil {
+			if name, ok := loopbackVMNameFn(p); ok {
+				return vmDeviceIDPrefix + name
+			}
 		}
 	}
-	host = normalizeLoopbackHost(host)
-	if convErr != nil {
-		return net.JoinHostPort(host, port)
-	}
-	return net.JoinHostPort(host, strconv.Itoa(p))
+	return host
 }
 
 // vmForwardHost is the only address a user-mode VM's agent forward listens on:
 // the launcher binds hostfwd to 127.0.0.1 explicitly (vm.NetConfig's QEMU
 // arguments), never to localhost, ::1 or the rest of 127/8.
 const vmForwardHost = "127.0.0.1"
-
-// normalizeLoopbackHost is the spelling a loopback host takes in a pin key —
-// lowercased, trailing dot dropped: the same normalisation isLoopbackHost
-// matches under, so every spelling it accepts as one host keys one pin.
-func normalizeLoopbackHost(host string) string {
-	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-}
 
 // loopbackVMNameFn names the running user-mode VM whose agent is forwarded to
 // a loopback port. A seam over the VM store for tests.
@@ -252,12 +235,10 @@ var loopbackVMNameFn = runningVMOnLoopbackPort
 // VM: the dial ladder tries the given port and the one after it, and
 // AgentPort+2 is not forwarded — something else can listen there — so a dial
 // at AgentPort+1 is never made under the VM's key. A direct dial there is
-// re-aimed at AgentPort first (vmForwardDialAddr); the key AgentPort+1 itself
-// is per endpoint, where the VM's identity is pinned by recordEndpointPin, so
-// it stays pinned once the VM stops. A run record counts only while its VM
-// holds the run lock (vm.Store.Status reaps stale ones), and two records
-// claiming one port name no VM: the key then falls back to the endpoint rather
-// than a guess.
+// re-aimed at AgentPort first (vmForwardDialAddr); anything else keys it as
+// the bare 127.0.0.1. A run record counts only while its VM holds the run lock
+// (vm.Store.Status reaps stale ones), and two records claiming one port name no
+// VM: the key then stays the bare host rather than a guess.
 func runningVMOnLoopbackPort(port int) (string, bool) {
 	statuses, err := vmStatusesFn()
 	if err != nil {
@@ -301,8 +282,9 @@ func runningVMAgentPort(name string) (int, bool) {
 // dialPinKeyForDevice is the pin key a dial to device — as typed for --device
 // or set-default — is checked under. It adds the default agent port and
 // re-aims a running VM's mTLS forward first, exactly as resolveDeviceAddress
-// does, because for loopback the port is part of the key: "127.0.0.1" is
-// dialled, and pinned, as 127.0.0.1:50051.
+// does, because a running VM's forward is keyed by its port: `set-default
+// 127.0.0.1` dials 127.0.0.1:50051, which is checked under vm:<name> while a
+// VM forwards that port and under the bare 127.0.0.1 otherwise.
 func dialPinKeyForDevice(device string) string {
 	if _, matched, err := simulatorName(device); matched || err != nil {
 		return pinKeyForAddr(device)
@@ -313,57 +295,28 @@ func dialPinKeyForDevice(device string) string {
 	return pinKeyForAddr(vmForwardDialAddr(device))
 }
 
-// legacyLoopbackPinKey returns the bare host a port-qualified loopback key's
-// pin was filed under before loopback endpoints were keyed by port
-// ("127.0.0.1" for "127.0.0.1:50051"), normalised like the key itself, or ""
-// for any other key.
-func legacyLoopbackPinKey(key string) string {
-	host, _, err := net.SplitHostPort(key)
-	if err != nil || !isLoopbackHost(host) {
+// typedVMBarePinKey is the key a connection judged under pinKey, and dialled
+// by a front door at dialAddr — the address the user typed — also records its
+// accepted identity under (see recordTypedVMBarePin): the bare 127.0.0.1 when
+// pinKey is a running VM's vm:<name> key reached at its literal 127.0.0.1
+// forward. That is the key main judged and pinned the same typed connection
+// under, so the address stays as pinned as main left it once the VM stops and
+// pinKeyForAddr keys it as the bare host again.
+//
+// "" for every other connection: a vm:<name> key reached by its alias (the
+// dialled address is then not a typed 127.0.0.1 one, and main never filed a
+// bare pin for the alias), a connection some fallback substituted for the dial
+// (dialAddr ""), and every key that already is the bare host or is not
+// loopback at all.
+func typedVMBarePinKey(pinKey, dialAddr string) string {
+	if !strings.HasPrefix(pinKey, vmDeviceIDPrefix) || dialAddr == "" {
 		return ""
 	}
-	return normalizeLoopbackHost(host)
-}
-
-// vmEndpointPinKeys are the endpoints a connection judged under pinKey may
-// also be pinned under (see recordEndpointPin), when pinKey is a VM's
-// vm:<name> key and dialAddr is on the literal vmForwardHost (QEMU's forward
-// answers there only): both ports QEMU forwards for the VM —
-// 127.0.0.1:AgentPort and the mTLS port beside it — when dialAddr is one of
-// them. A VM the store cannot place yields just the address dialled. Nil for
-// any other key or address, a port the store says is not this VM's, and an
-// unknown dial address — including a connection some fallback substituted for
-// the dial.
-//
-// 127.0.0.1:AgentPort is keyed as the VM only while the VM runs, and
-// AgentPort+1 never is (pinKeyForAddr). Without pins of their own there,
-// anything that binds either port once the VM stops — or AgentPort+2, which a
-// dial at AgentPort+1 also tries — would be a first use, where the bare
-// "127.0.0.1" key older CLIs used would have refused it.
-func vmEndpointPinKeys(pinKey, dialAddr string) []string {
-	name, ok := strings.CutPrefix(pinKey, vmDeviceIDPrefix)
-	if !ok {
-		return nil
-	}
-	host, port, err := net.SplitHostPort(dialAddr)
+	host, _, err := net.SplitHostPort(dialAddr)
 	if err != nil || host != vmForwardHost {
-		return nil
+		return ""
 	}
-	p, err := strconv.Atoi(port)
-	if err != nil {
-		return nil
-	}
-	agentPort, known := runningVMAgentPortFn(name)
-	if !known {
-		return []string{net.JoinHostPort(vmForwardHost, strconv.Itoa(p))}
-	}
-	if p != agentPort && p != agentPort+agentMTLSPortOffset {
-		return nil
-	}
-	return []string{
-		net.JoinHostPort(vmForwardHost, strconv.Itoa(agentPort)),
-		net.JoinHostPort(vmForwardHost, strconv.Itoa(agentPort+agentMTLSPortOffset)),
-	}
+	return vmForwardHost
 }
 
 // vmAgentForwardAddr maps a VM's mTLS forward, 127.0.0.1:AgentPort+1 — what
@@ -393,14 +346,14 @@ func vmAgentForwardAddr(name, addr string) string {
 // after an agent update dials. The literal forward address 127.0.0.1 on the
 // mTLS port of a running user-mode VM (AgentPort+1, a port that is not itself
 // a VM's agent port) becomes that VM's agent forward, 127.0.0.1:AgentPort, so
-// the connection is keyed vm:<name> by pinKeyForAddr and records both of the
-// VM's forwards, exactly like a dial of the agent port or the vm:<name> alias.
+// the connection is keyed vm:<name> by pinKeyForAddr, exactly like a dial of
+// the agent port or the vm:<name> alias.
 //
-// Keyed as its own endpoint instead, a first connection there would move (or
-// adopt) a legacy bare pin onto AgentPort+1 alone, leaving AgentPort unpinned
-// once the VM stops; and its ladder would also try AgentPort+2, which QEMU
-// does not forward. Every other address is returned unchanged — without
-// reading the VM store unless the host is the literal forward address.
+// Keyed by its own port instead, the same running VM would be judged under the
+// bare 127.0.0.1 key at its mTLS port and under vm:<name> at its agent port,
+// and its ladder would also try AgentPort+2, which QEMU does not forward.
+// Every other address is returned unchanged — without reading the VM store
+// unless the host is the literal forward address.
 func vmForwardDialAddr(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || host != vmForwardHost {
@@ -421,98 +374,6 @@ func vmForwardDialAddr(addr string) string {
 	return vmAgentForwardAddr(name, addr)
 }
 
-// endpointPinKeys are the loopback endpoints a connection judged under pinKey
-// and dialled at dialAddr also records its accepted identity under (see
-// recordEndpointPin), so each stays pinned when it is dialled on its own:
-//
-//   - for a VM's vm:<name> key, both of the VM's forwards (vmEndpointPinKeys);
-//   - for vm:<name> or a port-qualified loopback key, the endpoint the
-//     connection actually answered on — answeredAddr, the connection's
-//     conn.Addr — when that is another port-qualified loopback key. One agent
-//     answers a dial of port P on P+1 once it is provisioned (the ladder's
-//     mTLS rung), and the reconnect after an agent update dials exactly that
-//     address. On main both were the bare "127.0.0.1" key; without its own
-//     pin P+1 would be a first use, its plaintext rung open.
-//
-// A vm:<name> answered endpoint is never recorded: that port keys as the VM
-// while it runs. Nil for every other key, including every non-loopback one,
-// and when dialAddr is "" — a connection some fallback substituted for the
-// dial answered nowhere that was dialled.
-func endpointPinKeys(pinKey, dialAddr, answeredAddr string) []string {
-	if dialAddr == "" || !recordsEndpointPins(pinKey) {
-		return nil
-	}
-	keys := vmEndpointPinKeys(pinKey, dialAddr)
-	if answeredAddr == "" {
-		return keys
-	}
-	answered := pinKeyForAddr(answeredAddr)
-	if answered == pinKey || legacyLoopbackPinKey(answered) == "" || slices.Contains(keys, answered) {
-		return keys
-	}
-	return append(keys, answered)
-}
-
-// recordsEndpointPins reports whether a connection judged under key records
-// its identity at loopback endpoints too: a VM's vm:<name> key, or a
-// port-qualified loopback key. Never a non-loopback key.
-func recordsEndpointPins(key string) bool {
-	return strings.HasPrefix(key, vmDeviceIDPrefix) || legacyLoopbackPinKey(key) != ""
-}
-
-// identityPinKey is the key enforceDeviceIdentity judges a connection to
-// hostname against: hostname's own pin when it has one, else a pin its
-// loopback endpoint (a port-qualified loopback key — never vm:<name>) still
-// has under the bare host. It is the post-connect half of pinCandidateKeys'
-// legacy candidate, so the dial and the pin check agree on which pin governs.
-func identityPinKey(cfg *config.Config, hostname string) string {
-	if _, ok := cfg.DevicePinFor(hostname); ok {
-		return hostname
-	}
-	if legacy := legacyLoopbackPinKey(hostname); legacy != "" {
-		if _, ok := cfg.DevicePinFor(legacy); ok {
-			return legacy
-		}
-	}
-	return hostname
-}
-
-// retireLegacyLoopbackPins drops the bare loopback pin of the host key's
-// connection reached — "127.0.0.1" for 127.0.0.1:PORT and for a VM's vm:<name>
-// (its forward listens on vmForwardHost only), "localhost" for localhost:PORT —
-// when it names the same device as the pin now filed under key. Such a pin
-// identifies exactly one device, which is now pinned under its own key; left
-// behind, it would only constrain every OTHER endpoint of that host to that
-// device — the collision per-endpoint keys exist to end.
-//
-// A bare pin under any other spelling is left alone even when it names the
-// same device: a connection at 127.0.0.1 proves nothing about localhost, which
-// can resolve to ::1 — another socket, which something else can listen on —
-// and retiring that pin would leave localhost:PORT unpinned on the very port
-// the device uses. So is a bare pin naming a different device, or no device
-// (no asset id). applyDeviceIdentity calls this only for a certificate that
-// named its asset: an asset-less match proves an organisation, not which
-// device answered.
-func retireLegacyLoopbackPins(cfg *config.Config, key string) bool {
-	host := legacyLoopbackPinKey(key)
-	if strings.HasPrefix(key, vmDeviceIDPrefix) {
-		host = vmForwardHost
-	}
-	if host == "" {
-		return false
-	}
-	current, ok := cfg.DevicePinFor(key)
-	if !ok {
-		return false
-	}
-	legacy, ok := cfg.DevicePinFor(host)
-	if !ok || !sameConfigPinIdentity(legacy, current) {
-		return false
-	}
-	cfg.ClearDevicePin(host)
-	return true
-}
-
 // isLoopbackHost reports whether host names this machine. "localhost" is
 // matched by name because net.ParseIP does not resolve it, and it is the form
 // people actually type at a forwarded port.
@@ -520,7 +381,7 @@ func isLoopbackHost(host string) bool {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	host = normalizeLoopbackHost(host)
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if host == "localhost" {
 		return true
 	}
@@ -589,31 +450,19 @@ func expectedIdentityForPin(pin config.DevicePin) *certs.WendyIdentity {
 // to drop another device's pin, which is a bypass — see clearPinsGoverning,
 // which consumes this list but removes an alias's pin only when it names the
 // same device as the governing one.
-//
-// A port-qualified loopback key also lists its bare host (see
-// legacyLoopbackPinKey): consulting an extra key can only find a pin, never
-// discard one.
 func pinCandidateKeys(pinKey string) []string {
 	if pinKey == "" {
 		return nil
 	}
 	candidates := []string{pinKey}
-	seen := map[string]bool{normalizeMDNSHost(pinKey): true}
-	// A port-qualified loopback key's pin may still sit under the bare host,
-	// from before loopback endpoints were keyed by port (see pinKeyForAddr).
-	// Consulted after the endpoint's own key, so an existing pin keeps
-	// governing until enforceDeviceIdentity moves it.
-	if legacy := legacyLoopbackPinKey(pinKey); legacy != "" {
-		candidates = append(candidates, legacy)
-		seen[normalizeMDNSHost(legacy)] = true
-	}
 	// Best effort by construction: cachedDeviceHostEntry reports false for an
 	// unopenable cache, an unreadable one, and a plain miss alike, and every
-	// one of those degrades to exactly the candidates above.
+	// one of those degrades to exactly the single-key list above.
 	entry, ok := cachedDeviceHostEntry(pinKey)
 	if !ok {
 		return candidates
 	}
+	seen := map[string]bool{normalizeMDNSHost(pinKey): true}
 	for _, alias := range []string{entry.MeshName, entry.DisplayName} {
 		norm := normalizeMDNSHost(alias)
 		if norm == "" || seen[norm] {

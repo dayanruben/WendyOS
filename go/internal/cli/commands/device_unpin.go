@@ -3,7 +3,6 @@ package commands
 import (
 	"fmt"
 	"io"
-	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -89,28 +88,7 @@ func newDeviceUnpinCmd() *cobra.Command {
 					// stripped), and a user unpinning must be able to hand back exactly
 					// what they used to connect. This is the same bug fixed in
 					// set-default in Task 6 — do not reintroduce it here.
-					pinKey := pinKeyForAddr(target)
-					// A VM's own pin, read before clearPinsGoverning below can clear
-					// it: its connections also filed that identity at the VM's
-					// 127.0.0.1 forwards.
-					vmPin, vmPinned := config.DevicePin{}, false
-					if strings.HasPrefix(pinKey, vmDeviceIDPrefix) {
-						vmPin, vmPinned = cfg.DevicePinFor(pinKey)
-					}
-					cleared = clearPinsGoverning(cfg, pinKey)
-					// Endpoint pins are cleared only on this path, never inside
-					// clearPinsGoverning itself: set-default's clearDevicePinForRepin
-					// shares that helper, and D2 (the reviewer-picked safe option) is
-					// that set-default drops only the vm:<name> pin, never the VM's
-					// 127.0.0.1 forwards — running set-default while the VM is stopped
-					// and another local account holds the port span must not leave
-					// those addresses unpinned. Only `unpin` gets to widen the blast
-					// radius this far, and only when the vm:<name> pin itself was
-					// actually cleared — the same guard clearPinsGoverning used to
-					// apply internally.
-					if _, stillPinned := cfg.DevicePinFor(pinKey); vmPinned && !stillPinned {
-						cleared = append(cleared, clearVMEndpointPins(cfg, vmPin)...)
-					}
+					cleared = clearPinsGoverning(cfg, pinKeyForAddr(target))
 				}
 				return true, nil
 			}); err != nil {
@@ -222,15 +200,6 @@ func configPinKeysForIdentity(cfg *config.Config, identityKey string) []string {
 // with no config pin behind them. When a config pin does exist, the cache is
 // believed only where it agrees with that pin: a disagreeing cache is either
 // stale or hostile, and in neither case does it name this device.
-//
-// This does NOT clear a VM's 127.0.0.1 endpoint pins, even when pinKey is a
-// vm:<name> key whose pin is cleared here. This helper is shared with
-// set-default's clearDevicePinForRepin, and D2 (the reviewer-picked safe
-// option) is that set-default must not drop those endpoint pins — doing so
-// while the VM is stopped and another local account holds the port span can
-// leave 127.0.0.1:<port> unpinned. `wendy device unpin` clears them itself,
-// after calling this, only when the vm:<name> pin it named was actually
-// cleared; see newDeviceUnpinCmd.
 func clearPinsGoverning(cfg *config.Config, pinKey string) []clearedPin {
 	if cfg == nil || pinKey == "" {
 		return nil
@@ -269,43 +238,6 @@ func clearPinsGoverning(cfg *config.Config, pinKey string) []clearedPin {
 	}
 
 	return append(cleared, removeSPKIPins(identityKeys)...)
-}
-
-// clearVMEndpointPins drops the 127.0.0.1:PORT pins that name the same device
-// as vmPin, a VM's vm:<name> pin that `wendy device unpin` is clearing, and
-// returns what it removed. Every connection to the VM files its identity at
-// the VM's forwarded endpoints (see recordEndpointPin), and those pins
-// outlive the VM — replacing it, or putting another VM on its port, must not
-// leave them behind to refuse the replacement at that address.
-//
-// Called only from newDeviceUnpinCmd, never from clearPinsGoverning: see D2 on
-// clearPinsGoverning for why set-default must not reach this.
-//
-// Only a pin naming the same (org, asset) goes: never one naming another
-// device, and never an org-only one, which names no device. A pin filed under
-// another loopback spelling (localhost:PORT, [::1]:PORT) or the bare host is
-// not the VM's — its forwards listen on 127.0.0.1 only — and is left alone.
-// Its SPKI entry is the VM pin's own, which the caller already clears.
-func clearVMEndpointPins(cfg *config.Config, vmPin config.DevicePin) []clearedPin {
-	identity := configPinIdentityKey(vmPin)
-	if identity == "" {
-		return nil
-	}
-	var keys []string
-	for key, pin := range cfg.DevicePins {
-		host, port, err := net.SplitHostPort(key)
-		if err != nil || host != vmForwardHost || port == "" || !sameConfigPinIdentity(pin, vmPin) {
-			continue
-		}
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	cleared := make([]clearedPin, 0, len(keys))
-	for _, key := range keys {
-		cfg.ClearDevicePin(key)
-		cleared = append(cleared, clearedPin{store: clearedConfigPin, key: key, identity: identity})
-	}
-	return cleared
 }
 
 // configPinIdentityKey is the SPKI store key a config pin names, or "" for a
