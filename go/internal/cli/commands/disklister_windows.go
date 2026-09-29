@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/dustin/go-humanize"
@@ -568,3 +569,12 @@ func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(wri
 
 	return nil
 }
+
+// unmountBeforeWrite is a no-op on Windows: the writers lock and dismount the
+// disk's volumes themselves when they open it.
+func unmountBeforeWrite(_ drive) error { return nil }
+
+// firstByteStallLimit is how long a flash may run before its first byte. The
+// Windows writers bring the disk online and clear it through PowerShell before
+// writing, which can take minutes on a cold start.
+const firstByteStallLimit = 5 * time.Minute

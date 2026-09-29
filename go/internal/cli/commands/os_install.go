@@ -231,6 +231,7 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 	if err := writeImageToDisk(stream, stream.uncompressedSize, *targetDrive, nil); err != nil {
 		return fmt.Errorf("writing image: %w", err)
 	}
+	markFATVolumes(*targetDrive)
 
 	fmt.Printf("\nSuccessfully installed image on %s.\n", targetDrive.Name)
 	return nil
@@ -984,6 +985,11 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		return err
 	}
 
+	fmt.Printf("Unmounting %s...\n", targetDrive.DevicePath)
+	if err := unmountBeforeWrite(targetDrive); err != nil {
+		return err
+	}
+
 	// Step 6: Write image to drive with progress bar.
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	writeProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
@@ -1008,12 +1014,20 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	}
 
 	go func() {
-		var writeErr error
-		switch {
-		case seekableZst != "":
-			fmt.Println("Using seekable block map for faster flashing.")
-			writeErr = writeImageWithBmapSeekable(seekableZst, seekableBmap, targetDrive, func(written int64) {
-				lastWritten.Store(written)
+		writeErr := watchFlash(func(progress func(int64)) error {
+			switch {
+			case seekableZst != "":
+				fmt.Println("Using seekable block map for faster flashing.")
+				return writeImageWithBmapSeekable(seekableZst, seekableBmap, targetDrive, progress)
+			case bmapPath != "":
+				fmt.Println("Using block map for faster flashing.")
+				return writeImageWithBmap(stream, stream.uncompressedSize, targetDrive, bmapPath, progress)
+			default:
+				return writeImageToDisk(stream, stream.uncompressedSize, targetDrive, progress)
+			}
+		}, writeTotal, flashStallLimit, func(written int64) {
+			lastWritten.Store(written)
+			if seekableZst != "" {
 				var pct float64
 				if seekableTotal > 0 {
 					pct = float64(written) / float64(seekableTotal)
@@ -1023,23 +1037,10 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 					Written: written,
 					Total:   seekableTotal,
 				})
-			})
-		case bmapPath != "":
-			fmt.Println("Using block map for faster flashing.")
-			writeErr = writeImageWithBmap(stream, stream.uncompressedSize, targetDrive, bmapPath, func(written int64) {
-				lastWritten.Store(written)
-				if msg, ok := stream.writeProgressMsg(written); ok {
-					wp.Send(msg)
-				}
-			})
-		default:
-			writeErr = writeImageToDisk(stream, stream.uncompressedSize, targetDrive, func(written int64) {
-				lastWritten.Store(written)
-				if msg, ok := stream.writeProgressMsg(written); ok {
-					wp.Send(msg)
-				}
-			})
-		}
+			} else if msg, ok := stream.writeProgressMsg(written); ok {
+				wp.Send(msg)
+			}
+		})
 		wp.Send(tui.ProgressDoneMsg{Err: writeErr})
 	}()
 
@@ -1067,6 +1068,9 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		// writes to the same broken device and cannot succeed — skip it and fail
 		// fast with the real error plus actionable hints. Integrity failures
 		// (bmap checksum/size mismatch) and unrecognized causes still fall back.
+		if errors.Is(primaryErr, errFlashStalled) {
+			return fmt.Errorf("%w\n%s", primary, flashStallHint)
+		}
 		if isDeviceFlashFailure(primaryErr) {
 			return fmt.Errorf("%w\n%s", primary, flashDeviceFailureHint)
 		}
@@ -1104,7 +1108,9 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
 		fp := tui.NewProgressProgram(fallbackProg)
 		go func() {
-			fp.Send(tui.ProgressDoneMsg{Err: writeImageToDisk(fallbackReader, fallbackSize, targetDrive, func(written int64) {
+			fp.Send(tui.ProgressDoneMsg{Err: watchFlash(func(progress func(int64)) error {
+				return writeImageToDisk(fallbackReader, fallbackSize, targetDrive, progress)
+			}, fallbackSize, flashStallLimit, func(written int64) {
 				if fallbackSize > 0 {
 					fp.Send(tui.ProgressUpdateMsg{
 						Percent: float64(written) / float64(fallbackSize),
@@ -1148,6 +1154,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		provisionErr = provisionConfigWithRetry(targetDrive, provCreds, provDeviceName, provisioningJSON, hasProvisioningData)
 	}
 
+	markFATVolumes(targetDrive)
 	ejectDisk(targetDrive)
 
 	// Requested provisioning that never reached the card is a failed install:

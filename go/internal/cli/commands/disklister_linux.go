@@ -370,3 +370,9 @@ func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(wri
 
 	return nil
 }
+
+// unmountBeforeWrite releases the disk before the progress bar starts, so a
+// hung unmount is reported as one instead of as a write stuck at 0%.
+func unmountBeforeWrite(d drive) error {
+	return unmountDisk(d.DevicePath)
+}
