@@ -27,10 +27,14 @@ func scheduleCLIUpdateCheck() {
 	}()
 }
 
-// persistCLIUpdateCheckResult reloads config under the refresh lock before
-// changing update metadata. The HTTP request can overlap an OAuth refresh; saving
-// the config snapshot from before that request would restore the consumed refresh
-// token and cause wendy-auth to revoke the rotated token family on its next use.
+// persistCLIUpdateCheckResult persists one check's outcome by changing only its
+// own two fields on the CURRENT config. It used to save the snapshot root
+// loaded at startup, seconds after the command had saved its own changes — a
+// new default device, a fresh pin, a login — and silently revert them. It also
+// holds the auth refresh lock: the HTTP request can overlap an OAuth refresh,
+// and saving a config read before that refresh finished would restore the
+// consumed refresh token and cause wendy-auth to revoke the rotated token
+// family on its next use.
 func persistCLIUpdateCheckResult(checkedAt time.Time, latest string, checkErr error) error {
 	unlock, err := acquireAuthRefreshLock(context.Background())
 	if err != nil {
@@ -38,19 +42,17 @@ func persistCLIUpdateCheckResult(checkedAt time.Time, latest string, checkErr er
 	}
 	defer unlock()
 
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	cfg.LastCLIUpdateCheck = checkedAt.UTC().Format(time.RFC3339)
-	if checkErr == nil {
-		if version.CompareVersions(latest, version.Version) > 0 {
-			cfg.AvailableCLIUpdate = latest
-		} else {
-			cfg.AvailableCLIUpdate = ""
+	return config.Update(func(cfg *config.Config) (bool, error) {
+		cfg.LastCLIUpdateCheck = checkedAt.UTC().Format(time.RFC3339)
+		if checkErr == nil {
+			if version.CompareVersions(latest, version.Version) > 0 {
+				cfg.AvailableCLIUpdate = latest
+			} else {
+				cfg.AvailableCLIUpdate = ""
+			}
 		}
-	}
-	return config.Save(cfg)
+		return true, nil
+	})
 }
 
 // dueCLIUpdateCheck returns true when the CLI is a released build and enough

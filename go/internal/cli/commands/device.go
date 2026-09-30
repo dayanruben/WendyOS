@@ -558,11 +558,18 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 		Short:  "Set a local, cloud or simulator device as the default",
 		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var device string
+			device := ""
 			if len(args) > 0 {
-				device = args[0]
-			} else {
-				sel, err := pickDeviceForDefault(cmd.Context())
+				device = strings.TrimSpace(args[0])
+			}
+			if device == "" {
+				// The picker needs a terminal. Without one it fails with "could
+				// not open a new TTY"; say what to run instead. A blank argument
+				// lands here too rather than silently clearing the default.
+				if jsonOutput || !isInteractiveTerminal() {
+					return setDefaultNeedsDeviceError()
+				}
+				sel, err := pickDeviceForDefaultFn(cmd.Context())
 				if err != nil {
 					return err
 				}
@@ -572,15 +579,14 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			if selectorErr != nil {
 				return selectorErr
 			}
-
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
+			if !isCloud {
+				if err := rejectNumericDeviceName(device); err != nil {
+					return err
+				}
 			}
 
-			cfg.DefaultDevice = device
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving config: %w", err)
+			if err := saveDefaultDevice(device); err != nil {
+				return err
 			}
 
 			fmt.Printf("Default device set to: %s\n", tui.Device(device))
@@ -596,20 +602,27 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			// identity changed a way back (otherwise this connect would hit the
 			// same refusal and never re-pin).
 			//
-			// pinKeyForAddr, not the raw argument: `set-default my-mac.local:50051`
-			// is a legal default, and enforcement keys that host under
-			// "my-mac.local". Clearing "my-mac.local:50051" would drop nothing,
-			// leaving a host:port default with no way out of a refusal at all.
-			clearDevicePinForRepin(pinKeyForAddr(device))
+			// dialPinKeyForDevice, not the raw argument: `set-default
+			// my-mac.local:50051` is a legal default, and enforcement keys that
+			// host under "my-mac.local"; `set-default 127.0.0.1` is dialled as
+			// 127.0.0.1:50051, which is checked under vm:<name> while a running VM
+			// forwards that port. Clearing any other key would leave the refusal
+			// with no way out.
+			clearDevicePinForRepin(dialPinKeyForDevice(device))
 
 			// WDY-1149: pin the device's (organisation, cloud host, asset)
 			// identity now if it is reachable, so later connections detect a
 			// swapped device or MITM. Best-effort and non-interactive: an offline
 			// device is pinned instead on its first successful connection. The pin
 			// itself is established inside connectToAgent's default-device path.
-			if conn, connErr := connectToAgent(cmd.Context(), SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive()); connErr == nil {
-				_ = conn.Close()
-			}
+			//
+			// Without --device and WENDY_DEVICE: this confirms the device just
+			// saved, which an override in effect would otherwise replace.
+			withoutDeviceOverride(func() {
+				if conn, connErr := connectToAgent(cmd.Context(), SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive()); connErr == nil {
+					_ = conn.Close()
+				}
+			})
 			return nil
 		},
 	}
@@ -698,14 +711,8 @@ func newDeviceUnsetDefaultCmd() *cobra.Command {
 		Use:   "unset-default",
 		Short: "Clear the default device",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-
-			cfg.DefaultDevice = ""
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving config: %w", err)
+			if err := saveDefaultDevice(""); err != nil {
+				return err
 			}
 
 			fmt.Println("Default device cleared.")

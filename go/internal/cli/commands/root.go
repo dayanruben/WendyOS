@@ -32,6 +32,11 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// First, before the early returns below, so every command sees one
+			// answer to "which device": --device, else WENDY_DEVICE, else the
+			// saved default.
+			applyDeviceEnv()
+
 			// Skip heavy init for commands that don't need device/cloud setup.
 			// __usb-setup and __t234-write run as root under sudo; skipping init
 			// avoids config/analytics writes (and an update check) as root, and
@@ -65,13 +70,13 @@ func NewRootCmd() *cobra.Command {
 
 			// Refresh MCP config and skills if the CLI was upgraded since the
 			// user last ran `wendy mcp setup`. Runs synchronously here, before
-			// the update-check goroutine below also mutates and saves cfg.
+			// the update-check goroutine below also writes config.json.
 			maybeRefreshMCPSetup(cfg)
 			premark("  prerun: maybeRefreshMCPSetup")
 
 			// Reconcile credentials with the configured storage policy. Runs in
-			// the synchronous zone: the update-check goroutine below saves cfg
-			// too, and its Save must observe an already-migrated on-disk state.
+			// the synchronous zone: the update-check goroutine below rewrites
+			// config.json too, and must find it already migrated.
 			if config.MigrateSecretsIfNeeded(cfg) {
 				cmd.PrintErrln("Moved wendy credentials into ~/.wendy/config.json.")
 			}
@@ -105,7 +110,7 @@ func NewRootCmd() *cobra.Command {
 	// Do not name the hidden --build-host flag here: this description shows in
 	// every command's --help (persistent flag), and the E2E help specs guard
 	// that the unreleased flag never leaks into help output.
-	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname; `wendy run` accepts a comma-separated list to deploy one build to several devices (needs a remote build host and --detach)")
+	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname; `wendy run` accepts a comma-separated list to deploy one build to several devices (needs a remote build host and --detach). Defaults to $WENDY_DEVICE, then the saved default device")
 
 	// Render the top-level command groups in the deliberate order below rather
 	// than alphabetically, so e.g. "project" lists before "device".

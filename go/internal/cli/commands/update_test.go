@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -24,6 +25,30 @@ func TestDueCLIUpdateCheckSkipsDevBuilds(t *testing.T) {
 				t.Errorf("dueCLIUpdateCheck for dev build %q = true, want false", ver)
 			}
 		})
+	}
+}
+
+// The background update check used to save the config root loaded at startup,
+// seconds later — reverting a default device, pin or login the command itself
+// had just saved. It must change only its own two fields on the current config.
+func TestPersistCLIUpdateCheckResultKeepsNewerConfig(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	if err := config.Save(&config.Config{DefaultDevice: "saved-by-the-command.local"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	if err := persistCLIUpdateCheckResult(now, "", errors.New("offline")); err != nil {
+		t.Fatalf("persistCLIUpdateCheckResult: %v", err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultDevice != "saved-by-the-command.local" {
+		t.Fatalf("the update check reverted DefaultDevice to %q", cfg.DefaultDevice)
+	}
+	if cfg.LastCLIUpdateCheck != "2026-09-28T12:00:00Z" {
+		t.Fatalf("LastCLIUpdateCheck = %q, want 2026-09-28T12:00:00Z", cfg.LastCLIUpdateCheck)
 	}
 }
 
