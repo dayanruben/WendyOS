@@ -43,20 +43,31 @@ ZONES = (
          3.0, 0.0, 0.0),
 )
 
-# One item already stored in bay 0 of each rack. It is written to Turbopuffer at start-up,
-# so the memory starts with an example of what each zone holds.
+# One item already stored in bay 1 of each rack's work shelf. It is written to Turbopuffer at
+# start-up, with the stock below, so the memory starts with examples of what each zone holds.
 SHELVED = {
     "power": Item("9v", "9V batteries, 10 pack", (0.20, 0.26, 0.18), 1.0, "#c9a36b"),
     "cables": Item("dp", "DisplayPort cable, 1 m", (0.20, 0.26, 0.18), 0.6, "#b8966a"),
     "tools": Item("nuts", "M4 lock nuts, box of 200", (0.20, 0.26, 0.18), 1.4, "#c49a62"),
 }
 
+# Two more items on each rack's top shelf, out of the robot's reach (it never moves them).
+STOCK = {
+    "power": (Item("powerbank", "USB-C power bank, 10,000 mAh", (0.20, 0.24, 0.14), 0.5, "#c2a06e"),
+              Item("phonecharger", "Phone charger, 20 W", (0.18, 0.22, 0.12), 0.3, "#cbab78")),
+    "cables": (Item("ethernet", "Ethernet patch cord, 2 m", (0.20, 0.24, 0.12), 0.3, "#bf9d6c"),
+               Item("usba", "USB-C to USB-A adapter", (0.18, 0.22, 0.12), 0.2, "#c8a674")),
+    "tools": (Item("hexkeys", "Hex key set, metric", (0.20, 0.24, 0.12), 0.6, "#c09a66"),
+              Item("zipties", "Cable ties, 100 pack", (0.18, 0.22, 0.14), 0.4, "#cda977")),
+}
+STOCK_BAYS = (0, 2)  # top-shelf positions of the two stocked items
+
 # Arrive on the inbound cart in this order.
 INBOUND = (
     Item("aa", "AA batteries, 24 pack", (0.22, 0.28, 0.20), 1.2, "#cfa872"),
     Item("hdmi", "USB-C to HDMI adapter", (0.22, 0.28, 0.20), 0.7, "#bd9b6e"),
     Item("torx", "Torx screwdriver set", (0.22, 0.28, 0.20), 1.1, "#c6a06a"),
-    Item("charger", "65 W USB-C wall charger", (0.22, 0.28, 0.20), 0.9, "#caa574"),
+    Item("charger", "65 W laptop charger", (0.22, 0.28, 0.20), 0.9, "#caa574"),
 )
 
 # Asked once everything is shelved; the robot fetches the best match back to the cart.
@@ -65,6 +76,7 @@ QUESTION = "I need something to charge my laptop"
 BAYS = 3
 BAY_PITCH = 0.62
 SHELF_TOP = 0.75
+TOP_SHELF = 1.30
 CART = dict(x=0.0, y=-1.7, top=0.45, facing=-1.57079633)
 CART_SLOTS = (-0.62, 0.0, 0.62, 1.24)  # along x; the fourth sits at the cart's far end
 

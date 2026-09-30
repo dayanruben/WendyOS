@@ -59,7 +59,8 @@ def run(sim: "Simulation") -> Iterator[None]:
         sim.say("Question", QUESTION)
         yield from skills.wait(2.0)
         answer = yield from _await(sim, sim.memory.submit("find", QUESTION))
-        best = answer.best
+        # the closest item the robot can carry (top-shelf stock is out of its reach)
+        best = next((m for m in answer.matches if sim.box_for(m.label)), None)
         name = sim.box_for(best.label) if best else None
         if name is not None:
             where = sim.location[name]

@@ -523,7 +523,8 @@ export class WarehouseViewer {
       list.replaceChildren(...(last ? last.matches : []).map((match, rank) => {
         const li = document.createElement('li');
         if (rank === 0) li.className = 'best';
-        const where = match.kind === 'zone' ? 'Zone description' : `${this.zoneNames[match.zone]} · bay ${match.bay + 1}`;
+        const where = match.kind === 'zone' ? 'Zone description'
+          : `${this.zoneNames[match.zone]} · ${match.shelf === 'top' ? 'top shelf' : `bay ${match.bay + 1}`}`;
         const similarity = Math.max(0, Math.min(1, 1 - match.distance));
         li.innerHTML = '<span class="rank"></span><span class="what"></span><span class="dist num"></span><span class="where"></span>';
         li.querySelector('.rank').textContent = String(rank + 1);

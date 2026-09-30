@@ -15,7 +15,7 @@ import mujoco
 import numpy as np
 
 from .catalog import BAY_PITCH, BAYS, CART, CART_SLOTS, SHELF_TOP, ZONES
-from .world import RACK_DEPTH, RACK_WIDTH, boxes, cart_slot, rack_slot
+from .world import RACK_DEPTH, RACK_WIDTH, boxes, cart_slot, rack_slot, stock
 
 GRID = 0.002  # vertex-merge cell for the robot meshes (m)
 MESH = mujoco.mjtGeom.mjGEOM_MESH
@@ -47,10 +47,11 @@ def _slot(slot) -> list[float]:
 
 
 def render_bodies(model: mujoco.MjModel) -> list[int]:
-    """Bodies the viewer draws and the stream moves: robot links with visual meshes, then boxes."""
+    """Bodies the viewer draws and the stream moves: robot links with visual meshes, then boxes
+    (the ones the robot moves, then the fixed stock on the top shelves)."""
     robot = sorted({int(model.geom_bodyid[g]) for g in range(model.ngeom)
                     if model.geom_group[g] == 1 and model.geom_type[g] == MESH})
-    return robot + [model.body(name).id for name, _, _ in boxes()]
+    return robot + [model.body(name).id for name, _, _ in boxes() + stock()]
 
 
 def export_scene(model: mujoco.MjModel) -> tuple[dict, bytes]:
@@ -59,7 +60,7 @@ def export_scene(model: mujoco.MjModel) -> tuple[dict, bytes]:
     bodies = render_bodies(model)
     slot = {body: i for i, body in enumerate(bodies)}
     robot_root = model.body("pelvis").id
-    box_bodies = {model.body(name).id for name, _, _ in boxes()}
+    box_bodies = {model.body(name).id for name, _, _ in boxes() + stock()}
 
     chunks: list[bytes] = []
     offset = 0
@@ -113,7 +114,7 @@ def export_scene(model: mujoco.MjModel) -> tuple[dict, bytes]:
         "parts": parts,
         "fixtures": fixtures,
         "boxes": [{"name": name, "body": slot[model.body(name).id], "label": item.label,
-                   "size": list(item.size), "color": item.color} for name, item, _ in boxes()],
+                   "size": list(item.size), "color": item.color} for name, item, _ in boxes() + stock()],
         "zones": [{"key": z.key, "name": z.name, "x": z.x, "y": z.y, "facing": z.facing} for z in ZONES],
         "rack": {"width": RACK_WIDTH, "depth": RACK_DEPTH, "bays": BAYS, "bayPitch": BAY_PITCH, "shelf": SHELF_TOP},
         "cart": CART,

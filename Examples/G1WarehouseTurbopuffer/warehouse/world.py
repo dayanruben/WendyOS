@@ -10,7 +10,8 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from .catalog import BAY_PITCH, BAYS, CART, CART_SLOTS, INBOUND, SHELF_TOP, SHELVED, ZONES, Item, Zone
+from .catalog import (BAY_PITCH, BAYS, CART, CART_SLOTS, INBOUND, SHELF_TOP, SHELVED, STOCK, STOCK_BAYS, TOP_SHELF,
+                      ZONES, Item, Zone)
 
 ROOT = Path(__file__).resolve().parents[1]
 ROBOT_DIR = ROOT / "models" / "g1"
@@ -83,12 +84,12 @@ def _cart_xml() -> str:
             f'{legs}{wheels}</body>')
 
 
-def _box_xml(name: str, item: Item, slot: Slot) -> str:
+def _box_xml(name: str, item: Item, slot: Slot, fixed: bool = False) -> str:
     depth, width, height = item.size
     rotation = slot.facing
+    joint = "" if fixed else f'<freejoint name="{name}_joint"/>'
     return (f'<body name="{name}" pos="{slot.x:.4f} {slot.y:.4f} {slot.z + height / 2 + 0.001:.4f}" quat="{_quat_z(rotation)}">'
-            f'<freejoint name="{name}_joint"/>'
-            f'<geom name="{name}_geom" type="box" size="{depth / 2} {width / 2} {height / 2}" mass="{item.mass}" '
+            f'{joint}<geom name="{name}_geom" type="box" size="{depth / 2} {width / 2} {height / 2}" mass="{item.mass}" '
             f'friction="1.5 0.02 0.002" condim="6" rgba="0.78 0.6 0.38 1"/></body>')
 
 
@@ -102,6 +103,16 @@ def boxes() -> list[tuple[str, Item, Slot]]:
     return result
 
 
+def stock() -> list[tuple[str, Item, Slot]]:
+    """Boxes fixed on the top shelves: scenery the robot never moves, but its memory knows."""
+    result = []
+    for zone in ZONES:
+        for bay, item in zip(STOCK_BAYS, STOCK[zone.key]):
+            slot = rack_slot(zone, bay)
+            result.append((f"stock_{item.key}", item, Slot(slot.x, slot.y, TOP_SHELF, slot.facing, zone.key, bay)))
+    return result
+
+
 def build_xml() -> str:
     xml = (ROBOT_DIR / "g1_gear_wbc.xml").read_text()
     for side, y in (("left", -0.012), ("right", 0.012)):
@@ -112,6 +123,7 @@ def build_xml() -> str:
                       f'<compiler angle="radian" meshdir="{ROBOT_DIR / "meshes"}"/>', 1)
     world = _cart_xml() + "".join(_rack_xml(zone) for zone in ZONES)
     world += "".join(_box_xml(name, item, slot) for name, item, slot in boxes())
+    world += "".join(_box_xml(name, item, slot, fixed=True) for name, item, slot in stock())
     idx = xml.rfind("</worldbody>")
     xml = xml[:idx] + world + xml[idx:]
     # Holding a box: welded to the left hand and pinned to the right palm, so both arms carry it.

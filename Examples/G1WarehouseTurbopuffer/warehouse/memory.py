@@ -20,20 +20,21 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from .catalog import SHELVED, ZONES, Item, zone
+from .catalog import SHELVED, STOCK, STOCK_BAYS, ZONES, Item, zone
 
 NAMESPACE = os.environ.get("TURBOPUFFER_NAMESPACE", "wendy-g1-warehouse")
 REGION = os.environ.get("TURBOPUFFER_REGION", "gcp-us-central1")
-# A model turbopuffer serves in every region; some (like nemotron-3-embed-8b) are aws-us-east-1 only.
-EMBED_MODEL = os.environ.get("TURBOPUFFER_EMBED_MODEL", "nvidia/nemotron-3-embed-1b")
-ATTRIBUTES = ["label", "kind", "zone", "bay"]
+# Not every model runs in every region: check turbopuffer's model list if you change either.
+EMBED_MODEL = os.environ.get("TURBOPUFFER_EMBED_MODEL", "nvidia/nemotron-3-embed-8b")
+ATTRIBUTES = ["label", "kind", "zone", "shelf", "bay"]
 
 
 @dataclass
 class Match:
     label: str
-    kind: str
+    kind: str       # "item" or "zone" (a zone's description)
     zone: str
+    shelf: str      # "work" (bays the robot uses), "top" (fixed stock), or "" for a zone
     bay: int
     distance: float
 
@@ -54,10 +55,16 @@ class Answer:
         return self.matches[0] if self.matches else None
 
 
+def _row(item: Item, zone_key: str, shelf: str, bay: int) -> dict:
+    return {"id": f"item-{item.key}", "label": item.label, "kind": "item", "zone": zone_key, "shelf": shelf, "bay": bay}
+
+
 def _seed_rows() -> list[dict]:
-    rows = [{"id": f"zone-{z.key}", "label": z.description, "kind": "zone", "zone": z.key, "bay": -1} for z in ZONES]
-    rows += [{"id": f"item-{item.key}", "label": item.label, "kind": "item", "zone": key, "bay": 0}
-             for key, item in SHELVED.items()]
+    """What the memory knows before the first box: each zone's description and what is on its shelves."""
+    rows = [{"id": f"zone-{z.key}", "label": z.description, "kind": "zone", "zone": z.key, "shelf": "", "bay": -1}
+            for z in ZONES]
+    rows += [_row(item, key, "work", 0) for key, item in SHELVED.items()]
+    rows += [_row(item, key, "top", bay) for key, items in STOCK.items() for bay, item in zip(STOCK_BAYS, items)]
     return rows
 
 
@@ -89,6 +96,7 @@ class TurbopufferMemory:
             schema={"label": {"type": "string", "embed": {"model": EMBED_MODEL}},
                     "kind": {"type": "string", "filterable": True},
                     "zone": {"type": "string", "filterable": True},
+                    "shelf": {"type": "string", "filterable": True},
                     "bay": {"type": "int", "filterable": True}},
         )
 
@@ -100,7 +108,7 @@ class TurbopufferMemory:
         response = self.ns.query(**kwargs)
         answer = Answer("query", text, round_trip_ms=(time.perf_counter() - started) * 1000)
         for row in response.rows or []:
-            answer.matches.append(Match(str(row["label"]), str(row["kind"]), str(row["zone"]), int(row["bay"]),
+            answer.matches.append(Match(str(row["label"]), str(row["kind"]), str(row["zone"]), str(row["shelf"]), int(row["bay"]),
                                         float(row["$dist"])))
         performance = response.performance
         if performance is not None:
@@ -120,7 +128,7 @@ class TurbopufferMemory:
 
     def remember(self, item: Item, zone_key: str, bay: int) -> Answer:
         started = time.perf_counter()
-        self._write([{"id": f"item-{item.key}", "label": item.label, "kind": "item", "zone": zone_key, "bay": bay}])
+        self._write([_row(item, zone_key, "work", bay)])
         return Answer("write", item.label, round_trip_ms=(time.perf_counter() - started) * 1000,
                       note=f"{zone_name(zone_key)}, bay {bay + 1}")
 
@@ -157,7 +165,7 @@ class KeywordMemory:
             scored.append((1.0 - overlap, row))
         scored.sort(key=lambda pair: pair[0])
         answer = Answer("query", text, round_trip_ms=(time.perf_counter() - started) * 1000, rows=len(self.rows))
-        answer.matches = [Match(r["label"], r["kind"], r["zone"], r["bay"], round(d, 3)) for d, r in scored[:3]]
+        answer.matches = [Match(r["label"], r["kind"], r["zone"], r["shelf"], r["bay"], round(d, 3)) for d, r in scored[:3]]
         return answer
 
     def where_does(self, label: str) -> Answer:
@@ -171,8 +179,7 @@ class KeywordMemory:
         return answer
 
     def remember(self, item: Item, zone_key: str, bay: int) -> Answer:
-        self.rows[f"item-{item.key}"] = {"id": f"item-{item.key}", "label": item.label, "kind": "item",
-                                         "zone": zone_key, "bay": bay}
+        self.rows[f"item-{item.key}"] = _row(item, zone_key, "work", bay)
         return Answer("write", item.label, rows=len(self.rows), note=f"{zone_name(zone_key)}, bay {bay + 1}")
 
 

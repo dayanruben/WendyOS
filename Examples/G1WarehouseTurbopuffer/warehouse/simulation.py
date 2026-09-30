@@ -193,7 +193,8 @@ def _answer(answer: Answer) -> dict:
         "roundTripMs": round(answer.round_trip_ms, 1),
         "serverMs": None if answer.server_ms is None else round(answer.server_ms, 1),
         "rows": answer.rows,
-        "matches": [{"label": m.label, "kind": m.kind, "zone": m.zone, "bay": m.bay, "distance": round(m.distance, 4)}
+        "matches": [{"label": m.label, "kind": m.kind, "zone": m.zone, "shelf": m.shelf, "bay": m.bay,
+                     "distance": round(m.distance, 4)}
                     for m in answer.matches],
     }
 
