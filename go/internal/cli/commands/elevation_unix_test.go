@@ -144,6 +144,25 @@ func TestBuildSudoReexecArgs(t *testing.T) {
 	}
 }
 
+// sudo's env_reset drops variables it isn't told to keep. Losing
+// WENDY_ANALYTICS made the elevated run treat an opted-out user as a first run:
+// it sent analytics and wrote a root-owned ~/.wendy/config.json. Losing
+// WENDY_CONFIG_DIR sent its writes to $HOME/.wendy instead.
+func TestThorSudoPreserveEnvKeepsWendySettings(t *testing.T) {
+	kept := strings.Split(strings.TrimPrefix(thorSudoPreserveEnv, "--preserve-env="), ",")
+	for _, want := range []string{"WENDY_ANALYTICS", "WENDY_CONFIG_DIR"} {
+		found := false
+		for _, k := range kept {
+			if k == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s is not preserved through sudo: %q", want, thorSudoPreserveEnv)
+		}
+	}
+}
+
 func TestPinCacheDirEnv(t *testing.T) {
 	base := "/home/alice/.cache"
 
