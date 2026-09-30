@@ -134,6 +134,12 @@ class DemoHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
 
+    def handle_one_request(self) -> None:
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True   # the client went away mid-reply; nothing to report
+
     def log_message(self, fmt: str, *args: object) -> None:
         if os.environ.get("G1_WAREHOUSE_HTTP_LOG", "0") == "1":
             super().log_message(fmt, *args)
