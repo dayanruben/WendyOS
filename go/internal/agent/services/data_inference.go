@@ -318,11 +318,7 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 			}
 			if j.campaign.Notify != nil && (j.campaign.Notify.On == data.NotifyOnDetection || j.campaign.Notify.On == data.NotifyOnEvent && j.campaign.Notify.Event == record.Name) {
 				request := detectionNotification(j.campaign, result.SourceID, len(detections))
-				select {
-				case j.queue <- request:
-				default:
-					j.notificationError(errors.New("notification queue full; detection notification dropped"))
-				}
+				j.enqueueNotification(request)
 			}
 		}
 	}
@@ -431,7 +427,19 @@ func (p *inferencePresence) observe(detected bool, now time.Time, config *data.C
 }
 
 func detectionNotification(campaign data.Campaign, source string, count int) DetectionNotification {
-	return DetectionNotification{ID: uuid.NewString(), Event: campaign.Inference.Event, Campaign: campaign.Name, SourceID: source, Model: campaign.Inference.Model, Revision: campaign.Inference.Revision, Count: count}
+	return DetectionNotification{ID: uuid.NewString(), Event: campaign.Inference.Event, Campaign: campaign.Name, SourceID: source, Model: campaign.Inference.Model, Revision: campaign.Inference.Revision, Count: count, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)}
+}
+
+func (j *campaignInferenceJob) enqueueNotification(request DetectionNotification) {
+	if err := j.owner.service.manager.RecordNotification(request); err != nil {
+		j.notificationError(fmt.Errorf("persist notification: %w", err))
+		return
+	}
+	select {
+	case j.queue <- request:
+	default:
+		j.notificationError(errors.New("external notification queue full; notification retained in Wendy Data"))
+	}
 }
 
 func (j *campaignInferenceJob) notificationError(err error) {
@@ -535,10 +543,6 @@ func (m *campaignInferenceManager) notifyEvent(campaign data.Campaign, record da
 	if job == nil || job.campaign.Revision != campaign.Revision {
 		return
 	}
-	request := DetectionNotification{ID: uuid.NewString(), Event: record.Name, Campaign: campaign.Name, Model: record.Model}
-	select {
-	case job.queue <- request:
-	default:
-		job.notificationError(errors.New("notification queue full; event notification dropped"))
-	}
+	request := DetectionNotification{ID: uuid.NewString(), Event: record.Name, Campaign: campaign.Name, Model: record.Model, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	job.enqueueNotification(request)
 }

@@ -29,11 +29,12 @@ window.addEventListener('message',async event=>{
 async function fixture({ name, arguments: args }) {
   let data;
   switch (name) {
-    case "open_devices": case "list_robots": data = {total_count:7,robots:[['go2','Lab Go2','Unitree Go2'],['orin','Vision bench','Jetson Orin Nano'],['dragonwing','Warehouse edge','Dragonwing IQ-9075'],['dgx','Training server','NVIDIA DGX Spark'],['macbook','Development Mac','MacBook'],['g1','Unitree G1','Unitree G1'],['generic','Local VM','WendyOS simulator']].map(([model,name,device_type])=>({id:model,model,name,device_type,source: model==='generic'?'simulator':'configured',cloud_presence:model==='generic'?'running':'online',can_capture:true,can_control_apps:true,can_read_events:true}))};break;
+    case "open_devices": case "list_robots": data = {total_count:7,robots:[['go2','Lab Go2','Unitree Go2'],['orin','Vision bench','Jetson Orin Nano'],['dragonwing','Warehouse edge','Dragonwing IQ-9075'],['dgx','Training server','NVIDIA DGX Spark'],['macbook','Development Mac','MacBook'],['g1','Unitree G1','Unitree G1'],['generic','Local VM','WendyOS simulator']].map(([model,name,device_type])=>({id:model,model,name,device_type,source: model==='generic'?'simulator':'configured',cloud_presence:model==='generic'?'running':'online',can_capture:true,can_control_apps:true,can_read_events:true,can_deploy_detector:true}))};break;
     case "read_device_settings":data={values:{include_offline:false}};break;
     case "update_device_settings":data={values:args.set};break;
     case "list_device_triggers":data={triggers:[{id:'people',name:'Person detected',event:'person_detected',state:'fixture',managed:false,can_configure:false}]};break;
     case "list_device_events":data={status:'observed',events:[{name:'person_detected',observed_at:new Date().toISOString(),attributes:{confidence:0.94},fixture:true}],gap:false};break;
+    case "read_device_notifications":data={fixture:true,notifications:[{notification_id:'fixture-notification',event:'person_detected',campaign:'chatgpt-yolo-people',source_id:'camera:0',count:1,occurred_at:new Date().toISOString()}],gap:false};break;
     case "read_device_metrics":data={fixture:true,metrics:Array.from({length:12},(_,i)=>({name:'cpu.utilization',value:20+(i%5)*3,unit:'%',timestamp:new Date(Date.now()-(11-i)*5000).toISOString(),attributes:{'cpu.mode':'user'}}))};break;
     case "read_device_logs":data={fixture:true,logs:[{timestamp:new Date().toISOString(),severityText:'INFO',message:'Fixture application ready'}]};break;
     case "inspect_robot": data = {robot_id:"preview",name:"Workshop robot",connected:true,observed_at:new Date().toISOString(),cameras:[{id:0,name:"Front camera"}],apps:[...apps].map(([name,state])=>({name,state,readiness:"unknown"})),warnings:[]}; break;

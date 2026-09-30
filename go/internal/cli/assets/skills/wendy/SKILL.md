@@ -26,6 +26,9 @@ explicit targets and choices to avoid interactive pickers. (There is no `-j` sho
 
 ## Common Tasks
 
+For first-time setup, use `wendy-onboarding` to install and verify a physical
+device or start a local simulator while waiting for hardware.
+
 - Run an app: `wendy run`
 - Create a new project: `wendy init`
 - Discover devices: `wendy discover`

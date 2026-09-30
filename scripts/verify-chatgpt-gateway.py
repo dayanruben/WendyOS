@@ -17,7 +17,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wendy", default="wendy")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--robot", required=True)
+    parser.add_argument("--robot")
+    parser.add_argument("--mentions-only", action="store_true", help="Verify composer mentions and resource reads without connecting to a device")
     parser.add_argument("--camera", type=int)
     parser.add_argument("--image-out", type=Path)
     parser.add_argument("--cycle-app", help="Stop then start only this permitted test app")
@@ -26,6 +27,8 @@ def main():
     parser.add_argument("--preview-camera", type=int, help="Start a continuous preview, verify multiple frames, then stop")
     parser.add_argument("--open-app", help="Verify the declared app web UI without changing app state")
     args = parser.parse_args()
+    if not args.robot and not args.mentions_only:
+        parser.error("--robot is required unless --mentions-only is set")
     if (args.camera is None) != (args.image_out is None):
         parser.error("--camera and --image-out must be supplied together")
     proc = subprocess.Popen([args.wendy, "mcp", "gateway", "--config", args.config],
@@ -72,6 +75,30 @@ def main():
         proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
         proc.stdin.flush()
         catalog = request("tools/list", {})
+        mentions = next(t for t in catalog["tools"] if t["name"] == "search_devices")
+        assert mentions["_meta"]["openai/extensions"]["mentions/search"] == {}
+        assert "app" in mentions["_meta"]["ui"]["visibility"]
+        assert "query" in mentions["inputSchema"]["required"]
+        assert "items" in mentions["outputSchema"]["required"]
+        found = request("tools/call", {"name": "search_devices", "arguments": {"query": ""}})
+        assert not found.get("isError"), found.get("content")
+        assert found["content"] == []
+        assert set(found["structuredContent"]) == {"items"}
+        items = found["structuredContent"]["items"]
+        assert isinstance(items, list) and len(items) <= 100
+        assert all(i["type"] == "resource_link" and i["uri"].startswith("wendy://devices/") and i["name"] for i in items)
+        if items:
+            selected = items[0]
+            resource = request("resources/read", {"uri": selected["uri"]})["contents"][0]
+            assert resource["uri"] == selected["uri"] and resource["mimeType"] == "application/json"
+            identity = json.loads(resource["text"])
+            assert identity["robot_id"] == selected["uri"].removeprefix("wendy://devices/")
+            assert identity["connection"] == "unknown"
+            narrowed = request("tools/call", {"name": "search_devices", "arguments": {"query": identity["robot_id"]}})
+            assert any(i["uri"] == selected["uri"] for i in narrowed["structuredContent"]["items"])
+        print(json.dumps({"mentions": "verified", "returned": len(items), "resource_read": "verified" if items else "no devices", "discovery_complete": found.get("_meta", {}).get("discovery_complete")}), flush=True)
+        if args.mentions_only:
+            return
         settings = init.get("capabilities", {}).get("experimental", {}).get("openai/settings")
         if settings:
             names = {t["name"] for t in catalog["tools"]}

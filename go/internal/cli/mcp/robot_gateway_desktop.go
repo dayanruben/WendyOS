@@ -22,7 +22,7 @@ import (
 var gatewayAssets embed.FS
 var gatewayModels = map[string]bool{"thor": true, "go2": true, "orin": true, "dragonwing": true, "dgx": true, "macbook": true, "generic": true}
 var gatewaySettingsMu sync.Mutex
-var desktopToolNames = []string{"identify_device", "open_devices", "search_devices", "get_device_model", "read_device_settings", "update_device_settings", "read_device_metrics", "read_device_logs", "list_device_triggers", "configure_device_trigger", "list_device_events", "wait_for_device_event"}
+var desktopToolNames = []string{"identify_device", "open_devices", "search_devices", "get_device_model", "read_device_settings", "update_device_settings", "read_device_metrics", "read_device_logs", "list_device_triggers", "configure_device_trigger", "list_device_events", "wait_for_device_event", "read_device_notifications", "deploy_yolo_detector", "inspect_yolo_detector", "stop_yolo_detector"}
 
 func gatewayModel(r GatewayRobot, deviceType string) string {
 	if r.Model != "" {
@@ -56,32 +56,7 @@ func (g *RobotGateway) registerDesktopTools() {
 	t.Annotations.Title = "Devices"
 	t.Icons = []mcpgo.Icon{{Src: "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="2" width="6" height="6" rx="1.5"/><rect x="2" y="12" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/></svg>`)), MIMEType: "image/svg+xml"}}
 	g.protocol.AddTool(t, g.listRobots)
-	search := gatewayTool("search_devices", "Find authorized devices to mention in a conversation.", readOnly(), mcpgo.WithString("query", mcpgo.MaxLength(128)))
-	search.Meta = mcpgo.NewMetaFromMap(map[string]any{"ui": map[string]any{"visibility": []string{"app"}}, "openai/extensions": map[string]any{"mentions/search": map[string]any{}}})
-	g.protocol.AddTool(search, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-		result, err := g.listRobots(ctx, req)
-		if err != nil || result.IsError {
-			return result, err
-		}
-		rows := result.StructuredContent.(map[string]any)["robots"].([]map[string]any)
-		items := []map[string]any{}
-		for _, r := range rows {
-			items = append(items, map[string]any{"type": "resource_link", "uri": "wendy://devices/" + r["id"].(string), "name": r["name"], "mimeType": "application/json"})
-		}
-		return okResult(map[string]any{"items": items}), nil
-	})
-	g.protocol.AddResourceTemplate(mcpgo.NewResourceTemplate("wendy://devices/{id}", "Wendy device"), func(ctx context.Context, req mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
-		id := strings.TrimPrefix(req.Params.URI, "wendy://devices/")
-		if !gatewayIdentifier.MatchString(id) {
-			return nil, fmt.Errorf("invalid device reference")
-		}
-		r, err := g.authorize(ctx, id, RobotReadScope)
-		if err != nil {
-			return nil, err
-		}
-		b, _ := json.Marshal(map[string]any{"robot_id": r.ID, "name": r.Name, "connection": "unknown", "instruction": "Inspect the device for current state."})
-		return []mcpgo.ResourceContents{mcpgo.TextResourceContents{URI: req.Params.URI, MIMEType: "application/json", Text: string(b)}}, nil
-	})
+	g.registerDeviceMentions()
 	model := gatewayTool("get_device_model", "Load an embedded display model. Models are illustrations and do not establish device hardware capabilities.", readOnly(), mcpgo.WithString("model", mcpgo.Required(), mcpgo.Enum("go2", "orin", "dragonwing", "dgx", "macbook", "thor")))
 	model.Meta = mcpgo.NewMetaFromMap(map[string]any{"ui": map[string]any{"visibility": []string{"app"}}})
 	g.protocol.AddTool(model, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

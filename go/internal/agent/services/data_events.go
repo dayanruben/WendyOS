@@ -15,6 +15,17 @@ func (s *DataService) Events(ctx context.Context, r *agentpbv2.DataEventsRequest
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if r.NotificationsOnly {
+		notifications, cursor, gap, err := s.manager.Notifications(r.AppId, r.Event, r.Cursor, r.Replay)
+		if err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+		raw, err := json.Marshal(notifications)
+		if err != nil {
+			return nil, err
+		}
+		return &agentpbv2.DataEventsResponse{EventsJson: raw, Cursor: cursor, Gap: gap, Notifications: true}, nil
+	}
 	events, cursor, gap, err := s.manager.DeviceEvents(r.AppId, r.Event, r.Cursor, r.Replay)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())

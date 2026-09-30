@@ -179,6 +179,10 @@ func TestAgentInferenceAllCamerasRecordAndNotify(t *testing.T) {
 	if notification1.ID == notification2.ID {
 		t.Fatal("different cameras shared a notification ID")
 	}
+	retained, _, _, err := service.manager.Notifications("", "", "", true)
+	if err != nil || len(retained) != 2 || retained[0].ID != notification1.ID || retained[1].ID != notification2.ID || retained[0].OccurredAt == "" {
+		t.Fatalf("detection notifications were not durably retained: %v %v", retained, err)
+	}
 
 	episodes := service.manager.ActiveEpisodeKeys()
 	if len(episodes) != 1 {
@@ -499,6 +503,10 @@ func TestAgentInferenceEventNotificationWithoutModelOrUpload(t *testing.T) {
 	}
 	if len(manager.ActiveEpisodeKeys()) != 0 {
 		t.Fatal("notification created an episode")
+	}
+	retained, _, _, err := manager.Notifications("", "", "", true)
+	if err != nil || len(retained) != 1 || retained[0].Event != "person_detected" || retained[0].OccurredAt == "" {
+		t.Fatalf("named event notification was not durably retained: %v %v", retained, err)
 	}
 }
 

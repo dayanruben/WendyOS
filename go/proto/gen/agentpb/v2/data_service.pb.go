@@ -23,13 +23,16 @@ const (
 )
 
 type DataEventsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
-	Event         string                 `protobuf:"bytes,2,opt,name=event,proto3" json:"event,omitempty"`
-	Cursor        string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
-	Replay        bool                   `protobuf:"varint,4,opt,name=replay,proto3" json:"replay,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	AppId  string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	Event  string                 `protobuf:"bytes,2,opt,name=event,proto3" json:"event,omitempty"`
+	Cursor string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Replay bool                   `protobuf:"varint,4,opt,name=replay,proto3" json:"replay,omitempty"`
+	// Select the separate durable immediate Wendy Data notification journal.
+	// This includes notify:on detection/event; Cloud episode_committed is separate.
+	NotificationsOnly bool `protobuf:"varint,5,opt,name=notifications_only,json=notificationsOnly,proto3" json:"notifications_only,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *DataEventsRequest) Reset() {
@@ -90,11 +93,20 @@ func (x *DataEventsRequest) GetReplay() bool {
 	return false
 }
 
+func (x *DataEventsRequest) GetNotificationsOnly() bool {
+	if x != nil {
+		return x.NotificationsOnly
+	}
+	return false
+}
+
 type DataEventsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	EventsJson    []byte                 `protobuf:"bytes,1,opt,name=events_json,json=eventsJson,proto3" json:"events_json,omitempty"`
-	Cursor        string                 `protobuf:"bytes,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
-	Gap           bool                   `protobuf:"varint,3,opt,name=gap,proto3" json:"gap,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	EventsJson []byte                 `protobuf:"bytes,1,opt,name=events_json,json=eventsJson,proto3" json:"events_json,omitempty"`
+	Cursor     string                 `protobuf:"bytes,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Gap        bool                   `protobuf:"varint,3,opt,name=gap,proto3" json:"gap,omitempty"`
+	// Echoes notifications_only so clients can detect agents that predate it.
+	Notifications bool `protobuf:"varint,4,opt,name=notifications,proto3" json:"notifications,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -146,6 +158,13 @@ func (x *DataEventsResponse) GetCursor() string {
 func (x *DataEventsResponse) GetGap() bool {
 	if x != nil {
 		return x.Gap
+	}
+	return false
+}
+
+func (x *DataEventsResponse) GetNotifications() bool {
+	if x != nil {
+		return x.Notifications
 	}
 	return false
 }
@@ -1495,17 +1514,19 @@ var File_wendy_agent_services_v2_data_service_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v2_data_service_proto_rawDesc = "" +
 	"\n" +
-	"*wendy/agent/services/v2/data_service.proto\x12\x17wendy.agent.services.v2\x1a#wendy/agent/apps/v1/recording.proto\"p\n" +
+	"*wendy/agent/services/v2/data_service.proto\x12\x17wendy.agent.services.v2\x1a#wendy/agent/apps/v1/recording.proto\"\x9f\x01\n" +
 	"\x11DataEventsRequest\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x14\n" +
 	"\x05event\x18\x02 \x01(\tR\x05event\x12\x16\n" +
 	"\x06cursor\x18\x03 \x01(\tR\x06cursor\x12\x16\n" +
-	"\x06replay\x18\x04 \x01(\bR\x06replay\"_\n" +
+	"\x06replay\x18\x04 \x01(\bR\x06replay\x12-\n" +
+	"\x12notifications_only\x18\x05 \x01(\bR\x11notificationsOnly\"\x85\x01\n" +
 	"\x12DataEventsResponse\x12\x1f\n" +
 	"\vevents_json\x18\x01 \x01(\fR\n" +
 	"eventsJson\x12\x16\n" +
 	"\x06cursor\x18\x02 \x01(\tR\x06cursor\x12\x10\n" +
-	"\x03gap\x18\x03 \x01(\bR\x03gap\"\x85\x01\n" +
+	"\x03gap\x18\x03 \x01(\bR\x03gap\x12$\n" +
+	"\rnotifications\x18\x04 \x01(\bR\rnotifications\"\x85\x01\n" +
 	"\n" +
 	"DataSource\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +

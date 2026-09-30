@@ -35,3 +35,29 @@ where importing commands would create a dependency cycle. Preserve direct/cloud
 target identity. No credentials in results. No interactive prompts on MCP stdio.
 Unitree G1 PC2 retains vendor Ubuntu. New host workflow tests use fixtures and fake
 backends; development tests must not flash hardware or install host dependencies.
+
+## Skills over MCP
+
+The CLI server and ChatGPT gateway advertise `io.modelcontextprotocol/skills`
+under `capabilities.extensions`. Clients call `skills/list`, then `skills/get`
+with a catalog URI, and `resources/read` for the instructions and supporting
+files. The catalog is static and fits on one terminal page. Unknown cursors and
+URIs return protocol errors.
+
+OpenAI imports at most five skills. Package the complete embedded end-user group
+as one `wendy` skill, with a workflow index and the original skill directories
+under `references/skills/`. Preserve frontmatter, relative links, and source
+files; compute SHA-256 digests over the exact returned bytes. Engineering and
+unrelated embedded skills are excluded. Serve offline without a device, UI, or
+local skill installation. Gateway requests retain their existing authentication.
+
+`scripts/sync-agent-skills.py` generates the same bundle for the ChatGPT plugin
+and the embedded server files. Plugin onboarding points to the bundled
+`wendy-onboarding` instructions. The native coding plugin points to its original
+skill. Onboarding supports first-device installation and first-boot verification,
+or a local simulator when hardware is absent. The existing device workspace
+prefers fullscreen; onboarding also works through text and tools alone.
+
+The pinned MCP library does not dispatch draft skill methods. A shared dispatcher
+handles these two methods at the stdio and HTTP transport boundaries; standard
+methods, resources, tool cancellation, and task handling stay with the library.

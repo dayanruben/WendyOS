@@ -6,6 +6,22 @@ description: Tool groups, device selectors, compact results, and current CLI cov
 Wendy starts with 15 core tools for connecting, deploying, inspecting containers,
 reading logs, and discovering hardware. Running apps can provide additional tools.
 
+## Skills and first-time setup
+
+The server also exposes the bundled end-user skills through the MCP skills
+extension. Call `skills/list` with `{}` to get the single `wendy` entry, then
+`skills/get` with its URI. Read instructions and supporting files through
+`resources/read`; each catalog resource includes its SHA-256 digest. These calls
+work offline without a device connection or a local skill installation.
+
+The bundle includes `wendy-onboarding` for installing and verifying a first
+physical device, or setting up a local simulator when hardware is unavailable.
+The ChatGPT plugin's setup entry opens this skill. Native skill installation
+through `wendy mcp setup` remains available for other clients.
+
+OpenAI imports MCP skills as a snapshot during Scan Tools. Restart the MCP
+server after a CLI update, then scan again before submitting updated skills.
+
 ## Enable specialist tools
 
 Call `wendy_tools` with `{"groups":["robotics"]}` to expose ROS inspection tools.

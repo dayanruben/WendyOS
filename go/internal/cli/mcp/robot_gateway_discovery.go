@@ -135,7 +135,7 @@ func (g *RobotGateway) listRobots(ctx context.Context, req mcpgo.CallToolRequest
 		if query != "" && !strings.Contains(strings.ToLower(row.Name), query) && !strings.Contains(strings.ToLower(row.ID), query) {
 			continue
 		}
-		robots = append(robots, map[string]any{"id": row.ID, "name": row.Name, "connection": "unknown", "cloud_presence": row.presence, "source": row.source, "device_type": row.deviceType, "model": gatewayModel(row.GatewayRobot, row.deviceType), "can_read_events": len(row.Triggers) > 0 && g.hasScope(ctx, RobotEventsScope), "can_capture": row.AllowCamera && g.hasScope(ctx, RobotCameraScope), "can_control_apps": (row.AllowAllApps || len(row.Apps) > 0) && g.hasScope(ctx, RobotControlScope)})
+		robots = append(robots, map[string]any{"id": row.ID, "name": row.Name, "connection": "unknown", "cloud_presence": row.presence, "source": row.source, "device_type": row.deviceType, "model": gatewayModel(row.GatewayRobot, row.deviceType), "can_read_events": g.hasScope(ctx, RobotEventsScope), "can_deploy_detector": row.AllowCamera && g.hasScope(ctx, RobotCameraScope) && g.hasScope(ctx, RobotTriggerScope), "can_capture": row.AllowCamera && g.hasScope(ctx, RobotCameraScope), "can_control_apps": (row.AllowAllApps || len(row.Apps) > 0) && g.hasScope(ctx, RobotControlScope)})
 	}
 	limit, offset := req.GetInt("limit", 100), req.GetInt("offset", 0)
 	if limit < 1 || limit > 200 || offset < 0 {

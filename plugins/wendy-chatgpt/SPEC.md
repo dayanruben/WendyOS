@@ -42,17 +42,20 @@ and explicit camera and event actions. The user also approved installation,
 development, deployment, and fleet workflows described in
 `specs/2026-09-30-openai-mcp-desktop-plan.md`.
 
-`wait_for_device_event` returns a detection as a tool result. A host must have
-started that wait and must deliver its result to the conversation. Ordinary MCP
-notifications do not promise to start a model turn. Camera capture remains a
-finite, explicit action, separate from an event's detection-time evidence.
+`wendy.data.notification` uses MCP Events webhook subscriptions for immediate
+Wendy Data detection and named-event notifications. ChatGPT must create the
+subscription and verify its callback before monitoring is active. A persistent
+gateway outbox delivers signed notifications and resumes after restart;
+ordinary MCP1 `wait_for_device_event` remains a bounded tool-result alternative.
+Cloud episode-ingestion notifications are separate. Camera images are shared
+only by explicit capture or attachment.
 
 Implementation verification must distinguish protocol fixtures from an actual
 ChatGPT desktop session and device execution.
 
 The implemented workspace opens on a device card gallery, with no preselected
-device. It uses the existing Wendy models, a shared WebGL renderer, official
-logos and Geist fonts. Controls use neutral host colors. Online sidebar dots
+device. It uses static renders of the existing Wendy models, official logos and
+Geist fonts. Controls use neutral host colors. Online sidebar dots
 are green. Applications have cards with running/stopped status icons and
 permission-aware play/stop controls. Unknown readiness is omitted from the UI;
 the backend retains it when there is no application evidence.
@@ -74,10 +77,28 @@ loopback proxy routes their declared port through the device connection. Its
 access cookie, exact Host/Origin checks and expiration protect the local view.
 The tool does not start the app or accept arbitrary addresses or ports.
 
-The current resource is `ui://wendy/device-workspace-v3.html`. Tool visibility,
+The current resource URI includes the built workspace's content hash. Tool visibility,
 subject scopes and settings capability discovery agree. Existing plugin
 connections need a metadata refresh and a fresh conversation after an upgrade.
 The UI reports this requirement when a host still has an older trusted catalog.
+
+## Composer device mentions
+
+In a desktop host that supports OpenAI composer mentions, users can search Wendy
+devices by name or stable ID and attach one to their prompt. `search_devices`
+advertises `openai/extensions.mentions/search` with app visibility, a required
+string `query` that accepts empty text, and an output schema for
+`structuredContent.items`. Items are MCP resource links to
+`wendy://devices/{id}`. Search includes authorized configured devices, Cloud
+enrollments including offline devices, and permitted running local simulators.
+Return at most 100 matches; users can narrow the query for larger fleets.
+
+The resource reader checks authorization again and returns the device name and
+`robot_id` for subsequent tools. Mention search and resource reads do not connect
+to the device, activate cameras, or select a shared current device. Connection
+state remains unknown until inspected. Incomplete discovery is reported in
+result metadata without exposing private backend errors. Tests cover the wire
+contract, filtering, bounds, scope isolation and revoked Cloud inventory.
 
 ## Pilot tools
 
@@ -170,3 +191,22 @@ unattended model activation is not assumed.
 - https://developers.openai.com/plugins/build/auth
 - https://developers.openai.com/plugins/deploy/connect-chatgpt
 - https://developers.openai.com/plugins/deploy/app-review
+
+## MCP Events and YOLO
+
+The gateway accepts authenticated, self-contained MCP2 requests at the same
+stdio or HTTP endpoint as its legacy tools. Complete responses retain tool and
+UI metadata. MCP1 task augmentation remains supported only through MCP1;
+MCP2 task continuations are not advertised. Skills and device mentions remain
+available alongside notification and inference tools.
+
+YOLO deployment takes a Hugging Face model reference, resolves its immutable
+revision, and starts a named Wendy Data campaign on an explicit authorized
+camera. The first backend supports CPU YOLOv8/YOLO11 float32 raw ONNX detection
+exports, with inspect and stop tools. Updated device Agents are required for
+both this backend and the durable notification journal. Deployment success
+alone does not establish inference readiness or an active ChatGPT subscription.
+
+See the README for scope requirements, storage, supported model formats, and
+host verification steps. No physical detector was deployed as part of these
+implementation checks because no target and model reference were selected.

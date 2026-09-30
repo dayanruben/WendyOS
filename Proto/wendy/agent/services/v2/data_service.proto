@@ -40,8 +40,22 @@ service DataService {
   rpc CampaignTrigger(DataCampaignTriggerRequest) returns (DataEpisode);
 }
 
-message DataEventsRequest { string app_id = 1; string event = 2; string cursor = 3; bool replay = 4; }
-message DataEventsResponse { bytes events_json = 1; string cursor = 2; bool gap = 3; }
+message DataEventsRequest {
+  string app_id = 1;
+  string event = 2;
+  string cursor = 3;
+  bool replay = 4;
+  // Select the separate durable immediate Wendy Data notification journal.
+  // This includes notify:on detection/event; Cloud episode_committed is separate.
+  bool notifications_only = 5;
+}
+message DataEventsResponse {
+  bytes events_json = 1;
+  string cursor = 2;
+  bool gap = 3;
+  // Echoes notifications_only so clients can detect agents that predate it.
+  bool notifications = 4;
+}
 
 message DataSource {
   string id = 1;

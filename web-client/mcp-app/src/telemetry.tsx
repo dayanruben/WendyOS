@@ -37,7 +37,7 @@ export function telemetryTime(row: RecordValue): number | undefined {
       /* Try the next explicitly timestamped field. */
     }
   }
-  for (const field of ["observed_at", "timestamp"]) {
+  for (const field of ["observed_at", "timestamp", "occurred_at"]) {
     const raw = row[field];
     if (typeof raw !== "string" || !raw.includes("T")) continue;
     const time = Date.parse(raw);
@@ -284,7 +284,7 @@ export function TelemetryPanel({
   loading: boolean;
 }) {
   const result = record(data);
-  const values = result[kind.toLowerCase()];
+  const values = result[kind.toLowerCase()] ?? (kind === "Events" ? result.notifications : undefined);
   const rows = Array.isArray(values) ? values.map(record) : [];
   const series = kind === "Metrics" ? metricSeries(rows) : [];
   const omitted = Number(result.omitted_count ?? result.omitted ?? 0);
@@ -365,8 +365,8 @@ export function TelemetryPanel({
                   </time>
                   {kind === "Events" ? (
                     <div>
-                      <strong>{text(r.name).replaceAll("_", " ")}</strong>
-                      <small>{text(r.attributes)}</small>
+                      <strong>{text(r.name ?? r.event).replaceAll("_", " ")}</strong>
+                      <small>{text(r.attributes ?? [r.campaign, r.source_id, r.count == null ? null : `${r.count} detected`].filter(Boolean).join(" · "))}</small>
                     </div>
                   ) : (
                     <>

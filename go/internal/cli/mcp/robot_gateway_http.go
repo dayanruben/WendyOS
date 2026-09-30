@@ -49,6 +49,7 @@ func (g gatewaySession) NotificationChannel() chan<- mcpgo.JSONRPCNotification {
 func (g gatewaySession) SessionID() string                                     { return "principal:" + g.subject }
 
 type gatewayTaskContextKey struct{}
+type gatewayEventCredentialKey struct{}
 
 // HTTPHandler refuses to start without explicit authentication. The caller must
 // put this handler behind TLS at resource_url; localhost is only for development.
@@ -65,6 +66,10 @@ func gatewayHTTPS(raw string) (*url.URL, error) {
 }
 
 func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) string) (http.Handler, error) {
+	catalog, err := embeddedSkillCatalog()
+	if err != nil {
+		return nil, err
+	}
 	cfg := g.cfg.HTTP
 	if cfg == nil {
 		return nil, fmt.Errorf("HTTP requires http configuration and authentication")
@@ -127,6 +132,7 @@ func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) stri
 			return gatewayPrincipal{}, fmt.Errorf("invalid token")
 		}
 	}
+	g.eventAuthenticate = authenticate
 	transport := server.NewStreamableHTTPServer(g.protocol, server.WithStateLess(true), server.WithDisableStreaming(true), server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 		p := r.Context().Value(gatewayPrincipalKey{}).(gatewayPrincipal)
 		ctx = context.WithValue(ctx, gatewayPrincipalKey{}, p)
@@ -181,6 +187,7 @@ func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) stri
 			return
 		}
 		ctx := context.WithValue(r.Context(), gatewayPrincipalKey{}, principal)
+		ctx = context.WithValue(ctx, gatewayEventCredentialKey{}, parts[1])
 		if grant, _ := g.grant(ctx); grant == nil {
 			http.Error(w, "account has no robot grant", http.StatusForbidden)
 			return
@@ -192,6 +199,40 @@ func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) stri
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(raw))
+		if gatewayIsMCP2(raw, "") && r.Header.Get("Mcp-Protocol-Version") == "" {
+			var request gatewayMCP2Request
+			_ = json.Unmarshal(raw, &request)
+			if len(request.ID) == 0 {
+				request.ID = json.RawMessage("null")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(gatewayMCP2Response{JSONRPC: "2.0", ID: request.ID, Error: map[string]any{"code": -32020, "message": "Mcp-Protocol-Version header is required"}})
+			return
+		}
+		if response, handled := g.handleGatewayMCP2(ctx, raw, r.Header.Get("Mcp-Protocol-Version")); handled {
+			if response == nil {
+				w.WriteHeader(http.StatusAccepted)
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				if status := gatewayMCP2HTTPStatus(response); status != http.StatusOK {
+					w.WriteHeader(status)
+				}
+				_ = json.NewEncoder(w).Encode(response)
+			}
+			return
+		}
+		// Draft skill methods are not dispatched by mcp-go yet. Keep them
+		// behind the same origin, authentication, grant, and size checks.
+		if response, handled := catalog.dispatch(raw); handled {
+			if response == nil {
+				w.WriteHeader(http.StatusAccepted)
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(response)
+			}
+			return
+		}
 		var envelope struct {
 			Method string `json:"method"`
 			Params struct {

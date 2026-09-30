@@ -15,6 +15,23 @@ general-purpose `wendy mcp serve` connection and its selected device are separat
 
 ## Run the private pilot
 
+The plugin packages a single `wendy` skill with all end-user workflows, including
+`wendy-onboarding`. Its setup entry guides users through installing and verifying
+their first physical device, or creating a local simulator when hardware is not
+available. The existing device workspace prefers fullscreen; setup also works
+without the UI.
+
+Edit skills in `plugins/wendy-agentic-coding/skills`, then run
+`python3 scripts/sync-agent-skills.py` from the repository root. The script updates
+this package and the matching bundle embedded in the CLI. Both gateway transports
+serve `skills/list`, `skills/get`, and the listed `skill://wendy/wendy/` resources
+with SHA-256 digests. The HTTP endpoint retains its authentication requirements.
+
+OpenAI imports these files as a submission-time snapshot. After updating the
+server, run Scan Tools again and review the imported skills before submitting a
+new version. See [MCP skill import](https://developers.openai.com/plugins/build/mcp-server#import-skills-from-the-mcp-server)
+and [plugin onboarding](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md#plugin-onboarding).
+
 Build this checkout. An older installed CLI does not have the gateway command.
 
 ```sh
@@ -92,6 +109,32 @@ Try these prompts:
 - "Check the companion app, then set its message to Hello from ChatGPT."
 
 The last prompt requires the companion tool exports described below.
+
+## Mention a device
+
+In ChatGPT Desktop's composer, type `@`, choose Wendy, and search for a device
+by name or ID. Select the device and ask, for example, "Show the apps on this
+device." The mention supplies its name and stable `robot_id` to the conversation.
+Devices with the same name have distinct resource links and IDs in their
+descriptions. An empty search lists up to 100 devices; type more of the name or
+ID to narrow a larger fleet.
+
+Search includes configured devices, authorized Cloud enrollments including
+offline devices, and permitted running local simulators. Selecting a mention
+checks access again. Search and selection do not connect to the device or
+activate its cameras.
+
+After updating the gateway, restart its MCP process and refresh Wendy's tools
+in ChatGPT. The host must support
+[composer at-mentions](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md#composer-at-mentions).
+The extension currently specifies desktop support only.
+
+Check the protocol and device resource reads without connecting to a device:
+
+```sh
+python3 scripts/verify-chatgpt-gateway.py --wendy /tmp/wendy-chatgpt \
+  --config /tmp/robot-gateway.json --mentions-only
+```
 
 ## Discover the rest of your Cloud devices
 
@@ -300,12 +343,78 @@ shows Open app when the app advertises a port and the caller has `apps:tools`.
 
 ## Events and deployment
 
-Configured triggers and `events:read` allow event history and a bounded
-`wait_for_device_event`. MCP task augmentation lets a supporting host receive
-the later result without keeping the initiating HTTP request open. The host
-must start the wait and deliver its result to ChatGPT. An ordinary MCP
-notification does not guarantee an unattended model turn. Devices need the
-updated event journal RPC and an app that emits the configured event.
+The gateway implements [MCP Events](https://developers.openai.com/plugins/build/mcp-events)
+over MCP 2.0 (`2026-07-28`) while retaining its MCP1 tools and bounded task waits.
+`server/discover` advertises events to accounts with `events:read`.
+`events/list` exposes `wendy.data.notification`, filtered by required `robot_id`
+and optional exact `campaign` and `event` names. `events/subscribe` verifies the
+host's signed HTTPS callback before activating delivery; `events/unsubscribe`
+stops it. A successful host subscription lets ChatGPT receive the notification
+and follow the user's chosen response instructions. It does not deploy a model
+or activate a camera.
+
+This event contains actual immediate Wendy Data notification intents emitted
+by `notify: {on: detection}` or `notify: {on: event, event: <name>}`. It includes
+the original notification ID, occurrence time, campaign, event, source, model,
+revision and count. Images and episode recordings are not sent in the webhook.
+Cloud ingestion's `episode_committed` notification intent is not included;
+that consumer is separate from the device's immediate notification flow.
+
+Update the **device Agent as well as the gateway**. The new Agent retains the
+latest 512 notifications in a private journal. Older Agents are explicitly
+rejected when they cannot identify this notification stream. Read retained
+notifications with `read_device_notifications`; `replay: true` includes history.
+A gap means some requested history has expired. Raw app events and the older
+`list_device_events` / `wait_for_device_event` tools remain separate.
+
+Subscriptions have a maximum/default lifetime of 24 hours, with shorter
+requested lifetimes honored. Delivery uses a durable outbox, stable event IDs,
+bounded retries, signed callback verification, and access checks before reads
+and sends. Callback connections validate public addresses at dial time and do
+not follow redirects. Gateway state is stored under `state_directory` or the
+user config directory, namespaced by device routing. Keep that directory across
+restarts. Subscription files contain webhook secrets and, for HTTP users, the
+credential needed to recheck authorization; files are mode 0600. One process
+owns delivery for each routing namespace.
+
+To set up YOLO, grant the intended account `triggers:write`, `cameras:capture`,
+and `events:read`, with camera access enabled on the target. These scopes also
+apply to authorized Cloud discoveries; no arbitrary address is accepted.
+Call `deploy_yolo_detector` with an explicit device and public Hugging Face
+repository, for example:
+
+```json
+{
+  "robot_id": "<id from list_robots>",
+  "name": "people",
+  "model_ref": "<owner>/<repository>",
+  "model_file": "<YOLO detection export>.onnx",
+  "labels": ["person"],
+  "threshold": 0.5,
+  "rate": 1
+}
+```
+
+`model_file` is optional when the repository has exactly one ONNX file.
+`revision` defaults to `main` and resolves to an immutable commit before
+installation. The CPU runtime supports YOLOv8/YOLO11 float32 ONNX detection
+exports with a static batch-one input and embedded class names. It rejects
+PyTorch checkpoints, repository Python, external tensor files, and unsupported
+segmentation or postprocessed outputs. Choose `source_id` when more than one
+healthy camera exists. The tool records one-second detection episodes locally
+with manual upload. The plan requests 128 MiB retention, but the current Agent
+enforces only its device-wide storage quota; the tool reports that distinction. `inspect_yolo_detector` reports inference and notification errors;
+`stop_yolo_detector` disables inference without deleting recordings.
+
+After inspection confirms the detector is running, ask ChatGPT to monitor
+`wendy.data.notification` using the returned `robot_id` and `campaign` filters.
+Rescan the plugin's tools and events after updating the gateway. Verify the
+host calls `server/discover` and `events/list`, completes signed callback
+verification, accepts a matching notification, and responds in the subscribed
+chat. Local protocol tests do not establish that ChatGPT delivery has occurred.
+The private tunnel must forward these custom methods; tunnel-client 0.0.14
+forwards stdio methods but does not offer a `stateless` configuration flag for
+its main channel. Authenticated HTTP can serve the MCP2 endpoint directly.
 
 Project and deployment tools operate on approved local workspaces and explicit
 targets. Fleet planning does not deploy. Deployment jobs expose progress and

@@ -34,6 +34,7 @@ type Row = {
   can_capture?: boolean;
   can_control_apps?: boolean;
   can_read_events?: boolean;
+  can_deploy_detector?: boolean;
 };
 type Catalog = {
   robots: Row[];
@@ -283,6 +284,7 @@ function Workspace() {
       | "inspect_robot"
       | "list_device_triggers"
       | "list_device_events"
+      | "read_device_notifications"
       | "read_device_metrics"
       | "read_device_logs",
     args: Record<string, unknown> = {},
@@ -785,14 +787,41 @@ function Workspace() {
               )}
               {tab === "Events" && (
                 <div className="panel">
-                  <h2>Detection events</h2>
+                  <h2>Wendy Data notifications</h2>
                   <p>
-                    Enable a device trigger, then ask ChatGPT to wait for its
-                    next event. Delivery requires a pending wait in the host.
+                    Ask ChatGPT to monitor detections or named events and choose
+                    how it should respond. Monitoring is active once ChatGPT
+                    confirms the subscription.
                   </p>
-                  {!triggers.length && (
-                    <p>No approved triggers on this device.</p>
-                  )}
+                  <div className="actions">
+                    <button onClick={() => send(
+                      `Monitor Wendy Data notifications on device ${selected}. Subscribe to the MCP event wendy.data.notification with robot_id=${selected}. Ask which campaign or event to monitor and what to do when it arrives. Confirm monitoring only after the subscription succeeds.`,
+                    )}>
+                      Ask ChatGPT to monitor
+                    </button>
+                    {row?.can_deploy_detector && (
+                      <button onClick={() => send(
+                        `Set up a YOLO detector on Wendy device ${selected} using deploy_yolo_detector. Ask me for the Hugging Face model reference and what to detect. Inspect this device's camera sources and ask which camera to use if there is more than one. Inspect the detector after deployment. Offer to subscribe to its Wendy Data notifications.`,
+                      )}>
+                        Set up YOLO detection
+                      </button>
+                    )}
+                    <button disabled={!!busy} onClick={() => {
+                      const g = generation.current;
+                      void action("Reading notifications", async () => {
+                        const r = await readDeviceTab("read_device_notifications", { replay: true });
+                        if (r && g === generation.current) setEvents(r.structuredContent);
+                      });
+                    }}>
+                      Recent notifications
+                    </button>
+                  </div>
+                  <p className="muted">
+                    Requires an updated Wendy Agent. Detection and named-event
+                    notifications are supported; Cloud episode-upload notifications
+                    are not included.
+                  </p>
+                  {triggers.length > 0 && <h3>Configured triggers</h3>}
                   {triggers.map((t) => (
                     <div className="trigger" key={t.id}>
                       <div>
@@ -860,7 +889,7 @@ function Workspace() {
                           disabled={!!busy}
                           onClick={() =>
                             send(
-                              `Tell me when ${t.event} happens on Wendy device ${selected}. Use wait_for_device_event with robot_id=${selected} and trigger_id=${t.id}. Use MCP task augmentation if your host supports it. Do not claim an unattended notification is armed unless the host confirms it.`,
+                              `Tell me when ${t.event} happens on Wendy device ${selected}. Check that this trigger emits Wendy Data notifications, then subscribe to the MCP event wendy.data.notification with robot_id=${selected} and event=${t.event}. Confirm monitoring only after the subscription succeeds.`,
                             )
                           }
                         >

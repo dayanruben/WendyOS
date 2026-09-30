@@ -51,19 +51,21 @@ type gatewayPrincipalKey struct{}
 
 // RobotGateway has no mutable current device. Connections belong to one call.
 type RobotGateway struct {
-	webSlots   chan struct{}
-	previewMu  sync.Mutex
-	previews   map[string]*gatewayCameraPreview
-	lifecycle  *mcpServer
-	jobMu      sync.Mutex
-	jobCancels map[string]context.CancelFunc
-	cfg        RobotGatewayConfig
-	connect    ConnectFunc
-	protocol   *server.MCPServer
-	slots      chan struct{}
-	waitSlots  chan struct{}
-	connectApp func(context.Context, context.Context, *grpcclient.AgentConnection, string) (appMCPClient, error)
-	discover   GatewayCloudDiscoverFunc
+	webSlots          chan struct{}
+	previewMu         sync.Mutex
+	previews          map[string]*gatewayCameraPreview
+	lifecycle         *mcpServer
+	jobMu             sync.Mutex
+	jobCancels        map[string]context.CancelFunc
+	cfg               RobotGatewayConfig
+	connect           ConnectFunc
+	protocol          *server.MCPServer
+	mcpEvents         *gatewayMCPEventManager
+	eventAuthenticate gatewayAuthenticate
+	slots             chan struct{}
+	waitSlots         chan struct{}
+	connectApp        func(context.Context, context.Context, *grpcclient.AgentConnection, string) (appMCPClient, error)
+	discover          GatewayCloudDiscoverFunc
 }
 
 func NewRobotGateway(cfg RobotGatewayConfig, connect ConnectFunc, options ...RobotGatewayOption) (*RobotGateway, error) {
@@ -113,12 +115,19 @@ func NewRobotGateway(cfg RobotGatewayConfig, connect ConnectFunc, options ...Rob
 		server.WithToolFilter(g.filterTools),
 		server.WithExperimental(map[string]any{"openai/settings": map[string]any{"readTool": "read_device_settings", "updateTool": "update_device_settings"}}),
 		server.WithInstructions("Use list_robots to select an authorized robot_id. Call inspect_robot before operating apps. Camera images are finite snapshots; never describe them as live. App running state does not prove readiness. Only explicitly exported app tools are available. Never retry an uncertain write automatically."))
+	if err := registerSkills(g.protocol); err != nil {
+		return nil, err
+	}
 	g.registerTools()
 	g.registerDesktopTools()
 	g.registerCameraPreviewTools()
 	g.registerAppWebTool()
 	g.registerEventTools()
 	g.registerLifecycleTools()
+	g.registerYOLOTools()
+	if err := g.initMCPEvents(); err != nil {
+		return nil, err
+	}
 	for _, r := range cfg.Robots {
 		for _, e := range r.Exports {
 			if err := g.registerExport(r, e); err != nil {
@@ -159,7 +168,17 @@ func (g *RobotGateway) StartStdio(ctx context.Context) error {
 		return fmt.Errorf("stdio requires local_subject with an explicit grant")
 	}
 	ctx = context.WithValue(ctx, gatewayLocalContextKey{}, true)
-	return server.NewStdioServer(g.protocol).Listen(context.WithValue(ctx, gatewayPrincipalKey{}, gatewayPrincipal{g.cfg.LocalSubject, robotGatewayScopes}), os.Stdin, os.Stdout)
+	return g.listenGatewayStdio(context.WithValue(ctx, gatewayPrincipalKey{}, gatewayPrincipal{g.cfg.LocalSubject, robotGatewayScopes}), os.Stdin, os.Stdout)
+}
+
+// StartEventDelivery binds durable subscription delivery to the server lifetime.
+// HTTP callers invoke this after configuring authentication, before serving.
+func (g *RobotGateway) StartEventDelivery(ctx context.Context) error {
+	return g.mcpEvents.start(ctx)
+}
+
+func (g *RobotGateway) StopEventDelivery() {
+	g.mcpEvents.close()
 }
 
 func (g *RobotGateway) grant(ctx context.Context) (*GatewayGrant, gatewayPrincipal) {
@@ -193,10 +212,10 @@ func (g *RobotGateway) authorize(ctx context.Context, id, scope string) (*Gatewa
 	// Discovery permits inspection by default. Camera capture and app control
 	// each require an explicit source opt-in as well as the caller's scope.
 	// App tool exports still require a reviewed, explicit robot configuration.
-	if scope == RobotReadScope || scope == RobotCameraScope || scope == RobotControlScope {
+	if scope == RobotReadScope || scope == RobotCameraScope || scope == RobotControlScope || scope == RobotEventsScope || scope == RobotTriggerScope {
 		rows, warnings := g.catalog(ctx, true)
 		for _, row := range rows {
-			allowed := scope == RobotReadScope || (scope == RobotCameraScope && row.AllowCamera) || (scope == RobotControlScope && row.AllowAllApps)
+			allowed := scope == RobotReadScope || scope == RobotEventsScope || ((scope == RobotCameraScope || scope == RobotTriggerScope) && row.AllowCamera) || (scope == RobotControlScope && row.AllowAllApps)
 			if row.ID == id && allowed {
 				return &row.GatewayRobot, nil
 			}
@@ -222,11 +241,11 @@ func (g *RobotGateway) toolScope(name string) string {
 		return RobotDeployScope
 	case "identify_device", "list_robots", "open_robot", "inspect_robot", "open_devices", "search_devices", "get_device_model", "read_device_metrics", "read_device_logs", "read_device_settings":
 		return RobotReadScope
-	case "list_device_events", "wait_for_device_event", "list_device_triggers":
+	case "list_device_events", "wait_for_device_event", "list_device_triggers", "inspect_yolo_detector", "read_device_notifications":
 		return RobotEventsScope
 	case "update_device_settings":
 		return RobotSettingsScope
-	case "configure_device_trigger":
+	case "configure_device_trigger", "deploy_yolo_detector", "stop_yolo_detector":
 		return RobotTriggerScope
 	case "capture_robot_image", "start_camera_preview", "read_camera_preview", "stop_camera_preview":
 		return RobotCameraScope
@@ -275,7 +294,11 @@ func (g *RobotGateway) filterTools(ctx context.Context, tools []mcpgo.Tool) []mc
 						meta[k] = v
 					}
 				}
-				meta["securitySchemes"] = []map[string]any{{"type": "oauth2", "scopes": []string{g.toolScope(t.Name)}}}
+				scopes := []string{g.toolScope(t.Name)}
+				if t.Name == "deploy_yolo_detector" {
+					scopes = append(scopes, RobotCameraScope)
+				}
+				meta["securitySchemes"] = []map[string]any{{"type": "oauth2", "scopes": scopes}}
 				t.Meta = mcpgo.NewMetaFromMap(meta)
 			}
 			out = append(out, t)

@@ -64,6 +64,11 @@ func newMCPGatewayCmd() *cobra.Command {
 				return err
 			}
 			defer ln.Close()
+			eventCtx, stopEvents := context.WithCancel(cmd.Context())
+			defer func() { stopEvents(); gateway.StopEventDelivery() }()
+			if err := gateway.StartEventDelivery(eventCtx); err != nil {
+				return err
+			}
 			srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 65 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32768}
 			stopped := make(chan struct{})
 			defer close(stopped)

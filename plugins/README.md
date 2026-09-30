@@ -18,6 +18,26 @@ python3 scripts/sync-agent-skills.py --check
 including their references, regardless of what other skills the CLI embeds.
 CI checks the manifest against the plugin directory and generated CLI copies.
 
+The sync script also builds one `wendy` bundle for the ChatGPT plugin and MCP
+server. It includes the whole end-user group under `references/skills/`, with
+relative links intact. This keeps the catalog within OpenAI's five-skill import
+limit. Edit the original skills here, then sync; do not edit generated copies.
+
+`wendy-onboarding` helps new users install and verify their first physical device,
+or create and boot a simulator while waiting for hardware. The Codex and ChatGPT
+manifests select it through `extensions.com.openai.onboardingSkill`.
+
+Both `wendy mcp serve` and the ChatGPT gateway advertise the skills extension.
+Call `skills/list` with `{}`, `skills/get` with the returned `uri`, and
+`resources/read` for each listed file. The catalog uses one terminal page and
+SHA-256 resource digests. Skill reads need no device connection. Gateway HTTP
+requests still require authentication. See the
+[OpenAI MCP skill import contract](https://developers.openai.com/plugins/build/mcp-server#import-skills-from-the-mcp-server).
+
+After upgrading the CLI, restart the MCP process. For an OpenAI submission,
+run Scan Tools again and review the imported snapshot before publishing the
+next plugin version; the snapshot does not update with the running server.
+
 `wendy mcp setup` installs this group for detected tools:
 
 | Assistant | Skill location |

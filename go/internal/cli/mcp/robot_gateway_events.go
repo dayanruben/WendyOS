@@ -37,6 +37,7 @@ func findGatewayTrigger(r *GatewayRobot, id string) (GatewayTrigger, error) {
 }
 
 func (g *RobotGateway) registerEventTools() {
+	g.registerMCPNotificationTool()
 	prop := mcpgo.WithString("trigger_id", mcpgo.Required(), mcpgo.MinLength(1), mcpgo.MaxLength(64))
 	g.protocol.AddTool(gatewayTool("list_device_triggers", "List approved detection triggers and whether their device campaign is deployed. Listing does not activate cameras.", readOnly(), robotArgument()), g.withRobot(RobotEventsScope, func(ctx context.Context, r *GatewayRobot, s *mcpServer, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 		out := []map[string]any{}
