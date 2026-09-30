@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 // preAuthElevation pre-authenticates sudo so the password prompt appears
@@ -174,6 +176,16 @@ func thorElevationReason(goos string) string {
 		jetsonUdevRuleInstallHint("    ")
 }
 
+// createElevatedRunDirs creates, as the user, the cache and log directories the
+// elevated run writes into. The elevated run gives what it creates back to the
+// user when it exits (HandBackSudoFiles), but not if it's killed; created by
+// root, these directories, and on a fresh host ~/.cache itself, would then stay
+// root-owned. Best-effort: the elevated run creates any that are missing.
+func createElevatedRunDirs() {
+	_, _ = osCacheDir()
+	_, _ = config.LogDir()
+}
+
 // errThorNeedsRoot is returned when a Thor flash needs elevation but cannot obtain
 // it here (no interactive terminal to prompt on, or no sudo on PATH). It carries
 // the exact command to re-run, plus the Linux udev alternative.
@@ -220,6 +232,7 @@ func ensureThorRootAccess() error {
 	fmt.Println(thorElevationReason(runtime.GOOS))
 	fmt.Println("Re-running under sudo (you may be prompted for your password)…")
 
+	createElevatedRunDirs()
 	argv := append([]string{"sudo"}, buildSudoReexecArgs(self, os.Args[1:])...)
 	// Pin XDG_CACHE_HOME to this (unprivileged) user's cache base so the elevated
 	// run reuses the already-downloaded flashpack even if sudo rewrites HOME.
