@@ -28,7 +28,10 @@ static Boolean wendyIsFlashingLUN(DADiskRef disk) {
 		while (n > 0 && buf[n - 1] == ' ') {
 			buf[--n] = '\0';
 		}
-		match = strcmp(buf, wendyClaimVendors[0]) == 0 || strcmp(buf, wendyClaimVendors[1]) == 0;
+		// Legacy packages export the actual storage name; negotiated packages
+		// use the fixed rootfs LUN name. Cover both handoff protocols.
+		match = strcmp(buf, wendyClaimVendors[0]) == 0 || strcmp(buf, wendyClaimVendors[1]) == 0 ||
+			strcmp(buf, "mmcblk0") == 0 || strcmp(buf, "nvme0n1") == 0;
 	}
 	CFRelease(desc);
 	return match;

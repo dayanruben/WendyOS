@@ -83,7 +83,7 @@ func prepareUSBMode(sourcePath, tempDir string, supportsSingle bool) (string, US
 	if _, err := source.ReadAt(sb, ext4SuperOffset); err != nil {
 		return "", "", err
 	}
-	if binary.LittleEndian.Uint16(sb[58:60])&1 == 0 || binary.LittleEndian.Uint32(sb[96:100])&4 != 0 {
+	if binary.LittleEndian.Uint16(sb[58:60]) != 1 || binary.LittleEndian.Uint32(sb[96:100])&4 != 0 {
 		return "", "", fmt.Errorf("command-package ext4 filesystem needs recovery; refusing to edit it")
 	}
 	copy, err := os.CreateTemp(tempDir, "t234-commands-*.ext4")

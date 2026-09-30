@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
@@ -142,23 +143,46 @@ func TestPrepareUSBModeCompatibilityMatrix(t *testing.T) {
 }
 
 func TestPrepareUSBModeRefusesFilesystemNeedingRecovery(t *testing.T) {
-	for _, journalReplay := range []bool{false, true} {
-		source := modeFixture(t, "flashpkg-4k.ext4.gz", "")
-		data, err := os.ReadFile(source)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if journalReplay {
-			binary.LittleEndian.PutUint32(data[ext4SuperOffset+96:], binary.LittleEndian.Uint32(data[ext4SuperOffset+96:])|4)
-		} else {
-			binary.LittleEndian.PutUint16(data[ext4SuperOffset+58:], 0)
-		}
-		if err := os.WriteFile(source, data, 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, _, err := prepareUSBMode(source, t.TempDir(), true); err == nil || !strings.Contains(err.Error(), "needs recovery") {
-			t.Fatalf("dirty filesystem: %v", err)
-		}
+	for _, tc := range []struct {
+		name   string
+		state  uint16
+		replay bool
+	}{
+		{name: "unclean", state: 0},
+		{name: "recorded-errors", state: 3},
+		{name: "orphan-recovery", state: 5},
+		{name: "journal-replay", state: 1, replay: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := modeFixture(t, "flashpkg-4k.ext4.gz", "")
+			data, err := os.ReadFile(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sb := data[ext4SuperOffset : ext4SuperOffset+1024]
+			binary.LittleEndian.PutUint16(sb[58:60], tc.state)
+			if tc.replay {
+				binary.LittleEndian.PutUint32(sb[96:100], binary.LittleEndian.Uint32(sb[96:100])|4)
+			}
+			// Keep the superblock valid: a checksum error must not mask acceptance
+			// of a filesystem that records errors alongside EXT4_VALID_FS.
+			binary.LittleEndian.PutUint32(sb[1020:1024], ^crc32.Checksum(sb[:1020], crc32.MakeTable(crc32.Castagnoli)))
+			if err := os.WriteFile(source, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			temp := t.TempDir()
+			if _, _, err := prepareUSBMode(source, temp, true); err == nil || !strings.Contains(err.Error(), "needs recovery") {
+				t.Fatalf("unsafe filesystem: %v", err)
+			}
+			after, err := os.ReadFile(source)
+			if err != nil || !bytes.Equal(after, data) {
+				t.Fatalf("source changed: %v", err)
+			}
+			files, err := os.ReadDir(temp)
+			if err != nil || len(files) != 0 {
+				t.Fatalf("temporary files created: %v, %v", files, err)
+			}
+		})
 	}
 }
 

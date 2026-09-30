@@ -232,8 +232,8 @@ func enableMediaPolling(session string) error {
 	return errors.Join(errs...)
 }
 
-// CheckHostTools fails early, before anything is sent to the Jetson, when the
-// eject tool, which releases the flashing LUNs, is not installed.
+// CheckHostTools checks the medium-eject tool before handing commands to an
+// initrd that advertises single enumeration.
 func CheckHostTools() error {
 	if _, err := exec.LookPath("eject"); err != nil {
 		return fmt.Errorf("the eject tool is required to flash this image (Debian/Ubuntu: apt install eject): %w", err)
