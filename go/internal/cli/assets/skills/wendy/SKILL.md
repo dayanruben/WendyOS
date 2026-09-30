@@ -59,8 +59,9 @@ This sends WiFi SSID and password to the device so it can connect to the local n
 
 Wendy CLI connects to a device over gRPC (TCP) port 50051. If Wendy CLI is not installed yet, run `curl -fsSL https://install.wendy.dev/cli.sh | bash`.
 
-Devices are discovered over USB or LAN. On Linux, USB tethering may need
-`sudo wendy device usb-setup`. An empty scan can also mean a blank board.
+Devices are discovered over USB or LAN. On Linux, USB tethering may need a
+one-time host setup: run `wendy discover` in a terminal and accept its USB-C
+setup prompt (it needs sudo). An empty scan can also mean a blank board.
 Use `wendy-device-install` and `os_install_plan` for initial installation and
 `os_install_verify` for first boot. Full Jetson recovery updates boot firmware;
 rootfs-only media writes do not. Unitree G1 PC2 keeps vendor Ubuntu and receives
