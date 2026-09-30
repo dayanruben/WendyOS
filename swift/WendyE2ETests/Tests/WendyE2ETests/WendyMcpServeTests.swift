@@ -121,6 +121,7 @@ struct `'wendy mcp serve'` {
                 let tools = try #require(toolsResult["tools"] as? [[String: Any]])
                 let names = Set(tools.compactMap { $0["name"] as? String })
                 #expect(names.contains("wendy_tools"))
+                #expect(names.contains("device_connect"))
                 #expect(names.contains("cloud_connect"))
             }
         }
