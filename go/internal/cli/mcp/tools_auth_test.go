@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -112,8 +113,8 @@ func TestAuthLogin_ReturnsPendingURLAndOpensBrowserOnDesktop(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, fmt.Sprint(out["expires_at"])); err != nil {
 		t.Fatalf("expires_at = %v: %v", out["expires_at"], err)
 	}
-	if out["next_step"] == "" {
-		t.Fatal("next_step is empty")
+	if next := fmt.Sprint(out["next_step"]); !strings.Contains(next, "this machine") {
+		t.Fatalf("next_step = %q, want the same-machine requirement", next)
 	}
 	if got := opened(); !slices.Equal(got, []string{"https://cloud.example.invalid/cli-auth?n=1"}) {
 		t.Fatalf("opened = %v", got)
@@ -132,6 +133,10 @@ func TestAuthLogin_HeadlessDoesNotOpenBrowser(t *testing.T) {
 	}
 	if got := opened(); len(got) != 0 {
 		t.Fatalf("opened a browser on a headless session: %v", got)
+	}
+	next := fmt.Sprint(out["next_step"])
+	if !strings.Contains(next, "machine running Wendy") || !strings.Contains(next, "ssh -L") {
+		t.Fatalf("next_step = %q, want the same-machine requirement and the port forward", next)
 	}
 }
 

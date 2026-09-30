@@ -38,6 +38,12 @@ browser on a desktop session, and finishes in the background (up to five
 minutes). Calling it again while a sign-in is pending returns the same link.
 Cloud tools return `AUTH_REQUIRED` until a session exists.
 
+The link must be opened in a browser on the machine running Wendy; from another
+machine, forward the port in the link's `redirect_uri` over SSH first. If the
+user abandons the sign-in or the five minutes pass, `auth` leaves `pending`
+(back to `logged_out` or `expired`) and `wendy_status` shows `auth_login_error`.
+Calling `auth_login` again starts a fresh link.
+
 ## Device selection
 
 `device_list` returns a `device` selector for every entry. Pass it unchanged to

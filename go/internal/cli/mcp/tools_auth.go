@@ -95,9 +95,9 @@ func (s *mcpServer) handleAuthLogin(ctx context.Context, _ mcpgo.CallToolRequest
 }
 
 func authLoginResult(session LoginSession, browserOpened bool) map[string]any {
-	next := "Show the user this link and ask them to sign in before expires_at. Then call wendy_status: auth becomes logged_in."
+	next := "Show the user this link and ask them to sign in before expires_at. It must be opened in a browser on the machine running Wendy; from another machine they must first forward the port in the link's redirect_uri (e.g. ssh -L PORT:127.0.0.1:PORT). Then call wendy_status: auth becomes logged_in."
 	if browserOpened {
-		next = "A browser window opened for sign-in; share the link too in case it went unseen. Then call wendy_status: auth becomes logged_in."
+		next = "A browser window opened for sign-in; share the link too in case it went unseen (it works only in a browser on this machine). Then call wendy_status: auth becomes logged_in."
 	}
 	return map[string]any{
 		"status":         "pending",
