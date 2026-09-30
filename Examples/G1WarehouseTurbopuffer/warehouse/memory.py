@@ -24,7 +24,8 @@ from .catalog import SHELVED, ZONES, Item, zone
 
 NAMESPACE = os.environ.get("TURBOPUFFER_NAMESPACE", "wendy-g1-warehouse")
 REGION = os.environ.get("TURBOPUFFER_REGION", "gcp-us-central1")
-EMBED_MODEL = os.environ.get("TURBOPUFFER_EMBED_MODEL", "nvidia/nemotron-3-embed-8b")
+# A model turbopuffer serves in every region; some (like nemotron-3-embed-8b) are aws-us-east-1 only.
+EMBED_MODEL = os.environ.get("TURBOPUFFER_EMBED_MODEL", "nvidia/nemotron-3-embed-1b")
 ATTRIBUTES = ["label", "kind", "zone", "bay"]
 
 
@@ -85,7 +86,7 @@ class TurbopufferMemory:
         return self.ns.write(
             upsert_rows=rows,
             distance_metric="cosine_distance",
-            schema={"label": {"type": "string", "embed": {"model": EMBED_MODEL}, "full_text_search": True},
+            schema={"label": {"type": "string", "embed": {"model": EMBED_MODEL}},
                     "kind": {"type": "string", "filterable": True},
                     "zone": {"type": "string", "filterable": True},
                     "bay": {"type": "int", "filterable": True}},

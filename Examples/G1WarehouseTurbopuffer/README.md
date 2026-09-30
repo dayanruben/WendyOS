@@ -47,7 +47,8 @@ The robot's memory is one namespace (`wendy-g1-warehouse` by default). Each
 loop starts by clearing it and writing six rows: the description of each zone
 and the one item already on each rack. Every row's `label` is plain text that
 Turbopuffer embeds itself (`TURBOPUFFER_EMBED_MODEL`, default
-`nvidia/nemotron-3-embed-8b`), so the app never runs an embedding model.
+`nvidia/nemotron-3-embed-1b`, which every region serves), so the app never runs
+an embedding model.
 
 For each box it picks up, the robot sends the box's label as a vector query
 (`rank_by=("label", "ANN", ("Embed", label))`), shelves the box in the zone of
