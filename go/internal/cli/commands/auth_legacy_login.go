@@ -127,6 +127,10 @@ func (l *legacyLoginSession) finish(err error, warnings []string) {
 	close(l.done)
 }
 
+// legacyIssueTimeout bounds the certificate request made after the browser
+// callback. A var so tests can shrink it.
+var legacyIssueTimeout = 60 * time.Second
+
 // issueLegacyCertificate asks the cloud's CertificateService to sign a CSR. A
 // var so tests can stand in for the cloud.
 var issueLegacyCertificate = func(ctx context.Context, cloudGRPC string, req *cloudpb.IssueCertificateRequest) (*cloudpb.IssueCertificateResponse, error) {
@@ -149,6 +153,17 @@ var issueLegacyCertificate = func(ctx context.Context, cloudGRPC string, req *cl
 		return nil, fmt.Errorf("issuing certificate: %w", err)
 	}
 	return resp, nil
+}
+
+// shutdownLoginServer stops the callback server, letting an in-flight response
+// (the success page or the 400) finish first, and ends the serve goroutine and
+// listener on every path.
+func shutdownLoginServer(server *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		server.Close()
+	}
 }
 
 // beginLegacyLogin starts a dashboard sign-in and returns as soon as the sign-in
@@ -210,7 +225,7 @@ func beginLegacyLogin(ctx context.Context, cloudDashboard, cloudGRPC string) (*l
 		done:          make(chan struct{}),
 	}
 	go func() {
-		defer server.Close()
+		defer shutdownLoginServer(server)
 		timeout := time.NewTimer(browserLoginTimeout)
 		defer timeout.Stop()
 		var result loginCallbackResult
@@ -249,11 +264,17 @@ func completeLegacyLogin(ctx context.Context, cloudDashboard, cloudGRPC string, 
 	if err != nil {
 		return nil, fmt.Errorf("generating CSR: %w", err)
 	}
-	issueResp, err := issueLegacyCertificate(ctx, cloudGRPC, &cloudpb.IssueCertificateRequest{
+	// Only the cloud request is bounded; cancelling ctx still aborts it at once.
+	issueCtx, cancelIssue := context.WithTimeout(ctx, legacyIssueTimeout)
+	defer cancelIssue()
+	issueResp, err := issueLegacyCertificate(issueCtx, cloudGRPC, &cloudpb.IssueCertificateRequest{
 		PemCsr:          csrPEM,
 		EnrollmentToken: result.EnrollmentToken,
 	})
 	if err != nil {
+		if ctx.Err() == nil && issueCtx.Err() != nil {
+			return nil, fmt.Errorf("cloud did not issue a certificate within %s: %w (%w)", legacyIssueTimeout, err, context.DeadlineExceeded)
+		}
 		return nil, err
 	}
 	if issueResp.GetError() != nil {

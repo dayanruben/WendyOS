@@ -376,3 +376,37 @@ func TestPerformLogin_SuccessPrintsEveryStep(t *testing.T) {
 		at += i + len(step)
 	}
 }
+
+func TestLegacyLoginSession_IssuanceTimeoutEndsTheSession(t *testing.T) {
+	isolateLoginConfig(t)
+	prev := legacyIssueTimeout
+	legacyIssueTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { legacyIssueTimeout = prev })
+	prevIssue := issueLegacyCertificate
+	issueLegacyCertificate = func(ctx context.Context, _ string, _ *cloudpb.IssueCertificateRequest) (*cloudpb.IssueCertificateResponse, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	t.Cleanup(func() { issueLegacyCertificate = prevIssue })
+
+	session, err := beginLegacyLogin(context.Background(), testDashboard, testCloudGRPC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliverLegacyCallback(t, session.URL(), url.Values{"token": {fakeEnrollmentToken()}})
+	select {
+	case <-session.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("session still pending long after the issuance limit")
+	}
+	if !errors.Is(session.Err(), context.DeadlineExceeded) {
+		t.Fatalf("Err = %v, want a deadline error", session.Err())
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Auth) != 0 {
+		t.Fatalf("saved %d auth entries after a timed-out issuance", len(cfg.Auth))
+	}
+}
