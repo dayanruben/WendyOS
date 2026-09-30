@@ -40,6 +40,7 @@ Matching the module's SoC does not establish image compatibility.
 ## Request a plan
 
 `os_install_plan` and `os_list_drives` work before a device connection exists.
+MCP clients list them after calling `wendy_tools` with `{"groups":["setup"]}`.
 Their CLI equivalents are:
 
 ```sh
