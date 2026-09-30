@@ -6,6 +6,7 @@ import argparse
 import platform
 import threading
 import time
+import traceback
 from collections import deque
 
 import mujoco
@@ -100,9 +101,11 @@ class Simulation:
         except RobotFell as error:
             self.falls += 1
             self.say("Fell", str(error))
+            print(f"Fell during {self.activity[0]!r}: {error}; restarting the show", flush=True)
             self.reset()
-        except Exception as error:  # keep the demo alive; the viewer shows what happened
+        except Exception as error:  # keep the demo alive; the viewer and the log show what happened
             self.error = f"{type(error).__name__}: {error}"[:300]
+            traceback.print_exc()
             self.say("Recovering", self.error)
             self.reset()
         self.elapsed += self.model.opt.timestep
@@ -151,6 +154,7 @@ class Simulation:
         Call with the lock held."""
         d = self.data
         memory = self.memory
+        last, log = memory.recent()
         return {
             "epoch": self.epoch,
             "elapsed": round(self.elapsed, 4),
@@ -164,8 +168,8 @@ class Simulation:
             "walking": self.robot.walking(),
             "memory": {
                 "backend": memory.backend, "detail": memory.detail, "calls": memory.calls, "error": memory.error,
-                "last": None if memory.last is None else _answer(memory.last),
-                "log": [_answer(a) for a in memory.log],
+                "last": None if last is None else _answer(last),
+                "log": [_answer(a) for a in log],
             },
         }
 
@@ -179,6 +183,7 @@ class Simulation:
                 "memoryCalls": self.memory.calls,
                 "memoryError": self.memory.error,
                 "falls": self.falls,
+                "lastError": self.error,
                 "policyUpdates": self.robot.policy_updates,
                 "physicsHz": round(1.0 / self.model.opt.timestep),
                 "realtimeFactor": round(self.realtime_factor(), 3),

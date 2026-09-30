@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -78,6 +79,9 @@ class TurbopufferMemory:
         self.ns = self.client.namespace(NAMESPACE)
         self.detail = f"{REGION} · {NAMESPACE} · {EMBED_MODEL}"
 
+    def describe(self) -> list[str]:
+        return ["Memory: Turbopuffer", f"Namespace: {NAMESPACE} ({REGION})", f"Embedding model: {EMBED_MODEL}"]
+
     def reset(self) -> Answer:
         started = time.perf_counter()
         try:
@@ -138,6 +142,9 @@ class KeywordMemory:
 
     backend = "Keyword stand-in"
     detail = "Set TURBOPUFFER_API_KEY to use Turbopuffer"
+
+    def describe(self) -> list[str]:
+        return ["Memory: keyword stand-in (set TURBOPUFFER_API_KEY to use Turbopuffer)"]
     SYNONYMS = {"charge": "charger", "charging": "charger", "power": "charger", "battery": "batteries",
                 "screws": "screw", "screwdriver": "screwdrivers", "adapter": "adapters", "cable": "cables"}
 
@@ -194,6 +201,7 @@ class Memory:
         self.log: deque[Answer] = deque(maxlen=6)  # the latest queries and writes
         self.error: str | None = None
         self.calls = 0
+        self._lock = threading.Lock()              # the worker thread writes; the web server reads
 
     @property
     def backend(self) -> str:
@@ -203,6 +211,15 @@ class Memory:
     def detail(self) -> str:
         return self.impl.detail
 
+    def describe(self) -> list[str]:
+        """Startup log lines: which memory is answering."""
+        return self.impl.describe()
+
+    def recent(self) -> tuple[Answer | None, list[Answer]]:
+        """The latest query and the latest operations, safe to read from any thread."""
+        with self._lock:
+            return self.last, list(self.log)
+
     def submit(self, name: str, *args) -> Future:
         def call():
             try:
@@ -210,14 +227,15 @@ class Memory:
             except Exception as error:  # surfaced in the viewer; the robot falls back to its own guess
                 self.error = f"{type(error).__name__}: {error}"[:300]
                 raise
-            self.calls += 1
-            self.error = None
-            if name == "reset":   # a new loop of the show: start the viewer's log afresh
-                self.last = None
-                self.log.clear()
-            if answer.operation == "query":
-                self.last = answer
-            self.log.appendleft(answer)
+            with self._lock:
+                self.calls += 1
+                self.error = None
+                if name == "reset":   # a new loop of the show: start the viewer's log afresh
+                    self.last = None
+                    self.log.clear()
+                if answer.operation == "query":
+                    self.last = answer
+                self.log.appendleft(answer)
             return answer
         return self.pool.submit(call)
 

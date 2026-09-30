@@ -154,8 +154,9 @@ def main() -> None:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     status = simulation.status()
-    print(f"MuJoCo {status['mujocoVersion']}: Unitree G1 with GR00T WBC, {status['physicsHz']} Hz physics", flush=True)
-    print(f"Memory: {simulation.memory.backend} ({simulation.memory.detail})", flush=True)
+    print(f"MuJoCo {status['mujocoVersion']}: Unitree G1, GR00T WBC, {status['physicsHz']} Hz", flush=True)
+    for line in simulation.memory.describe():
+        print(line, flush=True)
     print(f"Viewer on port {PORT}", flush=True)
     try:
         server.serve_forever(poll_interval=0.25)
