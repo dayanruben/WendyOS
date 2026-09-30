@@ -102,6 +102,31 @@ tool, use the CLI with an explicit target or update and restart the MCP host.
 
 `--user-args` is repeatable and also accepts comma-separated values. Prefer repeated flags when values could contain commas. The values are appended to the image's own entrypoint/`CMD`, not substituted for it, so `--user-args --port,8080` runs `<image entrypoint> --port 8080`.
 
+## Recover from port conflicts
+
+Use startup logs and app inventory on the explicit target to identify the
+occupied port and its owner. With host networking, apps on the device share
+listening ports. A VM forwarding error can instead concern a port on the
+developer's host. Preserve unrelated listeners when choosing another app port.
+
+When moving an app's listener, keep its configuration consistent:
+
+1. Change the actual server port in source, environment or startup arguments.
+2. Update affected `http` entitlement ports, explicit port mappings,
+   `hooks.postStart.openURL` ports and client URLs. Change
+   `readiness.tcpSocket.port` when it probes the moved listener; keep a probe
+   for a separate health port unchanged.
+3. Run `wendy json validate`, redeploy to the same explicit device, and check
+   app state and startup logs for a successful bind on the new port.
+4. Fetch the new endpoint through a route reachable from the caller, verify
+   application-specific response content, and confirm the original listener
+   still works. For a user-networked VM, use its host loopback forward rather
+   than treating `vm:<name>` as a DNS name.
+
+A passing TCP readiness probe only proves that something accepts connections.
+The existing port owner can satisfy it while the new app crashes; verify the
+new app's state and response before claiming success.
+
 ## Stream logs
 
 For a bounded, machine-readable diagnostic sample, use `--tail` with `--no-follow`:
