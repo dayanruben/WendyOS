@@ -221,7 +221,7 @@ Known non-interactive guidance:
 - `wendy --json device logs` prints JSON log records, but still streams.
 - `wendy device telemetry-stream` prints JSONL without `--json`.
 - `wendy build` can still use Bubble Tea spinners in a TTY and does not currently provide structured JSON output.
-- `wendy run` uses progress UI in an interactive TTY and plain progress text otherwise. It does not currently provide structured JSON output.
+- Agent-backed `wendy --json run --detach` returns one JSON result with `status`, `app`, `device`, `readiness` and `endpoints`; `url` is the first available HTTP endpoint and is omitted when no host URL can be determined. Progress goes to stderr. Attached run and local container providers still use progress/log output.
 - `wendy run --yes` avoids app-config creation prompts where possible.
 - `--json` also prevents device picker fallback; if no device/default is configured, pass `--device` or set a default first.
 - `device apps start|stop|remove` and `device volumes remove` can prompt for a name if omitted; pass the app or volume name explicitly in agent workflows.
@@ -261,3 +261,28 @@ wendy --json device logs --app <app-id> --tail 50 --no-follow --device <hostname
 wendy device apps stop <app-id> --device <hostname>
 wendy device apps remove <app-id> --force --device <hostname>
 ```
+
+### VM selectors and HTTP verification
+
+`vm:dev` is a Wendy device selector, not a DNS name. In default `--net user`
+mode the guest's `10.0.2.15` is behind QEMU NAT. Wendy forwards declared app ports
+to host loopback; the agent's forwarded gRPC port is separate from the app port.
+Use an `http` entitlement for each web port (and host networking or the appropriate
+container-to-guest port publication). For example, an app serving guest port 18880
+can have a host URL of `http://127.0.0.1:18880`.
+
+```bash
+wendy --json --device vm:dev run --yes --detach > deploy.json
+url=$(jq -er '.url' deploy.json)
+curl --fail --retry 10 --retry-connrefused --retry-delay 1 --max-time 5 "$url"
+```
+
+Check `device` and `app` in the result, then check the HTTP response against the
+requested behavior or a unique fixture marker. Detached output says
+`readiness: "not_checked"`: it reports the configured endpoint after start was
+acknowledged and does not wait for health or execute host postStart hooks. For
+multi-service apps, inspect each entry in `endpoints`. A TCP readiness probe alone
+does not establish an HTTP endpoint. If `url` is absent, inspect configuration and
+logs rather than constructing a URL from the VM selector. A host port conflict
+must be resolved by changing the app port or freeing your own listener; do not
+stop unrelated services or assume a different VM owns the same localhost port.
