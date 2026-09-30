@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -35,6 +36,12 @@ def free_port_pair():
     raise RuntimeError("could not find two consecutive free agent ports")
 
 
+def check(condition, evidence):
+    # Remain an active behavioral grader under PYTHONOPTIMIZE or python -O.
+    if not condition:
+        raise AssertionError(evidence)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wendy", type=Path, required=True)
@@ -51,6 +58,9 @@ def main():
     config = root / "config"
     if config.exists():
         parser.error("output directory must not already contain config (VM isolation)")
+    socket_limit = 104 if sys.platform == "darwin" else 108
+    if len(os.fsencode(config / "vms" / "endpoint-a" / "qmp.sock")) >= socket_limit:
+        parser.error("output path is too long for QMP; choose a short path under /tmp")
     config.mkdir(mode=0o700)
     (root / "metadata.json").write_text(json.dumps({
         "wendy": str(binary), "wendy_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -98,11 +108,11 @@ def main():
         result = cli(label, "--json", "--device", f"vm:{name}", "run", "--detach", "--yes",
                      "--skip-cloud-registration", "--prefix", str(path), *extra)
         payload = json.loads(result.stdout)  # Exactly one JSON document, no progress/log contamination.
-        assert payload["status"] == "started" and payload["readiness"] == "not_checked", payload
-        assert payload["app"] == app_id and payload["device"] == f"vm:{name}", payload
+        check(payload["status"] == "started" and payload["readiness"] == "not_checked", payload)
+        check(payload["app"] == app_id and payload["device"] == f"vm:{name}", payload)
         url = payload["url"]
-        assert url.startswith("http://127.0.0.1:"), payload
-        assert payload["endpoints"] == [{"app": app_id, "url": url}], payload
+        check(url.startswith("http://127.0.0.1:"), payload)
+        check(payload["endpoints"] == [{"app": app_id, "url": url}], payload)
         return url
 
     def verify(label, url, nonce):
@@ -112,13 +122,65 @@ def main():
             try:
                 with opener.open(url, timeout=3) as response:
                     body = response.read(4096).decode()
-                    assert response.status == 200 and body == nonce, (url, response.status, body)
+                    check(response.status == 200 and body == nonce, (url, response.status, body))
                 steps.append({"step": label, "url": url, "status": 200, "nonce": body})
                 return
             except (OSError, urllib.error.URLError):
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.5)
+
+    def group_project(name, *, compose=False, partial=False):
+        path = root / name
+        path.mkdir()
+        app_id = "test.detached." + uuid.uuid4().hex
+        (path / "Dockerfile").write_text(f"FROM {args.base_image}\nWORKDIR /app\nCOPY server.py .\nCMD [\"python3\", \"server.py\"]\n")
+        (path / "server.py").write_text(
+            "import os\nfrom http.server import BaseHTTPRequestHandler, HTTPServer\n"
+            "class Handler(BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            "        body = os.environ['NONCE'].encode()\n"
+            "        self.send_response(200)\n"
+            "        self.send_header('Content-Length', str(len(body)))\n"
+            "        self.end_headers()\n"
+            "        self.wfile.write(body)\n"
+            "HTTPServer(('0.0.0.0', int(os.environ['PORT'])), Handler).serve_forever()\n")
+        services, proofs = {}, {}
+        for service in ("api", "web"):
+            port, nonce = free_port_pair(), uuid.uuid4().hex
+            proofs[f"{app_id}_{service}"] = nonce
+            services[service] = {"context": ".", "env": {"PORT": str(port), "NONCE": nonce},
+                                 "entitlements": [{"type": "http", "port": port}]}
+        if partial:
+            broken = path / "broken"
+            broken.mkdir()
+            (broken / "Dockerfile").write_text("FROM scratch\nCOPY missing-file /missing-file\n")
+            services["broken"] = {"context": "broken"}
+        if compose:
+            # JSON is valid YAML; no PyYAML dependency is required.
+            (path / "docker-compose.yml").write_text(json.dumps({"services": {
+                name: {"build": ".", "network_mode": "host", "environment": svc["env"]}
+                for name, svc in services.items()
+            }}))
+            services = {name: {"entitlements": svc["entitlements"]} for name, svc in services.items()}
+        (path / "wendy.json").write_text(json.dumps({
+            "appId": app_id, "version": "1.0.0", "platform": "linux",
+            "entitlements": [{"type": "network", "mode": "host"}], "services": services,
+        }))
+        return path, app_id, proofs
+
+    def verify_group(label, name, path, app_id, proofs):
+        response = cli(label, "--json", "--device", f"vm:{name}", "run", "--detach", "--yes",
+                       "--skip-cloud-registration", "--prefix", str(path))
+        payload = json.loads(response.stdout)
+        check(payload["status"] == "started" and payload["readiness"] == "not_checked", payload)
+        check(payload["app"] == app_id and payload["device"] == f"vm:{name}", payload)
+        check({entry["app"] for entry in payload["endpoints"]} == set(proofs), payload)
+        check(len(payload["endpoints"]) == len(proofs), payload)
+        check(payload["url"] == payload["endpoints"][0]["url"], payload)
+        for endpoint in payload["endpoints"]:
+            check(endpoint["url"].startswith("http://127.0.0.1:"), endpoint)
+            verify(label + "-" + endpoint["app"], endpoint["url"], proofs[endpoint["app"]])
 
     try:
         for name in names:
@@ -133,26 +195,41 @@ def main():
         path_b, app_b, nonce_b = project("app-b", port_b)
         url_a = deploy("deploy-a", names[0], path_a, app_a)
         url_b = deploy("deploy-b", names[1], path_b, app_b)
-        assert url_a != url_b
+        check(url_a != url_b, (url_a, url_b))
         verify("http-a", url_a, nonce_a)
         verify("http-b", url_b, nonce_b)
         registry_path, registry_app, registry_nonce = project("registry-app", free_port_pair())
         registry_url = deploy("deploy-registry", names[1], registry_path, registry_app, "--chunking=off")
         verify("http-registry", registry_url, registry_nonce)
-        assert deploy("unchanged-a", names[0], path_a, app_a) == url_a
+        check(deploy("unchanged-a", names[0], path_a, app_a) == url_a, "unchanged deploy changed URL")
         verify("http-unchanged-a", url_a, nonce_a)
         cli("stop-app-a", "--device", f"vm:{names[0]}", "device", "apps", "stop", app_a)
-        assert deploy("restart-a", names[0], path_a, app_a) == url_a
+        check(deploy("restart-a", names[0], path_a, app_a) == url_a, "restart changed URL")
         verify("http-restart-a", url_a, nonce_a)
         text = cli("text-a", "--json=false", "--device", f"vm:{names[0]}", "run", "--detach", "--yes",
                    "--skip-cloud-registration", "--prefix", str(path_a))
-        assert not text.stdout and url_a in text.stderr and "Readiness not checked" in text.stderr
+        check(not text.stdout and url_a in text.stderr and "Readiness not checked" in text.stderr, text)
+
+        for label, compose in (("group", False), ("compose", True)):
+            path, app_id, proofs = group_project(label, compose=compose)
+            verify_group(label, names[1], path, app_id, proofs)
+
+        path, app_id, proofs = group_project("partial", partial=True)
+        partial = cli("partial-deploy", "--json", "--device", f"vm:{names[1]}", "run", "--detach", "--yes",
+                      "--keep-going", "--skip-cloud-registration", "--prefix", str(path), expected=1)
+        check(not partial.stdout and "Partial deploy" in partial.stderr, partial)
+        # The successful services must still work; only the whole-group success
+        # result is withheld when the command returns a deployment failure.
+        partial_config = json.loads((path / "wendy.json").read_text())
+        for service in ("api", "web"):
+            port = partial_config["services"][service]["env"]["PORT"]
+            verify(f"partial-{service}", f"http://127.0.0.1:{port}", proofs[f"{app_id}_{service}"])
 
         # A different VM cannot steal A's host listener or report its endpoint.
         conflict_path, _, _ = project("same-port", port_a)
         conflict = cli("cross-vm-conflict", "--json", "--device", f"vm:{names[1]}", "run", "--detach", "--yes",
                        "--skip-cloud-registration", "--prefix", str(conflict_path), expected=1)
-        assert not conflict.stdout and "forward" in conflict.stderr.lower()
+        check(not conflict.stdout and "forward" in conflict.stderr.lower(), conflict)
         verify("http-a-after-conflict", url_a, nonce_a)
 
         # A non-Wendy listener stays owned by its creator when forwarding fails.
@@ -163,13 +240,12 @@ def main():
             blocked_path, _, _ = project("blocked-port", blocked_port)
             conflict = cli("host-port-conflict", "--json", "--device", f"vm:{names[1]}", "run", "--detach", "--yes",
                            "--skip-cloud-registration", "--prefix", str(blocked_path), expected=1)
-            assert not conflict.stdout and "forward" in conflict.stderr.lower()
+            check(not conflict.stdout and "forward" in conflict.stderr.lower(), conflict)
             with socket.create_connection(("127.0.0.1", blocked_port), timeout=3):
                 blocker.settimeout(3)
                 connection, _ = blocker.accept()
                 connection.close()
         steps.append({"step": "complete", "passed": True})
-        print(f"Passed detached endpoint VM journey. Evidence: {root}")
     finally:
         cleanup_errors = []
         for name in names:
@@ -182,6 +258,7 @@ def main():
         (root / "results.json").write_text(json.dumps(steps, indent=2) + "\n")
         if cleanup_errors:
             raise RuntimeError("VM cleanup failed: " + "; ".join(cleanup_errors))
+    print(f"Passed detached endpoint VM journey. Evidence: {root}")
 
 
 if __name__ == "__main__":

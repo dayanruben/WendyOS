@@ -123,6 +123,11 @@ func detachedAppURLs(cfg *appconfig.AppConfig, host string) []string {
 	if cfg == nil || host == "" || strings.HasPrefix(host, "unix:") {
 		return nil
 	}
+	// urlSafeHost also unmaps IPv4-mapped addresses for hook expansion.
+	// Normalize the comparison and entitlement URLs to the same host.
+	if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+		host = ip.To4().String()
+	}
 	var urls []string
 	if cfg.Hooks != nil && cfg.Hooks.PostStart != nil {
 		hookURL := cfg.Hooks.PostStart.OpenURL
@@ -135,7 +140,8 @@ func detachedAppURLs(cfg *appconfig.AppConfig, host string) []string {
 	}
 	for _, e := range cfg.Entitlements {
 		if e.Type == appconfig.EntitlementHTTP && e.Port > 0 && e.Port <= 65535 {
-			urls = append(urls, "http://"+net.JoinHostPort(host, strconv.Itoa(e.Port)))
+			u := &url.URL{Scheme: "http", Host: net.JoinHostPort(host, strconv.Itoa(e.Port))}
+			urls = append(urls, u.String())
 		}
 	}
 	return urls

@@ -602,6 +602,11 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// namespace join is resolved at container create time against the
 	// primary's running task, so the primary must be started before the
 	// next service is created.
+	// A partial deployment returns non-zero. Do not emit a complete detached
+	// success result for the group after starting only its healthy subset.
+	if partialErr != nil {
+		opts.detachedOutput = false
+	}
 	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, preservedLifecycle, opts, createService, svcCfgs, svcLifecycleCfgs, appLevelCfg); err != nil {
 		return err
 	}

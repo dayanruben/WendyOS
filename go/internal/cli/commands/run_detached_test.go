@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -326,5 +328,60 @@ func TestDetachedJSONConfigCreationStaysOnStderr(t *testing.T) {
 	})
 	if stdout != "" || !strings.Contains(stderr, "Created wendy.json") {
 		t.Fatalf("config creation contaminated JSON stdout: stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestDetachedRunIPv6URLs(t *testing.T) {
+	for _, test := range []struct {
+		name, host, hookURL, want string
+	}{
+		{"IPv6", "2001:db8::5", "", "http://[2001:db8::5]:8080"},
+		{"IPv6 zone", "fe80::5%en0", "", "http://[fe80::5%25en0]:8080"},
+		{"IPv6 zone hook", "fe80::5%en0", "https://${WENDY_HOSTNAME}:8080/health", "https://[fe80::5%25en0]:8080/health"},
+		{"IPv4 mapped hook", "::ffff:192.0.2.5", "https://${WENDY_HOSTNAME}:8080/health", "https://192.0.2.5:8080/health"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			isolateDetachedOutput(t)
+			conn := &grpcclient.AgentConnection{Host: test.host, Addr: net.JoinHostPort(test.host, "50051")}
+			cfg := &appconfig.AppConfig{AppID: "app", Entitlements: []appconfig.Entitlement{{Type: "http", Port: 8080}}}
+			if test.hookURL != "" {
+				cfg.Hooks = &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{OpenURL: test.hookURL}}
+			}
+			stdout, _ := captureBoth(t, func() {
+				if err := (runOptions{detachedOutput: true}).reportDetachedRun(context.Background(), conn, cfg.AppID, cfg); err != nil {
+					t.Fatal(err)
+				}
+			})
+			result := decodeDetachedResult(t, stdout)
+			if result.URL != test.want {
+				t.Errorf("URL = %q, want %q", result.URL, test.want)
+			}
+			for _, endpoint := range result.Endpoints {
+				if _, err := url.Parse(endpoint.URL); err != nil {
+					t.Errorf("reported an invalid URL %q: %v", endpoint.URL, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDetachedJSONXcodeDeployHasOneResult(t *testing.T) {
+	isolateDetachedOutput(t)
+	dir := newStubbedXcodeProject(t)
+	state := &fakeMacRunState{sendStarted: true}
+	conn, cleanup := startFakeMacRunServer(t, state)
+	defer cleanup()
+	cfg := &appconfig.AppConfig{AppID: "test.xcode", Platform: appconfig.PlatformDarwin, Xcode: &appconfig.XcodeConfig{Scheme: "MyScheme"}}
+	ctx := context.WithValue(context.Background(), detachedJSONRunKey{}, true)
+	stdout, stderr := captureBoth(t, func() {
+		if err := runWithAgent(ctx, conn, dir, cfg, runOptions{detach: true, detachedOutput: true, skipCloudRegistration: true}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if result := decodeDetachedResult(t, stdout); result.App != cfg.AppID {
+		t.Fatalf("wrong Xcode app result: %+v", result)
+	}
+	if !strings.Contains(stderr, "xcodebuild.log") {
+		t.Fatal("lost the Xcode progress hint")
 	}
 }

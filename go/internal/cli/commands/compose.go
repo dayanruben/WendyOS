@@ -1554,7 +1554,11 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		for _, name := range ordered {
 			configs = append(configs, svcLifecycleCfgs[name])
 		}
-		if err := opts.reportDetachedRun(ctx, conn, projectName, configs...); err != nil {
+		appID := projectName
+		if companion != nil && companion.AppID != "" {
+			appID = companion.AppID
+		}
+		if err := opts.reportDetachedRun(ctx, conn, appID, configs...); err != nil {
 			return err
 		}
 	}
