@@ -39,7 +39,7 @@ func TestReleaseRetriesEjectAfterUnmount(t *testing.T) {
 		return []UMSDisk{disk}, nil
 	})
 	var ops []string
-	stage := &Stage2{Out: io.Discard,
+	stage := &Stage2{Out: io.Discard, USBMode: USBModeSingle,
 		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
 			switch {
 			case req.Unmount:
@@ -68,7 +68,7 @@ func TestReleaseFailsWhenEjectKeepsFailing(t *testing.T) {
 	disk := UMSDisk{DevPath: "/dev/sdb", Vendor: RootfsLUNVendor, PortPath: "1-3", Serial: "12345678"}
 	withUMSScan(t, func() ([]UMSDisk, error) { return []UMSDisk{disk}, nil })
 	ejects := 0
-	stage := &Stage2{Out: io.Discard,
+	stage := &Stage2{Out: io.Discard, USBMode: USBModeSingle,
 		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
 			if req.Eject {
 				ejects++
@@ -89,8 +89,13 @@ func TestReleaseFailsWhenMediumStays(t *testing.T) {
 	withFastEjectRetry(t)
 	disk := UMSDisk{DevPath: "/dev/sda", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678"}
 	withUMSScan(t, func() ([]UMSDisk, error) { return []UMSDisk{disk}, nil })
-	stage := &Stage2{Out: io.Discard,
-		RunHelper: func(context.Context, HelperRequest, func(int64, int64)) error { return nil },
+	stage := &Stage2{Out: io.Discard, USBMode: USBModeSingle,
+		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
+			if req.Release || req.LegacyEject {
+				t.Fatal("persistent mode used a USB disconnect fallback")
+			}
+			return nil
+		},
 	}
 	if err := stage.release(context.Background(), disk); err == nil {
 		t.Fatal("release succeeded although the medium never went away")

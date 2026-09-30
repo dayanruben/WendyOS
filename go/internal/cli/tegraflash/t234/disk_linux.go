@@ -16,6 +16,20 @@ import (
 // inquiry vendor/model land in /sys/block/sdX/device/{vendor,model}. A LUN
 // without a medium keeps its node at size 0 and is skipped.
 func listUMSDisks() ([]UMSDisk, error) {
+	luns, err := listUMSLUNs()
+	if err != nil {
+		return nil, err
+	}
+	var disks []UMSDisk
+	for _, lun := range luns {
+		if lun.SizeBytes > 0 {
+			disks = append(disks, lun)
+		}
+	}
+	return disks, nil
+}
+
+func listUMSLUNs() ([]UMSDisk, error) {
 	entries, err := filepath.Glob("/sys/block/sd*")
 	if err != nil {
 		return nil, err
@@ -38,9 +52,6 @@ func listUMSDisks() ([]UMSDisk, error) {
 			if n, err := strconv.ParseInt(sectors, 10, 64); err == nil {
 				d.SizeBytes = n * 512
 			}
-		}
-		if d.SizeBytes == 0 {
-			continue
 		}
 		disks = append(disks, d)
 	}
@@ -133,8 +144,18 @@ func unmountUMSDisk(d UMSDisk) error {
 // done" signal the flashing initrd waits for. The USB device stays attached;
 // udisksctl power-off would disconnect it.
 func ejectUMSDisk(d UMSDisk) error {
-	if out, err := exec.Command("eject", d.DevPath).CombinedOutput(); err != nil {
+	if out, err := exec.Command("eject", "--scsi", d.DevPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("eject %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// Preserve the old Linux handoff for packages without negotiation. Do not
+// substitute medium eject here: the initrd can reload a different disk before
+// sysfs loses its old node, leaving the host's SCSI INQUIRY cache stale.
+func ejectLegacyUMSDisk(d UMSDisk) error {
+	if out, err := exec.Command("udisksctl", "power-off", "-b", d.DevPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("powering off %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

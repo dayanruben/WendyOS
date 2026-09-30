@@ -34,20 +34,16 @@ import (
 )
 
 // SupportedSchema is the newest tagged flashpack schema this wendy understands.
-// The existing untagged Thor schema remains version 1; T234 is accepted only as
-// tagged schema 3, the single-enumeration flash.
-const SupportedSchema = 3
+// The existing untagged Thor schema remains version 1. T234 retains schema 2;
+// its recovery initrd negotiates optional single-enumeration support.
+const SupportedSchema = 2
 
 const (
-	FamilyT234              = "t234-ums"
-	T234Schema              = 3
-	T234ProtocolMassStorage = "usb-mass-storage-v2"
+	FamilyT234              = "t234"
+	T234Schema              = 2
+	T234ProtocolMassStorage = "usb-mass-storage-v1"
 	t234FlashPackageSize    = 128 << 20
 )
-
-// familyT234Legacy images re-enumerated the flashing gadget for every disk.
-// The family moved so that older wendy versions report the new one as too new.
-const familyT234Legacy = "t234"
 
 // ErrNotInCache is returned by Resolve when no extracted tree or .tar.zst for the
 // requested version is present in the cache. The caller may download the artifact
@@ -347,9 +343,6 @@ func isT234RecoveryPIDString(s string) bool {
 }
 
 func validateManifest(m *Manifest) error {
-	if m.Family == familyT234Legacy {
-		return fmt.Errorf("WendyOS %s predates this wendy's Jetson flash protocol; install a newer WendyOS version, or use an older wendy for this one", m.WendyOSVersion)
-	}
 	if m.Family == FamilyT234 {
 		if m.Schema > T234Schema {
 			return fmt.Errorf("flashpack schema %d is newer than this wendy supports (%d); update wendy", m.Schema, T234Schema)

@@ -16,9 +16,10 @@ import (
 
 func withUMSScan(t *testing.T, scan func() ([]UMSDisk, error)) {
 	t.Helper()
-	previous := scanUMSDisks
+	previous, previousLUNs := scanUMSDisks, scanUMSLUNs
 	scanUMSDisks = scan
-	t.Cleanup(func() { scanUMSDisks = previous })
+	scanUMSLUNs = scan
+	t.Cleanup(func() { scanUMSDisks, scanUMSLUNs = previous, previousLUNs })
 }
 
 func withFastUMSPoll(t *testing.T) {
@@ -382,8 +383,8 @@ func TestSendFlashPackageVerifiesIdentityBeforeUnmount(t *testing.T) {
 				ops = append(ops, "poll "+req.Session)
 			case req.Unmount:
 				ops = append(ops, "unmount")
-			case req.Eject:
-				ops = append(ops, "eject")
+			case req.LegacyEject:
+				ops = append(ops, "eject-legacy")
 				ejected = true
 			case req.Writer.DumpTo != "":
 				ops = append(ops, "dump")
@@ -397,8 +398,11 @@ func TestSendFlashPackageVerifiesIdentityBeforeUnmount(t *testing.T) {
 	if err := stage.SendFlashPackage(context.Background()); err != nil {
 		t.Fatalf("SendFlashPackage = %v", err)
 	}
-	// Polling is enabled before the first eject, so later media changes are seen.
-	if want := []string{"dump", "poll 12345678", "unmount", "write", "dump", "eject"}; !slices.Equal(ops, want) {
+	// An archived initrd advertises no capability and needs no media polling.
+	if stage.USBMode != USBModeLegacy {
+		t.Fatalf("mode = %q, want legacy", stage.USBMode)
+	}
+	if want := []string{"dump", "unmount", "write", "dump", "eject-legacy"}; !slices.Equal(ops, want) {
 		t.Fatalf("helper ops = %v, want %v", ops, want)
 	}
 }

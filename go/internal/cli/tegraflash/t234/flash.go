@@ -74,6 +74,8 @@ type Stage2 struct {
 	LogsPath         string
 	ExpectedIdentity IdentityExpectation
 	HandoffStarted   bool
+	USBMode          USBMode
+	supportsSingle   bool
 	pollFailed       bool
 	recoveryPort     string       // where the bootROM enumerated, before adoptGadget
 	Out              io.Writer    // verbose log
@@ -115,8 +117,11 @@ func (s *Stage2) pollMedia(ctx context.Context) error {
 // laterLUN selects a LUN the device exports after the handoff: this session's,
 // on the gadget's port or (after a replug) another one.
 func (s *Stage2) laterLUN(ctx context.Context, vendor string) LUNSelector {
-	return LUNSelector{Vendor: vendor, PortPath: s.PortPath, PortHint: true, Session: s.Session,
-		Refresh: s.mediaRefresh(ctx), OnMissing: s.replugHint, RecoveryPort: s.recoveryPort}
+	selector := LUNSelector{Vendor: vendor, PortPath: s.PortPath, PortHint: true, Session: s.Session, RecoveryPort: s.recoveryPort}
+	if s.USBMode == USBModeSingle {
+		selector.Refresh, selector.OnMissing = s.mediaRefresh(ctx), s.replugHint
+	}
+	return selector
 }
 
 // replugHint tells the user how to recover a gadget that dropped off USB.
@@ -141,12 +146,13 @@ func (s *Stage2) mediaRefresh(ctx context.Context) func() {
 }
 
 type DeviceIdentity struct {
-	Protocol   string `json:"protocol"`
-	SessionID  string `json:"session_id"`
-	ModuleID   string `json:"module_id"`
-	ModuleSKU  string `json:"module_sku"`
-	CarrierID  string `json:"carrier_id"`
-	CarrierSKU string `json:"carrier_sku"`
+	Protocol     string   `json:"protocol"`
+	SessionID    string   `json:"session_id"`
+	ModuleID     string   `json:"module_id"`
+	ModuleSKU    string   `json:"module_sku"`
+	CarrierID    string   `json:"carrier_id"`
+	CarrierSKU   string   `json:"carrier_sku"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 type IdentityExpectation struct {
@@ -186,9 +192,20 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 		return err
 	}
 	s.adoptGadget(disk)
-	// Before the first eject, so the host sees every later media change.
-	if err := s.pollMedia(ctx); err != nil {
-		return fmt.Errorf("enabling host media polling: %w", err)
+	packagePath, mode, err := prepareUSBMode(s.FlashPackagePath, s.TempDir, s.supportsSingle)
+	if err != nil {
+		return fmt.Errorf("selecting recovery USB mode: %w", err)
+	}
+	s.FlashPackagePath, s.USBMode = packagePath, mode
+	fmt.Fprintf(s.Out, "  selected USB mode: %s\n", mode)
+	if mode == USBModeSingle {
+		if err := CheckHostTools(); err != nil {
+			return err
+		}
+		// Before the first eject, so the host sees every later media change.
+		if err := s.pollMedia(ctx); err != nil {
+			return fmt.Errorf("enabling host media polling: %w", err)
+		}
 	}
 	s.unmount(ctx, disk)
 	s.detail("sending flash commands + bootloader")
@@ -288,6 +305,7 @@ func (s *Stage2) verifyDeviceIdentity(ctx context.Context, disk UMSDisk) (UMSDis
 	if err := validateDeviceIdentity(got, disk.Serial, s.ExpectedIdentity); err != nil {
 		return UMSDisk{}, err
 	}
+	s.supportsSingle = hasSingleEnumeration(got.Capabilities)
 	fmt.Fprintf(s.Out, "  identity verified: module P%s-%s, carrier P%s-%s, session %s\n", got.ModuleID, got.ModuleSKU, got.CarrierID, got.CarrierSKU, got.SessionID)
 	return disk, nil
 }
@@ -359,7 +377,18 @@ func (s *Stage2) verifyFlashPackage(ctx context.Context, disk UMSDisk) error {
 		return fmt.Errorf("flash package verification failed: device command_sequence is %q, expected %q",
 			strings.TrimSpace(string(got)), strings.TrimSpace(string(want)))
 	}
-	fmt.Fprintln(s.Out, "  verified flash package on device (command sequence intact)")
+	gotMode, err := readPackageUSBMode(img)
+	if err != nil {
+		return fmt.Errorf("verifying device USB mode: %w", err)
+	}
+	wantMode, err := readPackageUSBMode(local)
+	if err != nil {
+		return fmt.Errorf("reading local USB mode: %w", err)
+	}
+	if gotMode != wantMode {
+		return fmt.Errorf("flash package verification failed: USB mode is %q, expected %q", gotMode, wantMode)
+	}
+	fmt.Fprintf(s.Out, "  verified flash package on device (command sequence and %s USB mode intact)\n", gotMode)
 	return nil
 }
 
@@ -370,7 +399,11 @@ func (s *Stage2) verifyFlashPackage(ctx context.Context, disk UMSDisk) error {
 func (s *Stage2) WriteRootfsDevice(ctx context.Context) error {
 	s.detail("waiting for the %s disk", s.Plan.RootfsDevice)
 	fmt.Fprintf(s.Out, "Waiting for the device to export %s over USB...\n", s.Plan.RootfsDevice)
-	disk, err := waitForUMSDiskConfirmed(ctx, s.laterLUN(ctx, RootfsLUNVendor), rootfsWait)
+	vendor := s.Plan.RootfsDevice
+	if s.USBMode == USBModeSingle {
+		vendor = RootfsLUNVendor
+	}
+	disk, err := waitForUMSDiskConfirmed(ctx, s.laterLUN(ctx, vendor), rootfsWait)
 	if err != nil {
 		if errors.Is(err, errGotFlashpkg) {
 			return ErrDeviceSideFailed
@@ -484,6 +517,9 @@ func (s *Stage2) unmount(ctx context.Context, disk UMSDisk) {
 // for, then waits for it to go away. A desktop can re-mount a freshly written
 // partition and block the eject, so it is retried after another unmount.
 func (s *Stage2) release(ctx context.Context, disk UMSDisk) error {
+	if s.USBMode != USBModeSingle {
+		return s.releaseLegacy(ctx, disk)
+	}
 	fmt.Fprintf(s.Out, "  releasing %s\n", disk.DevPath)
 	var err error
 	for attempt := 1; attempt <= ejectAttempts; attempt++ {

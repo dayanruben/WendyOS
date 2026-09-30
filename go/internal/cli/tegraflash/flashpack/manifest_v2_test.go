@@ -219,18 +219,27 @@ func TestT234ManifestUSBProductIDAcceptsFamily(t *testing.T) {
 	}
 }
 
-func TestT234LegacyFamilyRejectedWithGuidance(t *testing.T) {
+func TestT234PublishedV2ContractStillAccepted(t *testing.T) {
 	root := writeT234ManifestFixture(t, 2)
 	path := filepath.Join(root, "manifest.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = []byte(strings.Replace(string(data), `"family":"`+FamilyT234+`"`, `"family":"`+familyT234Legacy+`"`, 1))
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	// Literal values pin the published contract independently of constants.
+	manifest["schema"], manifest["family"], manifest["protocol"] = 2, "t234", "usb-mass-storage-v1"
+	data, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := open(root); err == nil || !strings.Contains(err.Error(), "install a newer WendyOS version") {
-		t.Fatalf("legacy family error = %v", err)
+	if _, err := open(root); err != nil {
+		t.Fatalf("published schema-v2 package rejected: %v", err)
 	}
 }
