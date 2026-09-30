@@ -68,7 +68,14 @@ func TestRawWriterExclusiveMountedPartition(t *testing.T) {
 		t.Fatal(err)
 	}
 	mounted := false
+	covered := false
 	t.Cleanup(func() {
+		if covered {
+			out, err := exec.Command("umount", "--", target).CombinedOutput()
+			if err != nil {
+				t.Errorf("unmounting test cover: %v: %s", err, out)
+			}
+		}
 		if mounted {
 			out, err := exec.Command("umount", "--", target).CombinedOutput()
 			if err != nil {
@@ -78,6 +85,24 @@ func TestRawWriterExclusiveMountedPartition(t *testing.T) {
 	})
 	run("mount", "--", partition, target)
 	mounted = true
+	// A covering mount belongs to a different device and must be retained.
+	run("mount", "-t", "tmpfs", "tmpfs", target)
+	covered = true
+	if err := unmountUMSDisk(UMSDisk{DevPath: loop}); err == nil || !strings.Contains(err.Error(), "unrelated filesystem") {
+		t.Fatalf("unmounted a filesystem covering the target: %v", err)
+	}
+	var stat syscall.Stat_t
+	if err := syscall.Stat(target, &stat); err != nil {
+		t.Fatal(err)
+	}
+	// If the guard left the cover alone, its device is still different from
+	// the underlying loop partition after removing just the cover ourselves.
+	coverDevice := stat.Dev
+	run("umount", "--", target)
+	covered = false
+	if err := syscall.Stat(target, &stat); err != nil || stat.Dev == coverDevice {
+		t.Fatalf("covering mount was not retained: %v", err)
+	}
 	// Model a desktop mounting after the parent's successful unmount pass.
 	// Both actual writer paths must refuse the mounted disk before any write.
 	blob := filepath.Join(dir, "rootfs.img")
@@ -116,4 +141,8 @@ func TestRawWriterExclusiveMountedPartition(t *testing.T) {
 	}
 	run("mount", "--", partition, target)
 	mounted = true
+	if err := unmountUMSDisk(UMSDisk{DevPath: loop}); err != nil {
+		t.Fatal(err)
+	}
+	mounted = false
 }

@@ -37,7 +37,7 @@ func TestUnmountLinuxDiskIncludesPartitionsAndAliases(t *testing.T) {
 15 1 0:25 / /tmp rw - tmpfs tmpfs rw
 `
 	var got []string
-	err := unmountLinuxDisk("/dev/sdb", mountDiskFixture(t), strings.NewReader(mounts), func(target string) error {
+	err := unmountLinuxDisk("/dev/sdb", mountDiskFixture(t), strings.NewReader(mounts), func(target, device string) error {
 		got = append(got, target)
 		return nil
 	})
@@ -48,7 +48,7 @@ func TestUnmountLinuxDiskIncludesPartitionsAndAliases(t *testing.T) {
 }
 
 func TestUnmountLinuxDiskNoMountIsSuccess(t *testing.T) {
-	err := unmountLinuxDisk("/dev/sdb", mountDiskFixture(t), strings.NewReader("10 1 8:48 / /other rw - ext4 /dev/sdc rw\n"), func(string) error {
+	err := unmountLinuxDisk("/dev/sdb", mountDiskFixture(t), strings.NewReader("10 1 8:48 / /other rw - ext4 /dev/sdc rw\n"), func(string, string) error {
 		t.Fatal("unmounted an unrelated filesystem")
 		return nil
 	})
@@ -61,7 +61,7 @@ func TestUnmountLinuxDiskStopsOnBusyMount(t *testing.T) {
 	busy := errors.New("target is busy")
 	mounts := "10 1 8:32 / /config rw - vfat /dev/sdb16 rw\n11 1 8:17 / /app rw - ext4 /dev/sdb1 rw\n"
 	calls := 0
-	err := unmountLinuxDisk("/dev/sdb", mountDiskFixture(t), strings.NewReader(mounts), func(string) error {
+	err := unmountLinuxDisk("/dev/sdb", mountDiskFixture(t), strings.NewReader(mounts), func(string, string) error {
 		calls++
 		return busy
 	})
@@ -72,7 +72,7 @@ func TestUnmountLinuxDiskStopsOnBusyMount(t *testing.T) {
 
 func TestUnmountLinuxDiskRequiresCompleteMountInformation(t *testing.T) {
 	for _, mounts := range []string{"invalid entry", "10 1 8:32 / /config rw - vfat /dev/sdb16 rw\ninvalid entry"} {
-		err := unmountLinuxDisk("/dev/sdb", mountDiskFixture(t), strings.NewReader(mounts), func(string) error {
+		err := unmountLinuxDisk("/dev/sdb", mountDiskFixture(t), strings.NewReader(mounts), func(string, string) error {
 			t.Fatal("unmounted with incomplete mount information")
 			return nil
 		})

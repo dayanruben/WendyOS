@@ -14,7 +14,7 @@ import (
 
 // Match mountinfo's device numbers rather than source names, which can use
 // aliases. Limit the operation to this disk and its sysfs partition children.
-func unmountLinuxDisk(devPath, sysfsRoot string, mounts io.Reader, unmount func(string) error) error {
+func unmountLinuxDisk(devPath, sysfsRoot string, mounts io.Reader, unmount func(target, device string) error) error {
 	name := filepath.Base(devPath)
 	disk := filepath.Join(sysfsRoot, name)
 	partitions, err := filepath.Glob(filepath.Join(disk, name+"*", "dev"))
@@ -29,7 +29,8 @@ func unmountLinuxDisk(devPath, sysfsRoot string, mounts io.Reader, unmount func(
 		}
 		devices[strings.TrimSpace(string(dev))] = true
 	}
-	var targets []string
+	type diskMount struct{ target, device string }
+	var targets []diskMount
 	decode := strings.NewReplacer("\\040", " ", "\\011", "\t", "\\012", "\n", "\\134", "\\")
 	scanner := bufio.NewScanner(mounts)
 	for scanner.Scan() {
@@ -38,17 +39,17 @@ func unmountLinuxDisk(devPath, sysfsRoot string, mounts io.Reader, unmount func(
 			return fmt.Errorf("invalid mountinfo entry")
 		}
 		if devices[fields[2]] {
-			targets = append(targets, decode.Replace(fields[4]))
+			targets = append(targets, diskMount{decode.Replace(fields[4]), fields[2]})
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("reading mounts: %w", err)
 	}
 	// Child mounts and bind mounts can share a device; unmount deeper paths first.
-	sort.SliceStable(targets, func(i, j int) bool { return len(targets[i]) > len(targets[j]) })
-	for _, target := range targets {
-		if err := unmount(target); err != nil {
-			return fmt.Errorf("unmounting %s from %s: %w", devPath, target, err)
+	sort.SliceStable(targets, func(i, j int) bool { return len(targets[i].target) > len(targets[j].target) })
+	for _, mount := range targets {
+		if err := unmount(mount.target, mount.device); err != nil {
+			return fmt.Errorf("unmounting %s from %s: %w", devPath, mount.target, err)
 		}
 	}
 	return nil

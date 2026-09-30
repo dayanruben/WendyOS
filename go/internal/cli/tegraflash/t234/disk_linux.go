@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // listUMSDisks finds USB mass-storage whole disks via sysfs: the SCSI
@@ -138,7 +140,17 @@ func unmountUMSDisk(d UMSDisk) error {
 		return err
 	}
 	defer mounts.Close()
-	return unmountLinuxDisk(d.DevPath, "/sys/class/block", mounts, func(target string) error {
+	return unmountLinuxDisk(d.DevPath, "/sys/class/block", mounts, func(target, device string) error {
+		// A different filesystem can cover this mount point. Refuse to unmount
+		// that filesystem, or one that appeared since the mountinfo snapshot.
+		var stat unix.Stat_t
+		if err := unix.Stat(target, &stat); err != nil {
+			return err
+		}
+		visible := fmt.Sprintf("%d:%d", unix.Major(stat.Dev), unix.Minor(stat.Dev))
+		if visible != device {
+			return fmt.Errorf("mount point %s now refers to device %s, expected %s; refusing to unmount an unrelated filesystem", target, visible, device)
+		}
 		out, err := exec.Command("umount", "--", target).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
