@@ -18,8 +18,9 @@ const cliUpdateCheckInterval = 24 * time.Hour
 // scheduleCLIUpdateCheck launches a goroutine that fetches the latest release
 // and persists the result to config. PersistentPostRunE reads the persisted
 // value on the next invocation, which avoids the race where the HTTP call
-// hasn't finished by the time a fast command completes.
-func scheduleCLIUpdateCheck() {
+// hasn't finished by the time a fast command completes. It is a variable so
+// tests can observe it without a network call.
+var scheduleCLIUpdateCheck = func() {
 	go func() {
 		latest, checkErr := checkLatestRelease()
 		// Best-effort: if we can't save, we'll retry on the next check.
