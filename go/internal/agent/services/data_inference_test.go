@@ -279,6 +279,62 @@ func TestAgentInferenceRedeployStopsOldRevision(t *testing.T) {
 	}
 }
 
+func TestInferenceDisabledWaitsForRetiredWorker(t *testing.T) {
+	manager, err := data.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := data.ParseCampaign(inferenceTestYAML(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Notify = &data.CampaignNotify{On: data.NotifyOnDetection}
+	disabled := old
+	config := *old.Inference
+	enabled := false
+	config.Enabled = &enabled
+	disabled.Inference = &config
+	raw, err := yaml.Marshal(disabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err = manager.DeployCampaign(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, done := make(chan struct{}), make(chan struct{})
+	service := NewDataService(manager)
+	service.inference = &campaignInferenceManager{service: service, jobs: map[string]*campaignInferenceJob{
+		old.Name: {campaign: old, cancel: func() { close(canceled) }, done: done, status: data.InferenceStatus{State: "running"}},
+	}}
+	state := func() string {
+		t.Helper()
+		message, err := service.campaignMessage(disabled)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan data.Campaign
+		if err := json.Unmarshal(message.PlanJson, &plan); err != nil {
+			t.Fatal(err)
+		}
+		return plan.InferenceStatus.State
+	}
+	if got := state(); got != "stopping" {
+		t.Fatalf("before cancellation: %s", got)
+	}
+	reconciled := make(chan struct{})
+	go func() { defer close(reconciled); service.inference.reconcile(context.Background()) }()
+	receiveInference(t, canceled)
+	if got := state(); got != "stopping" {
+		t.Fatalf("before process exit: %s", got)
+	}
+	close(done)
+	receiveInference(t, reconciled)
+	if got := state(); got != "disabled" {
+		t.Fatalf("after process exit: %s", got)
+	}
+}
+
 func TestAgentInferencePresenceAndFiltering(t *testing.T) {
 	campaign, err := data.ParseCampaign(inferenceTestYAML(t))
 	if err != nil {

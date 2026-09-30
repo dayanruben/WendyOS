@@ -15,6 +15,11 @@ import { CameraPanel } from "./camera";
 import { TelemetryPanel } from "./telemetry";
 import { SimulatorsPanel } from "./simulators";
 import {
+  InspectionStatus,
+  inspectionLabel,
+  type InspectionPhase,
+} from "./inspection-status";
+import {
   displayIdentity,
   withDisplayIdentity,
   type DisplayIdentity,
@@ -80,6 +85,10 @@ function Workspace() {
     [offline, setOffline] = useState(false),
     [tab, setTab] = useState("Overview"),
     [inspection, setInspection] = useState<Inspection>(),
+    [inspectionPhase, setInspectionPhase] =
+      useState<InspectionPhase>("waiting"),
+    [inspectionError, setInspectionError] = useState(""),
+    [inspectionAttempt, setInspectionAttempt] = useState(0),
     [triggers, setTriggers] = useState<Trigger[]>([]),
     [events, setEvents] = useState<unknown>(),
     [detail, setDetail] = useState<unknown>(),
@@ -105,6 +114,8 @@ function Workspace() {
     tabReadController.current = undefined;
     setSelected(id);
     setInspection(undefined);
+    setInspectionPhase(ready ? "loading" : "waiting");
+    setInspectionError("");
     setDetail(undefined);
     setEvents(undefined);
     setTriggers([]);
@@ -258,7 +269,10 @@ function Workspace() {
     if (!ready || !selected) return;
     const g = generation.current;
     const controller = new AbortController();
-    void action("Inspecting device", async () => {
+    setInspectionPhase("loading");
+    setInspectionError("");
+    setInspection(undefined);
+    void (async () => {
       try {
         const r = await call(
           "inspect_robot",
@@ -271,14 +285,24 @@ function Workspace() {
         );
         if (controller.signal.aborted || g !== generation.current) return;
         const i = r.structuredContent as unknown as Inspection;
+        if (!i || typeof i.connected !== "boolean")
+          throw Error(
+            "The device returned no valid inspection result. Try checking its agent again.",
+          );
         setInspection(i);
+        setInspectionPhase("complete");
         rememberIdentity(selected, i);
       } catch (error) {
-        if (!controller.signal.aborted) throw error;
+        if (controller.signal.aborted || g !== generation.current) return;
+        setInspectionPhase("error");
+        setInspectionError(
+          toolErrorMessage(error) ||
+            "Update the Wendy connection using the instructions above, then retry inspection.",
+        );
       }
-    });
+    })();
     return () => controller.abort();
-  }, [selected, ready]);
+  }, [selected, ready, inspectionAttempt]);
   async function readDeviceTab(
     name:
       | "inspect_robot"
@@ -615,9 +639,7 @@ function Workspace() {
                   <h1>{row?.name || selected}</h1>
                   <p>
                     {row?.device_type || "Wendy device"} ·{" "}
-                    {inspection?.connected
-                      ? "Agent connected"
-                      : "Connection not verified"}
+                    {inspectionLabel(inspectionPhase, inspection?.connected)}
                   </p>
                 </div>
                 <div className="actions">
@@ -646,26 +668,13 @@ function Workspace() {
                   kind={row?.source === "simulator" ? "simulator" : undefined}
                   large
                 />
-                <div className="device-facts">
-                  <span className="badge online">
-                    {inspection?.connected
-                      ? "Agent responded"
-                      : "Awaiting inspection"}
-                  </span>
-                  <h2>Device status</h2>
-                  <dl>
-                    <dt>Agent</dt>
-                    <dd>{inspection?.agent_version || "Unknown"}</dd>
-                    <dt>Applications</dt>
-                    <dd>{inspection?.apps?.length ?? "Unknown"}</dd>
-                    <dt>Last checked</dt>
-                    <dd>
-                      {inspection?.observed_at
-                        ? new Date(inspection.observed_at).toLocaleTimeString()
-                        : "Not checked"}
-                    </dd>
-                  </dl>
-                </div>
+                <InspectionStatus
+                  phase={inspectionPhase}
+                  inspection={inspection}
+                  error={inspectionError}
+                  ready={ready}
+                  onRetry={() => setInspectionAttempt((attempt) => attempt + 1)}
+                />
               </div>
               <nav className="tabs" aria-label="Device details">
                 {[
@@ -709,7 +718,7 @@ function Workspace() {
                   ))}
                 </div>
               )}
-              {tab === "Apps" && (
+              {tab === "Apps" && inspection && (
                 <AppsPanel
                   key={selected}
                   apps={inspection?.apps || []}
@@ -758,7 +767,7 @@ function Workspace() {
                         }
                       : undefined
                   }
-                  refreshing={!inspection}
+                  refreshing={inspectionPhase === "loading"}
                   onToggle={async (a) => {
                     const g = generation.current;
                     await action("Changing app state", async () => {
@@ -785,6 +794,16 @@ function Workspace() {
                   cameras={inspection.cameras || []}
                 />
               )}
+              {(tab === "Apps" || tab === "Camera") && !inspection && (
+                <div className="panel" role="status">
+                  <h2>{tab}</h2>
+                  <p>
+                    {inspectionPhase === "error"
+                      ? `${tab === "Apps" ? "The app inventory" : "Camera information"} could not be loaded. Retry inspection above.`
+                      : `${tab === "Apps" ? "Applications" : "Available cameras"} will appear when device inspection completes.`}
+                  </p>
+                </div>
+              )}
               {tab === "Events" && (
                 <div className="panel">
                   <h2>Wendy Data notifications</h2>
@@ -794,32 +813,47 @@ function Workspace() {
                     confirms the subscription.
                   </p>
                   <div className="actions">
-                    <button onClick={() => send(
-                      `Monitor Wendy Data notifications on device ${selected}. Subscribe to the MCP event wendy.data.notification with robot_id=${selected}. Ask which campaign or event to monitor and what to do when it arrives. Confirm monitoring only after the subscription succeeds.`,
-                    )}>
+                    <button
+                      onClick={() =>
+                        send(
+                          `Monitor Wendy Data notifications on device ${selected}. Subscribe to the MCP event wendy.data.notification with robot_id=${selected}. Ask which campaign or event to monitor and what to do when it arrives. Confirm monitoring only after the subscription succeeds.`,
+                        )
+                      }
+                    >
                       Ask ChatGPT to monitor
                     </button>
                     {row?.can_deploy_detector && (
-                      <button onClick={() => send(
-                        `Set up a YOLO detector on Wendy device ${selected} using deploy_yolo_detector. Ask me for the Hugging Face model reference and what to detect. Inspect this device's camera sources and ask which camera to use if there is more than one. Inspect the detector after deployment. Offer to subscribe to its Wendy Data notifications.`,
-                      )}>
+                      <button
+                        onClick={() =>
+                          send(
+                            `Set up a YOLO detector on Wendy device ${selected} using deploy_yolo_detector. Ask me for the Hugging Face model reference and what to detect. Inspect this device's camera sources and ask which camera to use if there is more than one. Inspect the detector after deployment. Offer to subscribe to its Wendy Data notifications.`,
+                          )
+                        }
+                      >
                         Set up YOLO detection
                       </button>
                     )}
-                    <button disabled={!!busy} onClick={() => {
-                      const g = generation.current;
-                      void action("Reading notifications", async () => {
-                        const r = await readDeviceTab("read_device_notifications", { replay: true });
-                        if (r && g === generation.current) setEvents(r.structuredContent);
-                      });
-                    }}>
+                    <button
+                      disabled={!!busy}
+                      onClick={() => {
+                        const g = generation.current;
+                        void action("Reading notifications", async () => {
+                          const r = await readDeviceTab(
+                            "read_device_notifications",
+                            { replay: true },
+                          );
+                          if (r && g === generation.current)
+                            setEvents(r.structuredContent);
+                        });
+                      }}
+                    >
                       Recent notifications
                     </button>
                   </div>
                   <p className="muted">
                     Requires an updated Wendy Agent. Detection and named-event
-                    notifications are supported; Cloud episode-upload notifications
-                    are not included.
+                    notifications are supported; Cloud episode-upload
+                    notifications are not included.
                   </p>
                   {triggers.length > 0 && <h3>Configured triggers</h3>}
                   {triggers.map((t) => (

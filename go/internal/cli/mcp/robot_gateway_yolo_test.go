@@ -119,6 +119,31 @@ func TestGatewayYOLODeployUsesExactCameraAndNotification(t *testing.T) {
 	if !c.Inference.IsEnabled() {
 		t.Fatal("detector was not enabled")
 	}
+	body, _ := json.Marshal(result.StructuredContent)
+	if !strings.Contains(string(body), `"local_quota_enforced":false`) || !strings.Contains(string(body), `"requested_local_quota":"128MiB"`) {
+		t.Fatal("deployment claimed an enforced campaign quota", string(body))
+	}
+	plan, _ := json.Marshal(c)
+	client.existing = &agentpbv2.DataCampaign{Name: c.Name, PlanJson: plan}
+	cfg := gatewayTestConfig()
+	cfg.StateDirectory = t.TempDir()
+	gateway, err := NewRobotGateway(cfg, func(context.Context, string) (*grpcclient.AgentConnection, error) {
+		return &grpcclient.AgentConnection{DataService: client}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := gatewayTestHTTP(t, gateway)
+	alice := gatewayHTTPClient(t, server.URL, gatewayTestEnv("ALICE_TOKEN"))
+	stopped, err := alice.CallTool(context.Background(), callToolReq("stop_yolo_detector", map[string]any{"robot_id": "alpha", "name": "people"}))
+	if err != nil || stopped.IsError {
+		t.Fatalf("stop: %+v, %v", stopped, err)
+	}
+	body, _ = json.Marshal(stopped.StructuredContent)
+	if !strings.Contains(string(body), `"status":"stop_requested"`) || !strings.Contains(string(body), `"runtime_stop_verified":false`) || client.deployed.Inference.IsEnabled() {
+		t.Fatal("stop request claimed runtime completion", string(body))
+	}
+	client.existing = nil
 	client.deployed = nil
 	client.sources = append(client.sources, &agentpbv2.DataSource{Id: "v4l2:/dev/video2", Kind: "camera", Healthy: true})
 	result, err = deployGatewayYOLO(context.Background(), &GatewayRobot{ID: "alpha"}, s, callToolReq("deploy_yolo_detector", map[string]any{"name": "people", "model_ref": "acme/yolo"}), resolve)

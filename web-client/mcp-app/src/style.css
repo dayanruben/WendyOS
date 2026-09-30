@@ -522,6 +522,33 @@ label {
 .device-facts h2 {
   margin: 18px 0;
 }
+.inspection-hint,
+.inspection-error {
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  margin-bottom: 16px;
+}
+.inspection-error {
+  color: var(--text);
+}
+.inspection-retry {
+  margin-top: 16px;
+}
+.inspection-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: inspection-spin 0.9s linear infinite;
+}
+@keyframes inspection-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .inspection-spinner { animation: none; }
+}
 dl {
   display: grid;
   grid-template-columns: 1fr 1fr;

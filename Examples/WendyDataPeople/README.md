@@ -63,9 +63,13 @@ The caller needs `triggers:write` and `cameras:capture`, and the device policy
 must permit camera access.
 
 The tool deploys `chatgpt-yolo-<name>` with `notify.on: detection`. It retains
-one-second detection episodes locally with a 128 MiB quota and manual upload.
+one-second detection episodes locally with manual upload. Its requested 128 MiB
+campaign quota is metadata; only the device-wide storage quota is currently
+enforced.
 Use `inspect_yolo_detector` to check loading and camera state, and
-`stop_yolo_detector` to stop inference. Subscribe to the MCP event
+`stop_yolo_detector` to request that inference stops. Inspect until
+`inference_status.state` is `disabled`; `stopping` means the worker or camera
+subscriptions have not exited yet. Subscribe to the MCP event
 `wendy.data.notification` using the returned `robot_id` and `campaign` filters
 for ChatGPT delivery. This subscription is separate from the Wendy Cloud app
 notification grant described below. An updated Wendy Agent is required; older

@@ -72,14 +72,21 @@ func (s *DataService) StartCampaignInference(ctx context.Context, factory infere
 
 func (m *campaignInferenceManager) stopAll() {
 	m.mu.Lock()
-	jobs := m.jobs
-	m.jobs = map[string]*campaignInferenceJob{}
+	jobs := make([]*campaignInferenceJob, 0, len(m.jobs))
+	for _, job := range m.jobs {
+		jobs = append(jobs, job)
+	}
 	m.mu.Unlock()
 	for _, job := range jobs {
 		job.cancel()
 	}
 	for _, job := range jobs {
 		<-job.done
+		m.mu.Lock()
+		if m.jobs[job.campaign.Name] == job {
+			delete(m.jobs, job.campaign.Name)
+		}
+		m.mu.Unlock()
 	}
 }
 
@@ -104,11 +111,15 @@ func (m *campaignInferenceManager) reconcile(ctx context.Context) {
 		}
 		job.cancel()
 		retired = append(retired, job)
-		delete(m.jobs, name)
 	}
 	m.mu.Unlock()
 	for _, job := range retired {
 		<-job.done
+		m.mu.Lock()
+		if m.jobs[job.campaign.Name] == job {
+			delete(m.jobs, job.campaign.Name)
+		}
+		m.mu.Unlock()
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -120,6 +131,23 @@ func (m *campaignInferenceManager) reconcile(ctx context.Context) {
 		job := &campaignInferenceJob{owner: m, campaign: campaign, cancel: cancel, done: make(chan struct{}), queue: make(chan DetectionNotification, 16), generations: map[string]uint64{}, status: data.InferenceStatus{State: "loading", Sources: map[string]string{}}}
 		m.jobs[name] = job
 		go job.supervise(child)
+	}
+}
+
+// Keep retired jobs visible until their process and camera subscriptions exit.
+// Persisting enabled:false only requests shutdown; it does not complete it.
+func (m *campaignInferenceManager) inferenceActive(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job := m.jobs[name]
+	if job == nil || !job.campaign.Inference.IsEnabled() {
+		return false
+	}
+	select {
+	case <-job.done:
+		return false
+	default:
+		return true
 	}
 }
 
@@ -500,7 +528,9 @@ func (s *DataService) campaignMessage(campaign data.Campaign) (*agentpbv2.DataCa
 	eventNotifications := campaign.Notify != nil && campaign.Notify.On == data.NotifyOnEvent
 	if campaign.Inference != nil || eventNotifications {
 		campaign.InferenceStatus = &data.InferenceStatus{State: "disabled"}
-		if campaign.Inference.IsEnabled() || eventNotifications {
+		if !campaign.Inference.IsEnabled() && s.inference != nil && s.inference.inferenceActive(campaign.Name) {
+			campaign.InferenceStatus.State = "stopping"
+		} else if campaign.Inference.IsEnabled() || eventNotifications {
 			if s.inference == nil {
 				campaign.InferenceStatus = &data.InferenceStatus{State: "error", Error: "agent campaign runtime is unavailable"}
 			} else {
