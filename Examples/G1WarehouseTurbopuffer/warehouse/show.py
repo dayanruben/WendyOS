@@ -23,13 +23,33 @@ def _await(sim: "Simulation", future: Future) -> Iterator[None]:
     return future.result()
 
 
+def _ask(sim: "Simulation", name: str, *args, attempts: int = 3) -> Iterator[None]:
+    """A memory call, retried after a pause if it fails (a network blip should not end the show)."""
+    for attempt in range(attempts):
+        try:
+            return (yield from _await(sim, sim.memory.submit(name, *args)))
+        except Exception as error:
+            if attempt == attempts - 1:
+                raise
+            title, detail = sim.activity
+            sim.say("Retrying Turbopuffer", f"{type(error).__name__}: {error}"[:120])
+            yield from sim.skills.wait(1.0 + attempt)
+            sim.say(title, detail)
+
+
 def run(sim: "Simulation") -> Iterator[None]:
     skills = sim.skills
     while True:
         sim.restock()
         sim.target = None
         sim.say("Loading memory", f"{sim.memory.backend}: zones and shelved items")
-        yield from _await(sim, sim.memory.submit("reset"))
+        while True:
+            try:
+                yield from _ask(sim, "reset")
+                break
+            except Exception as error:   # unreachable for now: wait, then try again
+                sim.say("Waiting for Turbopuffer", f"{type(error).__name__}: {error}"[:120])
+                yield from skills.wait(5.0)
         occupied = {z.key: {0} for z in ZONES}
 
         for index, item in enumerate(INBOUND):
@@ -40,7 +60,7 @@ def run(sim: "Simulation") -> Iterator[None]:
             sim.target = None
             sim.say("Asking Turbopuffer", f"Where do things like “{item.label}” go?")
             try:
-                answer = yield from _await(sim, sim.memory.submit("where_does", item.label))
+                answer = yield from _ask(sim, "where_does", item.label)
                 zone_key = answer.best.zone
             except Exception:
                 zone_key = ZONES[index % len(ZONES)].key   # memory unavailable: any zone with room
@@ -54,13 +74,20 @@ def run(sim: "Simulation") -> Iterator[None]:
             sim.moved(name, zone_key, bay)
             sim.target = None
             sim.say("Remembering", f"{item.label}: {zone_name(zone_key)}, bay {bay + 1}")
-            yield from _await(sim, sim.memory.submit("remember", item, zone_key, bay))
+            try:
+                yield from _ask(sim, "remember", item, zone_key, bay)
+            except Exception:
+                pass   # the viewer shows the memory error; the box is shelved either way
 
         sim.say("Question", QUESTION)
         yield from skills.wait(2.0)
-        answer = yield from _await(sim, sim.memory.submit("find", QUESTION))
+        try:
+            answer = yield from _ask(sim, "find", QUESTION)
+            matches = answer.matches
+        except Exception:
+            matches = []   # no answer: nothing to fetch this time
         # the closest item the robot can carry (top-shelf stock is out of its reach)
-        best = next((m for m in answer.matches if sim.box_for(m.label)), None)
+        best = next((m for m in matches if sim.box_for(m.label)), None)
         name = sim.box_for(best.label) if best else None
         if name is not None:
             where = sim.location[name]
