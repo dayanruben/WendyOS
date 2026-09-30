@@ -19,7 +19,10 @@ wendy --help
 wendy <command> --help
 ```
 
-Use `--json` for list/status commands that support it. Build, run and flash commands still emit progress text; use exit status and follow-up checks. Supply explicit targets and choices to avoid interactive pickers. (There is no `-j` shorthand.)
+Use `--json` for list/status commands and agent-backed `run --detach`. Detached
+run returns a JSON result with the target, app and available HTTP URLs; progress
+goes to stderr. Build, attached run and flash still emit progress text. Supply
+explicit targets and choices to avoid interactive pickers. (There is no `-j` shorthand.)
 
 ## Common Tasks
 
@@ -43,6 +46,12 @@ scaffolding. When already inside the requested destination, include `--here` so
 The MCP `run` tool uses its explicit `device` or the connected session's target;
 legacy `device_name` selects cloud deployment. Verify the returned target, container
 state, logs and application health separately: detached run skips readiness waits.
+For a local VM, `--device vm:dev` selects the agent; it is not a DNS hostname or
+HTTP URL. With default user networking, fetch the detached result's `url` (for
+example `http://127.0.0.1:18880`), rather than `vm:dev`, `dev`, or the guest's
+`10.0.2.15` address. Declare the app's HTTP port in an `http` entitlement so Wendy
+can forward and report it. `readiness: "not_checked"` means start was acknowledged,
+not that the HTTP endpoint is healthy; verify the expected response separately.
 Wendy Lite uses a separate MCU/WASM workflow; see `wendy-lite` for ESP32.
 
 ### `wendy device wifi connect` — Set Up WiFi

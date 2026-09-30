@@ -3534,7 +3534,7 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 			return nil, fmt.Errorf("wendy.json not found; run 'wendy init <app-id>' to create one")
 		}
 
-		fmt.Println("No wendy.json found in current directory.")
+		cliLogln("No wendy.json found in current directory.")
 		if !confirmFn(fmt.Sprintf("Create one with app ID %q?", dirName)) {
 			return nil, fmt.Errorf("wendy.json is required; run 'wendy init <app-id>' to create one")
 		}
@@ -3574,7 +3574,7 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 		return nil, fmt.Errorf("writing wendy.json: %w", writeErr)
 	}
 
-	fmt.Printf("Created wendy.json for %s\n", dirName)
+	cliLogln("Created wendy.json for %s", dirName)
 	return newCfg, nil
 }
 
