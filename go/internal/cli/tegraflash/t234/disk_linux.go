@@ -130,14 +130,21 @@ func sysfsString(path string) string {
 	return strings.TrimSpace(string(data))
 }
 
-// unmountUMSDisk unmounts anything an automounter grabbed from the LUN.
-// Best-effort: the LUNs usually carry no mountable filesystem, so umount's
-// exit status is the routine "not mounted" and is not surfaced — only the
-// Windows implementation can distinguish that from a lock refusal worth
-// reporting.
+// unmountUMSDisk includes mounted partitions, which a desktop can grab as
+// soon as an existing rootfs is exported. A busy mount must stop a raw write.
 func unmountUMSDisk(d UMSDisk) error {
-	exec.Command("umount", d.DevPath).Run() //nolint:errcheck
-	return nil
+	mounts, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return err
+	}
+	defer mounts.Close()
+	return unmountLinuxDisk(d.DevPath, "/sys/class/block", mounts, func(target string) error {
+		out, err := exec.Command("umount", "--", target).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	})
 }
 
 // ejectUMSDisk ejects the LUN's medium (SCSI START STOP UNIT) — the "host is

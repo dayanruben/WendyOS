@@ -207,7 +207,9 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 			return fmt.Errorf("enabling host media polling: %w", err)
 		}
 	}
-	s.unmount(ctx, disk)
+	if err := s.unmount(ctx, disk); err != nil {
+		return fmt.Errorf("unmounting flash package before writing: %w", err)
+	}
 	s.detail("sending flash commands + bootloader")
 	s.HandoffStarted = true
 	if err := s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, Blob: s.FlashPackagePath}}, nil); err != nil {
@@ -416,7 +418,9 @@ func (s *Stage2) WriteRootfsDevice(ctx context.Context) error {
 		return fmt.Errorf("exported %s (%d bytes) is smaller than the flash layout (%d bytes)", s.Plan.RootfsDevice, disk.SizeBytes, min)
 	}
 
-	s.unmount(ctx, disk)
+	if err := s.unmount(ctx, disk); err != nil {
+		return fmt.Errorf("unmounting %s before writing: %w", s.Plan.RootfsDevice, err)
+	}
 	fmt.Fprintf(s.Out, "Writing GPT + %d partitions...\n", len(s.Plan.Partitions))
 	start := time.Now()
 	err = s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, WritePlan: true, LayoutPath: s.LayoutPath, ImagesDir: s.ImagesDir, RootfsDevice: s.Plan.RootfsDevice}},
@@ -503,14 +507,16 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	return res, nil
 }
 
-// unmount locks/unmounts the LUN's volumes, reporting (not failing on) a
-// volume that stayed mounted — the raw write that follows produces the real
-// error, and the warning explains it. Routed through the root helper: umount
+// unmount locks/unmounts the LUN's volumes. Callers must check the result
+// before raw writes, which Linux can permit even on mounted volumes.
+// Routed through the root helper: umount
 // (Linux) and diskutil (macOS) need privilege the unprivileged parent lacks.
-func (s *Stage2) unmount(ctx context.Context, disk UMSDisk) {
+func (s *Stage2) unmount(ctx context.Context, disk UMSDisk) error {
 	if err := s.RunHelper(ctx, HelperRequest{Unmount: true, Writer: WriterOptions{Device: disk.DevPath}}, nil); err != nil {
 		fmt.Fprintf(s.Out, "  warning: %v\n", err)
+		return err
 	}
+	return nil
 }
 
 // release ejects the LUN's medium, the "host is done" signal the initrd waits
