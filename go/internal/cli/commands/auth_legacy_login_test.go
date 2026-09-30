@@ -317,3 +317,62 @@ func TestLegacyLoginSession_IssuanceErrorIsReported(t *testing.T) {
 		t.Fatalf("a failed issuance saved %d auth entries", len(cfg.Auth))
 	}
 }
+
+// A person at a terminal still sees every step, in order, now that the steps
+// run in a session.
+func TestPerformLogin_SuccessPrintsEveryStep(t *testing.T) {
+	isolateLoginConfig(t)
+	stubInteractive(t)
+	stubHumanPresent(t, true)
+	opened := stubOpenBrowser(t)
+	stubIssueLegacyCertificate(t, issuedCert(), nil)
+
+	// Play the browser: once performLogin has opened the URL, call back. This
+	// runs off the test goroutine, so it reports with t.Error, never t.Fatal.
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if urls := opened(); len(urls) == 1 {
+				u, err := url.Parse(urls[0])
+				if err != nil {
+					t.Errorf("parsing opened URL: %v", err)
+					return
+				}
+				resp, err := http.Get(u.Query().Get("redirect_uri") + "?" + url.Values{"token": {fakeEnrollmentToken()}}.Encode())
+				if err != nil {
+					t.Errorf("calling back: %v", err)
+					return
+				}
+				resp.Body.Close()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Error("performLogin never opened the browser")
+	}()
+
+	var err error
+	out := captureStdout(t, func() {
+		err = performLogin(context.Background(), testDashboard, testCloudGRPC)
+	})
+	if err != nil {
+		t.Fatalf("performLogin: %v", err)
+	}
+	steps := []string{
+		"Opening browser for authentication",
+		"Or scan with the Wendy iOS app:",
+		"Waiting for authentication...",
+		"Received enrollment token.",
+		"Authentication successful. Certificates saved.",
+		"Warnings:",
+		"  - certificate expires soon",
+	}
+	at := 0
+	for _, step := range steps {
+		i := strings.Index(out[at:], step)
+		if i < 0 {
+			t.Fatalf("output is missing %q after position %d:\n%s", step, at, out)
+		}
+		at += i + len(step)
+	}
+}
