@@ -18,6 +18,7 @@ import (
 type multicastRead struct {
 	packet []byte
 	err    error
+	read   chan struct{}
 }
 
 type fakeMulticastConn struct {
@@ -29,6 +30,7 @@ type fakeMulticastConn struct {
 	deadline    time.Time
 	deadlineErr error
 	packets     chan multicastRead
+	reading     chan struct{}
 	joined      chan net.Interface
 	closed      chan struct{}
 	closeOnce   sync.Once
@@ -37,6 +39,7 @@ type fakeMulticastConn struct {
 func newFakeMulticastConn() *fakeMulticastConn {
 	return &fakeMulticastConn{
 		packets: make(chan multicastRead, 8),
+		reading: make(chan struct{}, 1),
 		joined:  make(chan net.Interface, 16),
 		closed:  make(chan struct{}),
 	}
@@ -74,11 +77,18 @@ func (c *fakeMulticastConn) ReadFrom(buf []byte) (int, *ipv4.ControlMessage, net
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	select {
+	case c.reading <- struct{}{}:
+	default:
+	}
+	select {
 	case <-c.closed:
 		return 0, nil, nil, net.ErrClosed
 	case <-timer.C:
 		return 0, nil, nil, &net.OpError{Op: "read", Net: "udp", Err: timeoutError{}}
 	case packet := <-c.packets:
+		if packet.read != nil {
+			close(packet.read)
+		}
 		return copy(buf, packet.packet), nil, &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 5887}, packet.err
 	}
 }
@@ -285,6 +295,19 @@ func TestRunMulticastReceivesVerifiedProofAfterInterfaceAppears(t *testing.T) {
 	} {
 		conn.packets <- multicastRead{packet: packet}
 	}
+	// Reading this barrier proves that all preceding packets were processed.
+	// Otherwise cancellation after the first application could hide an invalid
+	// proof being applied before the valid proof with the same signed midpoint.
+	processed := make(chan struct{})
+	conn.packets <- multicastRead{
+		packet: roughtime.Encode(roughtime.Datagram{MsgType: 0x42}),
+		read:   processed,
+	}
+	select {
+	case <-processed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not process queued packets")
+	}
 	select {
 	case got := <-applied:
 		if !got.Equal(midpoint) {
@@ -303,6 +326,30 @@ func TestRunMulticastReceivesVerifiedProofAfterInterfaceAppears(t *testing.T) {
 	case got := <-applied:
 		t.Fatalf("invalid or unknown packet applied time %v", got)
 	default:
+	}
+}
+
+func TestRunMulticastCancellationClosesBlockedReader(t *testing.T) {
+	conn := newFakeMulticastConn()
+	m := &Manager{
+		multicastListen: func() (multicastPacketConn, error) { return conn, nil },
+		multicastInterfaces: func() ([]net.Interface, error) {
+			return []net.Interface{multicastInterface(2, "eth0")}, nil
+		},
+	}
+	cancel := startMulticastTest(t, m)
+	select {
+	case <-conn.reading:
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not enter ReadFrom")
+	}
+	// Use the production five-second deadline. Cancellation must close the
+	// blocked socket, rather than wait for that deadline to expire.
+	cancel()
+	select {
+	case <-conn.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation waited for the read deadline instead of closing the socket")
 	}
 }
 
