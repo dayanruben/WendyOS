@@ -9,6 +9,8 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 // LoginSession is one browser sign-in to Wendy Cloud, started by auth_login.
@@ -114,4 +116,45 @@ func loginFinished(session LoginSession) bool {
 	default:
 		return false
 	}
+}
+
+// authState summarizes sign-in for wendy_status: "pending" while an auth_login
+// session waits for the browser; otherwise "logged_in" when any session's
+// certificate is still valid, "expired" when sessions exist but none is, and
+// "logged_out" with none. It reads config.json as it is now, so a `wendy auth
+// login` in a terminal counts too. loginErr is why the latest auth_login
+// failed, reported only while no session is valid.
+func (s *mcpServer) authState(now time.Time) (state string, loginErr error) {
+	s.loginMu.Lock()
+	session := s.login
+	s.loginMu.Unlock()
+	if session != nil {
+		if !loginFinished(session) {
+			return "pending", nil
+		}
+		loginErr = session.Err()
+	}
+	cfg := s.currentConfig()
+	if cfg == nil || len(cfg.Auth) == 0 {
+		return "logged_out", loginErr
+	}
+	for _, auth := range cfg.Auth {
+		// Like the mTLS ladder (loadAllCLICerts), only a session's first
+		// certificate is used to authenticate.
+		if len(auth.Certificates) > 0 && !authCertExpired(auth.Certificates[0], now) {
+			return "logged_in", nil
+		}
+	}
+	return "expired", loginErr
+}
+
+// authCertExpired reports whether cert's leaf is past its NotAfter. It mirrors
+// commands.certExpired, which the mcp package cannot import: the same tolerant
+// decoder, and an unparseable certificate counts as not expired.
+func authCertExpired(cert config.CertificateInfo, now time.Time) bool {
+	leaves, _ := certs.ParseCertsFromPEM([]byte(cert.PemCertificate))
+	if len(leaves) == 0 {
+		return false
+	}
+	return now.After(leaves[0].NotAfter)
 }
