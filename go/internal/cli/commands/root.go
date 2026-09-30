@@ -68,6 +68,14 @@ func NewRootCmd() *cobra.Command {
 				showFirstRunNotice(cmd, cfg)
 			}
 
+			// Under sudo with the user's HOME (the Thor flash's re-exec, or
+			// `sudo wendy` on macOS), leave the housekeeping below to the
+			// user's own runs: as root it would write their files, and the
+			// update check would leave them a root-owned auth refresh lock.
+			if runsAsForeignUser() {
+				return nil
+			}
+
 			// Refresh MCP config and skills if the CLI was upgraded since the
 			// user last ran `wendy mcp setup`. Runs synchronously here, before
 			// the update-check goroutine below also writes config.json.
@@ -93,6 +101,12 @@ func NewRootCmd() *cobra.Command {
 			// successful build/run (no-op for other commands and in CI).
 			maybeShowOptimizeTip(cmd)
 			maybeShowNextStep(cmd)
+
+			// Under sudo, don't offer a CLI update or shell completions: either
+			// would install files as root.
+			if runsAsForeignUser() {
+				return nil
+			}
 
 			// Surface any pending CLI-update notice first. If it showed a prompt,
 			// don't stack the completion prompt on top of it this invocation.

@@ -87,8 +87,9 @@ func mcpRefreshAsForeignUser(sudoUID string, euid, homeOwner int, ownerKnown boo
 	return sudoUID != "" || (ownerKnown && homeOwner != euid)
 }
 
-// mcpRefreshRunsAsForeignUser is mcpRefreshAsForeignUser for this process.
-func mcpRefreshRunsAsForeignUser() bool {
+// runsAsForeignUser is mcpRefreshAsForeignUser for this process. The root
+// command also uses it to skip its per-user housekeeping under sudo.
+func runsAsForeignUser() bool {
 	owner, known := -1, false
 	if home, err := os.UserHomeDir(); err == nil {
 		if fi, err := os.Stat(home); err == nil {
@@ -107,7 +108,7 @@ func mcpRefreshRunsAsForeignUser() bool {
 // right after an upgrade would otherwise leave the user root-owned AI tool
 // configs. The next run as HOME's owner refreshes instead.
 func maybeRefreshMCPSetup(cfg *config.Config) {
-	if mcpRefreshRunsAsForeignUser() || !shouldRefreshMCPSetup(cfg.LastMCPSetupVersion, version.Version) {
+	if runsAsForeignUser() || !shouldRefreshMCPSetup(cfg.LastMCPSetupVersion, version.Version) {
 		return
 	}
 	setupMCPForAllTools()
