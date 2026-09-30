@@ -40,7 +40,7 @@ func TestLegacyEmptyLUNRequiresScopedDisconnect(t *testing.T) {
 	}
 }
 
-func TestLegacyEjectThatDisconnectsNeedsNoFallback(t *testing.T) {
+func TestLegacyEjectErrorAfterDisconnectNeedsNoFallback(t *testing.T) {
 	withFastUMSPoll(t)
 	disk := UMSDisk{DevPath: "/dev/sdb", Vendor: FlashpkgVendor, PortPath: "1-3", Serial: "12345678"}
 	withUMSScan(t, func() ([]UMSDisk, error) { return nil, nil })
@@ -49,7 +49,7 @@ func TestLegacyEjectThatDisconnectsNeedsNoFallback(t *testing.T) {
 			if req.Release {
 				t.Fatal("unexpected disconnect fallback")
 			}
-			return nil
+			return errors.New("power-off failed after removing the device")
 		},
 	}
 	if err := stage.release(context.Background(), disk); err != nil {
@@ -59,6 +59,7 @@ func TestLegacyEjectThatDisconnectsNeedsNoFallback(t *testing.T) {
 
 func TestLegacyPowerOffFailureUsesDisconnectWithoutMediumEject(t *testing.T) {
 	withFastUMSPoll(t)
+	withFastEjectRetry(t)
 	disk := UMSDisk{DevPath: "/dev/sdb", Vendor: "mmcblk0", PortPath: "1-3", Serial: "12345678"}
 	disconnected := false
 	withUMSScan(t, func() ([]UMSDisk, error) {

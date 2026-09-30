@@ -15,18 +15,19 @@ import (
 func (s *Stage2) releaseLegacy(ctx context.Context, disk UMSDisk) error {
 	fmt.Fprintf(s.Out, "  releasing %s (legacy handoff)\n", disk.DevPath)
 	if err := s.RunHelper(ctx, HelperRequest{LegacyEject: true, Writer: WriterOptions{Device: disk.DevPath}}, nil); err != nil {
-		fmt.Fprintf(s.Out, "  warning: legacy release failed (%v); using scoped USB disconnect\n", err)
-	} else {
-		gone, err := s.waitForLegacyDiskGone(ctx, disk)
-		if err != nil || gone {
-			return err
-		}
+		fmt.Fprintf(s.Out, "  warning: legacy release failed (%v); checking whether the disk disconnected\n", err)
+	}
+	// A command can fail after it removed the device. Observe the handoff
+	// before the fallback, so it cannot disconnect the next stage's gadget.
+	gone, err := s.waitForLegacyDiskGone(ctx, disk)
+	if err != nil || gone {
+		return err
 	}
 	fmt.Fprintf(s.Out, "  forcing a legacy USB disconnect for %s\n", disk.DevPath)
 	if err := s.RunHelper(ctx, HelperRequest{Release: true, ReleaseSerial: disk.Serial, ReleasePort: disk.PortPath}, nil); err != nil {
 		return fmt.Errorf("releasing %s: %w", disk.DevPath, err)
 	}
-	gone, err := s.waitForLegacyDiskGone(ctx, disk)
+	gone, err = s.waitForLegacyDiskGone(ctx, disk)
 	if err != nil {
 		return err
 	}
