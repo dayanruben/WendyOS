@@ -1,6 +1,6 @@
 ---
 name: wendy
-description: 'Expert guidance on building and deploying apps to WendyOS edge devices. Use when developers mention: (1) Wendy or WendyOS, (2) wendy CLI commands, (3) wendy.json or entitlements, (4) deploying apps to edge devices, (5) remote debugging Swift on ARM64, (6) NVIDIA Jetson or Raspberry Pi apps, (7) cross-compiling Swift for ARM64.'
+description: 'Guidance on building and deploying apps to robots and edge devices using WendyOS, including NVIDIA Jetson, Raspberry Pi, Qualcomm Dragonwing, and MuJoCo simulation.'
 ---
 
 # WendyOS
@@ -25,6 +25,9 @@ goes to stderr. Build, attached run and flash still emit progress text. Supply
 explicit targets and choices to avoid interactive pickers. (There is no `-j` shorthand.)
 
 ## Common Tasks
+
+For first-time setup, use `wendy-onboarding` to install and verify a physical
+device or start a local simulator while waiting for hardware.
 
 - Run an app: `wendy run`
 - Create a new project: `wendy init`
@@ -72,7 +75,8 @@ Devices are discovered over USB or LAN. On Linux, USB tethering may need a
 one-time host setup: run `wendy discover` in a terminal and accept its USB-C
 setup prompt (it needs sudo). An empty scan can also mean a blank board.
 Use `wendy-device-install` and `os_install_plan` for initial installation and
-`os_install_verify` for first boot. Full Jetson recovery updates boot firmware;
+`os_install_verify` for first boot; both are in the MCP `setup` tool group, which
+`wendy_tools(groups=["setup"])` enables. Full Jetson recovery updates boot firmware;
 rootfs-only media writes do not. Unitree G1 PC2 keeps vendor Ubuntu and receives
 the Agent, not a generic Jetson image.
 

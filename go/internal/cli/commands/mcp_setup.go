@@ -15,7 +15,7 @@ import (
 )
 
 func newMCPSetupCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure the Wendy MCP server in supported AI tools",
 		Long:  "Detects installed AI tools and adds the wendy MCP server to their configuration.",
@@ -45,6 +45,8 @@ func newMCPSetupCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.AddCommand(newMCPChatGPTSetupCmd())
+	return cmd
 }
 
 // recordMCPSetupVersion stores the running CLI version as the last version that

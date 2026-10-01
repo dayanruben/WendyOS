@@ -89,7 +89,8 @@ func NewRootCmd() *cobra.Command {
 				cmd.PrintErrln("Moved wendy credentials into ~/.wendy/config.json.")
 			}
 
-			if dueCLIUpdateCheck(cfg) {
+			// mcp serve owns a cancellable periodic checker for its lifetime.
+			if cmd.CommandPath() != "wendy mcp serve" && dueCLIUpdateCheck(cfg) {
 				scheduleCLIUpdateCheck()
 			}
 			premark("  prerun: dueCLIUpdateCheck")
