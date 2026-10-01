@@ -118,9 +118,9 @@ func (s *Stage2) pollMedia(ctx context.Context) error {
 }
 
 // laterLUN selects a LUN the device exports after the handoff: this session's,
-// on the gadget's port or (after a replug) another one.
+// on the gadget's port or, unless StrictPort, another one after a replug.
 func (s *Stage2) laterLUN(ctx context.Context, vendor string) LUNSelector {
-	selector := LUNSelector{Vendor: vendor, PortPath: s.PortPath, PortHint: true, Session: s.Session, RecoveryPort: s.recoveryPort}
+	selector := LUNSelector{Vendor: vendor, PortPath: s.PortPath, PortHint: !s.StrictPort, Session: s.Session, RecoveryPort: s.recoveryPort}
 	if s.USBMode == USBModeSingle {
 		selector.Refresh, selector.OnMissing = s.mediaRefresh(ctx), s.replugHint
 	}

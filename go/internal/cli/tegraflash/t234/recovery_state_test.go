@@ -222,6 +222,15 @@ func TestStrictJobHandoffNeverSelectsAnOffPortGadget(t *testing.T) {
 	}
 }
 
+func TestStrictJobLaterLUNsStayOnTheConfirmedPort(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		s := Stage2{PortPath: "1-1", StrictPort: strict}
+		if got := s.laterLUN(context.Background(), RootfsLUNVendor).PortHint; got == strict {
+			t.Fatalf("StrictPort=%v: later LUN PortHint = %v", strict, got)
+		}
+	}
+}
+
 func TestFirstLUNWaitPrefersExactPortMatch(t *testing.T) {
 	withUMSScan(t, func() ([]UMSDisk, error) {
 		return []UMSDisk{
