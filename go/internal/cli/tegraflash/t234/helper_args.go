@@ -20,10 +20,16 @@ type HelperRequest struct {
 	Unmount bool
 	// Eject ejects only the LUN's medium; the USB device stays attached.
 	Eject bool
+	// LegacyEject permits USB power-off so Linux refreshes SCSI identity.
+	LegacyEject bool
 	// PollMedia turns on host media polling for the LUNs of Session.
 	PollMedia bool
 	Session   string
-	Writer    WriterOptions
+	// Release is the scoped USB-disconnect fallback for legacy initrds only.
+	Release       bool
+	ReleaseSerial string
+	ReleasePort   string
+	Writer        WriterOptions
 }
 
 // Args serializes the request into the flag list ParseWriterArgs parses back —
@@ -36,8 +42,19 @@ func (r HelperRequest) Args() []string {
 		return []string{"--unmount", "--device", r.Writer.Device}
 	case r.Eject:
 		return []string{"--eject", "--device", r.Writer.Device}
+	case r.LegacyEject:
+		return []string{"--eject-legacy", "--device", r.Writer.Device}
 	case r.PollMedia:
 		return []string{"--poll-media", "--session", r.Session}
+	case r.Release:
+		args := []string{"--release"}
+		if r.ReleaseSerial != "" {
+			args = append(args, "--serial", r.ReleaseSerial)
+		}
+		if r.ReleasePort != "" {
+			args = append(args, "--port", r.ReleasePort)
+		}
+		return args
 	}
 	w := r.Writer
 	args := []string{"--device", w.Device}
@@ -95,10 +112,20 @@ func ParseWriterArgs(args []string) (HelperRequest, error) {
 			req.Unmount = true
 		case "--eject":
 			req.Eject = true
+		case "--eject-legacy":
+			req.LegacyEject = true
 		case "--poll-media":
 			req.PollMedia = true
 		case "--session":
 			req.Session, err = next(i, flag)
+			i++
+		case "--release":
+			req.Release = true
+		case "--serial":
+			req.ReleaseSerial, err = next(i, flag)
+			i++
+		case "--port":
+			req.ReleasePort, err = next(i, flag)
 			i++
 		default:
 			return HelperRequest{}, fmt.Errorf("unknown __t234-write flag %q", flag)
@@ -118,8 +145,12 @@ func RunHelperRequest(req HelperRequest, progress io.Writer) error {
 		return unmountUMSDisk(UMSDisk{DevPath: req.Writer.Device})
 	case req.Eject:
 		return ejectUMSDisk(UMSDisk{DevPath: req.Writer.Device})
+	case req.LegacyEject:
+		return ejectLegacyUMSDisk(UMSDisk{DevPath: req.Writer.Device})
 	case req.PollMedia:
 		return enableMediaPolling(req.Session)
+	case req.Release:
+		return ReleaseUSB(req.ReleaseSerial, req.ReleasePort)
 	}
 	opts := req.Writer
 	opts.Progress = progress

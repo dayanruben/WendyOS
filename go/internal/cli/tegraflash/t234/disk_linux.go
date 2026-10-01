@@ -10,12 +10,28 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // listUMSDisks finds USB mass-storage whole disks via sysfs: the SCSI
 // inquiry vendor/model land in /sys/block/sdX/device/{vendor,model}. A LUN
 // without a medium keeps its node at size 0 and is skipped.
 func listUMSDisks() ([]UMSDisk, error) {
+	luns, err := listUMSLUNs()
+	if err != nil {
+		return nil, err
+	}
+	var disks []UMSDisk
+	for _, lun := range luns {
+		if lun.SizeBytes > 0 {
+			disks = append(disks, lun)
+		}
+	}
+	return disks, nil
+}
+
+func listUMSLUNs() ([]UMSDisk, error) {
 	entries, err := filepath.Glob("/sys/block/sd*")
 	if err != nil {
 		return nil, err
@@ -38,9 +54,6 @@ func listUMSDisks() ([]UMSDisk, error) {
 			if n, err := strconv.ParseInt(sectors, 10, 64); err == nil {
 				d.SizeBytes = n * 512
 			}
-		}
-		if d.SizeBytes == 0 {
-			continue
 		}
 		disks = append(disks, d)
 	}
@@ -119,22 +132,49 @@ func sysfsString(path string) string {
 	return strings.TrimSpace(string(data))
 }
 
-// unmountUMSDisk unmounts anything an automounter grabbed from the LUN.
-// Best-effort: the LUNs usually carry no mountable filesystem, so umount's
-// exit status is the routine "not mounted" and is not surfaced — only the
-// Windows implementation can distinguish that from a lock refusal worth
-// reporting.
+// unmountUMSDisk includes mounted partitions, which a desktop can grab as
+// soon as an existing rootfs is exported. A busy mount must stop a raw write.
 func unmountUMSDisk(d UMSDisk) error {
-	exec.Command("umount", d.DevPath).Run() //nolint:errcheck
-	return nil
+	mounts, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return err
+	}
+	defer mounts.Close()
+	return unmountLinuxDisk(d.DevPath, "/sys/class/block", mounts, func(target, device string) error {
+		// A different filesystem can cover this mount point. Refuse to unmount
+		// that filesystem, or one that appeared since the mountinfo snapshot.
+		var stat unix.Stat_t
+		if err := unix.Stat(target, &stat); err != nil {
+			return err
+		}
+		visible := fmt.Sprintf("%d:%d", unix.Major(stat.Dev), unix.Minor(stat.Dev))
+		if visible != device {
+			return fmt.Errorf("mount point %s now refers to device %s, expected %s; refusing to unmount an unrelated filesystem", target, visible, device)
+		}
+		out, err := exec.Command("umount", "--", target).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	})
 }
 
 // ejectUMSDisk ejects the LUN's medium (SCSI START STOP UNIT) — the "host is
 // done" signal the flashing initrd waits for. The USB device stays attached;
 // udisksctl power-off would disconnect it.
 func ejectUMSDisk(d UMSDisk) error {
-	if out, err := exec.Command("eject", d.DevPath).CombinedOutput(); err != nil {
+	if out, err := exec.Command("eject", "--scsi", d.DevPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("eject %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// Preserve the old Linux handoff for packages without negotiation. Do not
+// substitute medium eject here: the initrd can reload a different disk before
+// sysfs loses its old node, leaving the host's SCSI INQUIRY cache stale.
+func ejectLegacyUMSDisk(d UMSDisk) error {
+	if out, err := exec.Command("udisksctl", "power-off", "-b", d.DevPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("powering off %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -204,8 +244,8 @@ func enableMediaPolling(session string) error {
 	return errors.Join(errs...)
 }
 
-// CheckHostTools fails early, before anything is sent to the Jetson, when the
-// eject tool, which releases the flashing LUNs, is not installed.
+// CheckHostTools checks the medium-eject tool before handing commands to an
+// initrd that advertises single enumeration.
 func CheckHostTools() error {
 	if _, err := exec.LookPath("eject"); err != nil {
 		return fmt.Errorf("the eject tool is required to flash this image (Debian/Ubuntu: apt install eject): %w", err)

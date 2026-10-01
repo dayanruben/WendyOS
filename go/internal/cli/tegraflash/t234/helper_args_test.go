@@ -18,7 +18,9 @@ func TestHelperArgsRoundTrip(t *testing.T) {
 		{Writer: WriterOptions{Device: "/dev/sdb", WritePlan: true, LayoutPath: "l.xml", ImagesDir: "/imgs", RootfsDevice: "mmcblk0"}},
 		{Unmount: true, Writer: WriterOptions{Device: "/dev/sda"}},
 		{Eject: true, Writer: WriterOptions{Device: "/dev/sda"}},
+		{LegacyEject: true, Writer: WriterOptions{Device: "/dev/sda"}},
 		{PollMedia: true, Session: "12345678"},
+		{Release: true, ReleaseSerial: "12345678", ReleasePort: "1-3"},
 	}
 	for _, want := range requests {
 		got, err := ParseWriterArgs(want.Args())
