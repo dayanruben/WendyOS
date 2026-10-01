@@ -31,7 +31,7 @@ func bakedACMEFixture(t *testing.T) string {
 	return path
 }
 
-func TestACMEFirstBootCompletesAndConsumesHandoff(t *testing.T) {
+func TestACMEFirstBootCompletesByDefaultAndConsumesHandoff(t *testing.T) {
 	path := bakedACMEFixture(t)
 	dir := t.TempDir()
 	svc := NewProvisioningService(zap.NewNop(), dir)
@@ -109,7 +109,7 @@ func TestACMEFirstBootFailurePreservesMaterialAndBlocksRestartRetry(t *testing.T
 }
 
 func TestACMEFirstBootRefusalsPreserveHandoff(t *testing.T) {
-	for _, reason := range []string{"disabled", "invalid", "already provisioned", "legacy conflict", "marker unavailable", "previous attempt"} {
+	for _, reason := range []string{"invalid", "already provisioned", "legacy conflict", "marker unavailable", "previous attempt"} {
 		t.Run(reason, func(t *testing.T) {
 			path := bakedACMEFixture(t)
 			dir := t.TempDir()
@@ -119,8 +119,6 @@ func TestACMEFirstBootRefusalsPreserveHandoff(t *testing.T) {
 				return "", "", nil
 			})
 			switch reason {
-			case "disabled":
-				t.Setenv("WENDY_EXPERIMENTAL_ACME_ENROLLMENT", "")
 			case "invalid":
 				if err := os.WriteFile(path, []byte(`{"eabHMACKey":"private-fixture"}`), 0o600); err != nil {
 					t.Fatal(err)

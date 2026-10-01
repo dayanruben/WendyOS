@@ -1,15 +1,15 @@
 # Device enrollment with an OIDC account
 
-Direct ACME enrollment is experimental and disabled by default on the agent.
-Notifications, mesh routing, and legacy Avahi identity advertisements still
-require numeric organization and asset IDs. Use legacy enrollment for those
-services. For development, explicitly set `WENDY_EXPERIMENTAL_ACME_ENROLLMENT=1`
-in the agent environment before attempting OIDC enrollment. The agent rejects
-disabled enrollment before generating keys or spending EAB credentials. The CLI
-and MCP enrollment tool also check the agent's read-only readiness before
-requesting an EAB or reserving a Cloud name. Older agents that do not advertise
-readiness must be updated before using these clients; older clients remain
-compatible, but do not perform this preflight.
+Direct ACME enrollment is the default device-side path for OIDC accounts;
+no agent environment flag is required. The CLI and MCP enrollment tool check
+the agent's read-only capability before requesting an EAB or reserving a Cloud
+name. Older agents that do not advertise support must be updated before using
+these clients; older clients remain compatible but do not perform this preflight.
+
+Enrollment establishes the v2 PKI identity and starts the principal-based Cloud
+relay. It does not migrate legacy notification, mesh-roster or Avahi numeric-ID
+paths. Those paths still require numeric organization and asset IDs and keep
+their existing identity/proof checks; v2 enrollment does not fabricate those IDs.
 
 ```sh
 wendy device enroll --name sim
@@ -28,11 +28,10 @@ DNS label; renaming it does not change the certificate identity.
 ## Automatic credential handoff
 
 1. Check that the agent is not already provisioned and explicitly advertises
-   ACME enrollment enabled in v2 `IsProvisioned.not_provisioned`. Validate the
+   ACME enrollment supported in v2 `IsProvisioned.not_provisioned`. Validate the
    device name and ACME directory before requesting credentials. Missing or
-   disabled readiness stops before contacting Cloud; it does not alter the
-   agent environment. Readiness only reports the experimental gate, not network
-   health or a guarantee of successful issuance.
+   unsupported capability stops before contacting Cloud. Capability does not
+   guarantee network health or successful issuance.
 2. Call `wendycloud.v2.DeviceEnrollmentService/EnrollDevice` with the OIDC
    bearer token and two separate operator signatures:
    - `x-wendy-request-signature`, scoped to the Cloud method and
@@ -94,22 +93,21 @@ account key for retries, but Cloud has no credential retrieval RPC.
 
 `os install --pre-enroll` reserves a Cloud name and writes the device UUID,
 ACME directory, EAB and Cloud host to `/config/acme-enrollment.json`. This is
-credential staging, not verified device enrollment, and does not enable the
-experimental flag. Agents predating this consumer do not read that file.
+credential staging, not verified device enrollment. Agents predating this
+consumer do not read that file; use an image containing the compatible Agent.
 
 The baked handoff is trusted provisioning input, not a signed artifact. Anyone
 who can replace it before consumption can choose the device's PKI deployment,
 tenant and identity. Use only trusted imaging hosts/media and restrict access
 to the config partition through first boot; FAT media do not enforce Unix file
-permissions. The experimental flag does not authenticate the handoff. Do not
-use this experimental path where the imaging/config-partition write boundary
-is untrusted; handoff signing/sealing is not implemented here.
+permissions. Do not use this path where the imaging/config-partition write
+boundary is untrusted; handoff signing/sealing is not implemented here.
 
-With explicit experimental opt-in, the agent reads the baked handoff after
+The agent reads the baked handoff automatically after
 provisioning callbacks are installed and uses the same ACME provisioning path
 as manual enrollment. The attempt is non-blocking, bounded to two minutes,
 and does not fall back to legacy enrollment. Conflicting legacy and ACME
-handoffs are retained without choosing an identity. Disabled, invalid or
+handoffs are retained without choosing an identity. Invalid handoffs and
 already-provisioned devices retain the baked credential without redeeming it.
 
 Before redemption, a private, nonsecret `acme-first-boot-attempt.json` marker
@@ -123,7 +121,7 @@ a file-removal failure does not trigger another issuance.
 
 Successful certificate provisioning is not proof of broker heartbeat or live
 metadata. Verify those independently before reporting Cloud device readiness.
-Notifications and mesh remain subject to the legacy limitations above.
+Legacy notification and mesh-roster paths remain subject to the limitations above.
 
 ## Contract sources
 

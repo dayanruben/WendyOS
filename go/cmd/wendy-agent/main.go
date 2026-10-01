@@ -1050,7 +1050,7 @@ func main() {
 
 	// Enrollment is non-blocking and begins only after callbacks are installed.
 	// A baked ACME credential must not fall through to legacy enrollment when
-	// disabled or invalid. Conflicting handoffs require operator recovery.
+	// invalid or already attempted. Conflicting handoffs require operator recovery.
 	go func() {
 		const bakedACMEPath = "/config/acme-enrollment.json"
 		if _, err := os.Stat(bakedACMEPath); err == nil {

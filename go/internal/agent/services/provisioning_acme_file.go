@@ -13,8 +13,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// ApplyACMEEnrollmentFile consumes the CLI's imaging handoff only with explicit
-// experimental opt-in. Failed or interrupted issuance is never retried on an
+// ApplyACMEEnrollmentFile consumes the CLI's imaging handoff on first boot.
+// Failed or interrupted issuance is never retried on an
 // agent restart: the credential and account key remain for coordinated recovery.
 // Call after OnProvisioned is installed, as with ApplyEnrollmentFile.
 func (s *ProvisioningServiceV2) ApplyACMEEnrollmentFile(ctx context.Context, path string) {
@@ -23,10 +23,6 @@ func (s *ProvisioningServiceV2) ApplyACMEEnrollmentFile(ctx context.Context, pat
 		return
 	} else if err != nil {
 		svc.logger.Warn("Cannot inspect baked ACME enrollment file")
-		return
-	}
-	if !acmeEnrollmentEnabled() {
-		svc.logger.Warn("Baked ACME enrollment retained: experimental enrollment is disabled")
 		return
 	}
 	if _, err := os.Stat(filepath.Join(svc.configPath, enrollmentFileName)); !errors.Is(err, os.ErrNotExist) {

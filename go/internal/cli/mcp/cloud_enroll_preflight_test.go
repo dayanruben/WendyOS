@@ -29,17 +29,17 @@ func (s *enrollmentReadinessServer) StartACMEProvisioning(context.Context, *agen
 }
 
 func TestCloudEnrollStopsBeforeCloudForUnreadyAgent(t *testing.T) {
-	disabled := false
+	unsupported := false
 	for _, tc := range []struct {
 		name string
 		flag *bool
 		want string
 	}{
-		{"disabled", &disabled, "disabled"},
+		{"unsupported", &unsupported, "does not support"},
 		{"unknown", nil, "update the agent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fake := &enrollmentReadinessServer{state: &agentpbv2.NotProvisionedResponse{AcmeEnrollmentEnabled: tc.flag}}
+			fake := &enrollmentReadinessServer{state: &agentpbv2.NotProvisionedResponse{AcmeEnrollmentSupported: tc.flag}}
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)

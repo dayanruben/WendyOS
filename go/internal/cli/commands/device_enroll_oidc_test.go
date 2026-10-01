@@ -57,7 +57,7 @@ type acmeProvisioningServer struct {
 	preflightErr     error
 	startErr         error
 	wrongIdentity    bool
-	disabled         bool
+	unsupported      bool
 	unknownReadiness bool
 }
 
@@ -70,8 +70,8 @@ func (s *acmeProvisioningServer) IsProvisioned(context.Context, *agentpbv2.IsPro
 	}
 	state := &agentpbv2.NotProvisionedResponse{}
 	if !s.unknownReadiness {
-		enabled := !s.disabled
-		state.AcmeEnrollmentEnabled = &enabled
+		supported := !s.unsupported
+		state.AcmeEnrollmentSupported = &supported
 	}
 	return &agentpbv2.IsProvisionedResponse{ResponseType: &agentpbv2.IsProvisionedResponse_NotProvisioned{NotProvisioned: state}}, nil
 }
@@ -361,7 +361,7 @@ func TestOIDCEnrollmentReadinessDoesNotMint(t *testing.T) {
 		agent acmeProvisioningServer
 		want  string
 	}{
-		{name: "disabled", agent: acmeProvisioningServer{disabled: true}, want: "disabled"},
+		{name: "unsupported", agent: acmeProvisioningServer{unsupported: true}, want: "does not support"},
 		{name: "old agent", agent: acmeProvisioningServer{unknownReadiness: true}, want: "update the agent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

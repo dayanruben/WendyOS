@@ -12,7 +12,7 @@ import (
 
 // CheckAgentEnrollment checks readiness without generating keys, reserving a
 // Cloud asset or presenting EAB material. StartACMEProvisioning still enforces
-// its gate because readiness may change after this read.
+// provisioning state and validates enrollment material after this read.
 func CheckAgentEnrollment(ctx context.Context, conn grpc.ClientConnInterface) error {
 	resp, err := agentpbv2.NewWendyProvisioningServiceClient(conn).IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{})
 	if status.Code(err) == codes.Unimplemented {
@@ -28,11 +28,11 @@ func CheckAgentEnrollment(ctx context.Context, conn grpc.ClientConnInterface) er
 	if state == nil {
 		return fmt.Errorf("agent returned an unknown enrollment state")
 	}
-	if state.AcmeEnrollmentEnabled == nil {
+	if state.AcmeEnrollmentSupported == nil {
 		return fmt.Errorf("this agent does not advertise direct PKI enrollment readiness; update the agent before enrolling (no Cloud reservation made)")
 	}
-	if !state.GetAcmeEnrollmentEnabled() {
-		return fmt.Errorf("direct ACME enrollment is disabled on the agent: notifications and mesh still require legacy enrollment; experimental enrollment requires WENDY_EXPERIMENTAL_ACME_ENROLLMENT=1 on the agent (no Cloud reservation made)")
+	if !state.GetAcmeEnrollmentSupported() {
+		return fmt.Errorf("this agent does not support direct PKI enrollment; update the agent before enrolling (no Cloud reservation made)")
 	}
 	return nil
 }

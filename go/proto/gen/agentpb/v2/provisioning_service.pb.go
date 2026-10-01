@@ -141,12 +141,12 @@ func (*IsProvisionedResponse_Provisioned) isIsProvisionedResponse_ResponseType()
 
 type NotProvisionedResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Read-only readiness for StartACMEProvisioning's experimental gate.
+	// Read-only capability for direct StartACMEProvisioning enrollment.
 	// Absent on older agents; clients must not assume those agents can enroll.
 	// This is not a guarantee of network availability or successful issuance.
-	AcmeEnrollmentEnabled *bool `protobuf:"varint,1,opt,name=acme_enrollment_enabled,json=acmeEnrollmentEnabled,proto3,oneof" json:"acme_enrollment_enabled,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	AcmeEnrollmentSupported *bool `protobuf:"varint,1,opt,name=acme_enrollment_supported,json=acmeEnrollmentSupported,proto3,oneof" json:"acme_enrollment_supported,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *NotProvisionedResponse) Reset() {
@@ -179,9 +179,9 @@ func (*NotProvisionedResponse) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v2_provisioning_service_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *NotProvisionedResponse) GetAcmeEnrollmentEnabled() bool {
-	if x != nil && x.AcmeEnrollmentEnabled != nil {
-		return *x.AcmeEnrollmentEnabled
+func (x *NotProvisionedResponse) GetAcmeEnrollmentSupported() bool {
+	if x != nil && x.AcmeEnrollmentSupported != nil {
+		return *x.AcmeEnrollmentSupported
 	}
 	return false
 }
@@ -561,10 +561,10 @@ const file_wendy_agent_services_v2_provisioning_service_proto_rawDesc = "" +
 	"\x15IsProvisionedResponse\x12Z\n" +
 	"\x0fnot_provisioned\x18\x01 \x01(\v2/.wendy.agent.services.v2.NotProvisionedResponseH\x00R\x0enotProvisioned\x12P\n" +
 	"\vprovisioned\x18\x02 \x01(\v2,.wendy.agent.services.v2.ProvisionedResponseH\x00R\vprovisionedB\x0f\n" +
-	"\rresponse_type\"q\n" +
-	"\x16NotProvisionedResponse\x12;\n" +
-	"\x17acme_enrollment_enabled\x18\x01 \x01(\bH\x00R\x15acmeEnrollmentEnabled\x88\x01\x01B\x1a\n" +
-	"\x18_acme_enrollment_enabled\"\x9d\x01\n" +
+	"\rresponse_type\"w\n" +
+	"\x16NotProvisionedResponse\x12?\n" +
+	"\x19acme_enrollment_supported\x18\x01 \x01(\bH\x00R\x17acmeEnrollmentSupported\x88\x01\x01B\x1c\n" +
+	"\x1a_acme_enrollment_supported\"\x9d\x01\n" +
 	"\x13ProvisionedResponse\x12\x1d\n" +
 	"\n" +
 	"cloud_host\x18\x01 \x01(\tR\tcloudHost\x12'\n" +
