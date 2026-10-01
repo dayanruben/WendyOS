@@ -9,7 +9,6 @@ import (
 )
 
 // markFATVolumesUnindexed writes the Spotlight marker to every FAT slice of d.
-// mountConfigPartition works for any FAT slice, not just config.
 func markFATVolumesUnindexed(d drive) error {
 	out, err := runWithTimeout(markerTimeout, "diskutil", "list", d.DevicePath)
 	if err != nil {
@@ -29,12 +28,30 @@ func markFATVolumesUnindexed(d drive) error {
 }
 
 func markDarwinVolume(slice string) error {
-	m, err := mountConfigPartition(slice)
+	info, err := runWithTimeout(markerTimeout, "diskutil", "info", slice)
 	if err != nil {
 		return err
 	}
-	defer m.release()
-	return touchMarker(m.path, m.elevated)
+	mp := diskInfoField(string(info), "Mount Point:")
+	if mp == "" || mp == "Not applicable" {
+		if _, err := runWithTimeout(markerTimeout, "diskutil", "mount", slice); err != nil {
+			return err
+		}
+		defer runWithTimeout(markerTimeout, "diskutil", "unmount", slice) //nolint:errcheck
+		info, err = runWithTimeout(markerTimeout, "diskutil", "info", slice)
+		if err != nil {
+			return err
+		}
+		mp = diskInfoField(string(info), "Mount Point:")
+	}
+	if mp == "" || mp == "Not applicable" {
+		return fmt.Errorf("%s has no mount point", slice)
+	}
+	if err := touchMarker(mp, false); err == nil {
+		return nil
+	}
+	// The install has already authenticated sudo; do not prompt during cleanup.
+	return touchMarker(mp, true)
 }
 
 // touchMarker creates the marker from a subprocess, so a wedged FAT driver

@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -102,17 +101,4 @@ func assertMarked(t *testing.T, mps []string) {
 			t.Errorf("%s: %v", mp, err)
 		}
 	}
-}
-
-// parseMountedFAT returns the mount points of diskDev's FAT slices in `mount`
-// output.
-func parseMountedFAT(out, diskDev string) []string {
-	re := regexp.MustCompile(`^` + regexp.QuoteMeta(diskDev) + `s[0-9]+ on (.+) \(msdos[,)]`)
-	var mps []string
-	for _, line := range strings.Split(out, "\n") {
-		if m := re.FindStringSubmatch(line); m != nil {
-			mps = append(mps, m[1])
-		}
-	}
-	return mps
 }

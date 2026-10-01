@@ -1,3 +1,5 @@
+//go:build darwin
+
 package commands
 
 import (
@@ -31,14 +33,5 @@ func TestParseBundleType(t *testing.T) {
 	}
 	if got := parseBundleType("   Device Identifier: disk4s3\n"); got != "" {
 		t.Fatalf("bundle = %q, want empty", got)
-	}
-}
-
-func TestParseLsblkFAT(t *testing.T) {
-	out := "sdb \nsdb1 vfat\nsdb2 vfat\nsdb3 ext4\nsdb4 ext4\n"
-	got := parseLsblkFAT(out)
-	want := []string{"/dev/sdb1", "/dev/sdb2"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("partitions = %v, want %v", got, want)
 	}
 }

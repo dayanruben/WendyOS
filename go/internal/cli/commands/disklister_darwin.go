@@ -196,16 +196,20 @@ const unmountTimeout = 30 * time.Second
 // unmountDisk unmounts all volumes on a disk before writing.
 // Falls back to force-unmount if the normal unmount fails or hangs.
 func unmountDisk(devPath string) error {
-	out, err := runWithTimeout(unmountTimeout, "sudo", "diskutil", "unmountDisk", devPath)
+	return unmountDarwinDisk(devPath, runWithTimeout)
+}
+
+func unmountDarwinDisk(devPath string, run preparationCommand) error {
+	out, err := run(unmountTimeout, "sudo", "-n", "diskutil", "unmountDisk", devPath)
 	if err == nil {
 		return nil
 	}
-	forceOut, forceErr := runWithTimeout(unmountTimeout, "sudo", "diskutil", "unmountDisk", "force", devPath)
+	forceOut, forceErr := run(unmountTimeout, "sudo", "-n", "diskutil", "unmountDisk", "force", devPath)
 	if forceErr == nil {
 		return nil
 	}
 	if errors.Is(forceErr, errCommandTimedOut) {
-		return fmt.Errorf("unmounting %s: %w\n%s", devPath, forceErr, flashStallHint)
+		return fmt.Errorf("unmounting %s: %w\n%s", devPath, forceErr, "Close apps using the card, remove and reinsert it, then retry.")
 	}
 	return fmt.Errorf("unmounting %s: %s\nClose Finder windows, Disk Utility, or any apps using the disk, then retry", devPath, string(forceOut)+string(out))
 }
@@ -213,6 +217,10 @@ func unmountDisk(devPath string) error {
 // unmountBeforeWrite releases the disk before the progress bar starts, so a
 // hung unmount is reported as one instead of as a write stuck at 0%.
 func unmountBeforeWrite(d drive) error {
+	fmt.Printf("Preparing %s for writing...\n", d.DevicePath)
+	if err := stopTargetIndexing(d.DevicePath, runWithTimeout); err != nil {
+		fmt.Printf("Note: could not stop Spotlight on %s: %v\n", d.DevicePath, err)
+	}
 	return unmountDisk(d.DevicePath)
 }
 

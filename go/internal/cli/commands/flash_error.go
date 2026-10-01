@@ -38,7 +38,7 @@ func isDeviceFlashFailure(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, os.ErrPermission) || errors.Is(err, errFlashStalled) {
+	if errors.Is(err, os.ErrPermission) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())

@@ -16,9 +16,6 @@ import (
 // errCommandTimedOut marks a command runWithTimeout gave up on.
 var errCommandTimedOut = errors.New("timed out")
 
-// firstByteStallLimit is how long a flash may run before its first byte.
-const firstByteStallLimit = 60 * time.Second
-
 // runWithTimeout runs a command like CombinedOutput but gives up after timeout.
 // It sends SIGTERM, then WaitDelay kills it and stops a surviving child's open
 // pipe from blocking Wait. A process stuck in kernel I/O outlives even that, so
