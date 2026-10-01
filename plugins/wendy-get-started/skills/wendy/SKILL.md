@@ -1,11 +1,11 @@
 ---
 name: wendy
-description: 'Expert guidance on building and deploying apps to WendyOS edge devices. Use when developers mention: (1) Wendy or WendyOS, (2) wendy CLI commands, (3) wendy.json or entitlements, (4) deploying apps to edge devices, (5) remote debugging Swift on ARM64, (6) NVIDIA Jetson or Raspberry Pi apps, (7) cross-compiling Swift for ARM64.'
+description: 'Guidance on building and deploying apps to robots and edge devices using WendyOS, including NVIDIA Jetson, Raspberry Pi, Qualcomm Dragonwing, and MuJoCo simulation.'
 ---
 
 ## Bundled workflows
 
-This MCP package includes the complete Wendy end-user skill group. Read the
+This package includes the complete Wendy end-user skill group. Read the
 relevant workflow below before acting, and resolve its references relative to
 that file. These supporting skills need no separate installation.
 

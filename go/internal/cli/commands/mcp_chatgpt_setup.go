@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,9 +12,11 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/assets"
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 type chatGPTSetupOptions struct {
@@ -40,17 +43,9 @@ func newMCPChatGPTSetupCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			for _, path := range paths {
-				fmt.Fprintf(cmd.OutOrStdout(), "Configured %s\n", path)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "Restart ChatGPT desktop, open Plugins, choose your personal marketplace, and install the Wendy connection you want. Start a new conversation and ask: Help me get started with my first device or a simulator.")
-			if o.connection != "hosted" {
-				fmt.Fprintln(cmd.OutOrStdout(), "Local devices and simulators do not require Wendy Cloud login. No simulator was created and no device was connected.")
-			}
 			localMCP, _ := os.ReadFile(filepath.Join(home, ".codex", "plugins", "sources", "wendy-robots", "mcp.json"))
-			if o.connection != "hosted" && strings.Contains(string(localMCP), `"wendy-developer"`) {
-				fmt.Fprintln(cmd.OutOrStdout(), "Developer tools are enabled alongside the gateway. They have broader access and do not inherit the gateway's target or app restrictions.")
-			}
+			developerEnabled := o.connection != "hosted" && strings.Contains(string(localMCP), `"wendy-developer"`)
+			printChatGPTSetupResult(cmd.OutOrStdout(), paths, o.connection, developerEnabled)
 			return nil
 		},
 	}
@@ -63,6 +58,38 @@ func newMCPChatGPTSetupCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&o.host, "host-operations", false, "Allow local installation planning and jobs; disk erases still need exact-target authorization")
 	cmd.Flags().BoolVar(&o.developer, "developer-tools", false, "Also launch the broader wendy mcp serve toolset")
 	return cmd
+}
+
+func printChatGPTSetupResult(out io.Writer, paths []string, connection string, developerEnabled bool) {
+	renderer := lipgloss.NewRenderer(out)
+	muted := renderer.NewStyle().Foreground(tui.ColorDim)
+	bold := renderer.NewStyle().Bold(true)
+	for _, path := range paths {
+		fmt.Fprintln(out, muted.Render("Configured "+path))
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, bold.Render("Finish setup in ChatGPT"))
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, bold.Render("1. Quit and reopen ChatGPT Desktop."))
+	fmt.Fprintln(out, bold.Render("2. Open Plugins and select Personal."))
+	install := "3. Open Wendy and select + to install it."
+	if connection == "hosted" {
+		install = "3. Open Wendy Cloud and select + to install it."
+	} else if connection == "both" {
+		install = "3. Install Wendy for local access or Wendy Cloud for hosted access."
+	}
+	fmt.Fprintln(out, bold.Render(install))
+	fmt.Fprintln(out, bold.Render("4. Start a new conversation and ask:"))
+	fmt.Fprintln(out, `   "Help me get started with my first device or a simulator."`)
+	if connection != "hosted" {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, muted.Render("Local devices and simulators do not require a Wendy Cloud account."))
+		fmt.Fprintln(out, muted.Render("No simulator was created and no device was connected."))
+	}
+	if developerEnabled {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Developer tools are enabled alongside the gateway. They have broader access and do not inherit the gateway's target or app restrictions.")
+	}
 }
 
 var registeredMCPAppID = regexp.MustCompile(`^(plugin_asdk_app_|asdk_app_|connector_|templated_apps_)[A-Za-z0-9_-]+$`)

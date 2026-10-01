@@ -59,14 +59,19 @@ responses without changing or restarting the R2 runtime. It explicitly selects
 geometry and pose fields, excluding controller ownership and credentials.
 The component reuses `go/simulator/go2/go2_sim/viewer.js`, including its Z-up
 geometry, world-pose interpolation, camera follow and GPU resource disposal.
-It loads geometry once per scene and reads poses through the host's MCP tool
-bridge at up to 4 Hz, with one request in flight and background queue priority. The local
-animation loop renders interpolated poses independently of MCP and ChatGPT.
-Playback buffers one recent arrival interval, capped at one second, so slow or
-uneven tool replies still produce continuous interpolation. It holds the last
-received pose during an outage and never predicts physics. Background requests
-yield to user actions without an additional fixed 75 ms delay.
-Hidden or offscreen views suspend rendering and data reads.
+It loads geometry once per scene. The gateway captures observer poses locally
+at up to 30 Hz with one request active and retains at most 90 poses or 1 MiB.
+The widget receives ordered batches through the host tool bridge at up to 4 Hz,
+with one request in flight and background priority. It requests only frames
+after its last sequence and replays capture timestamps, including short motions
+between host polls. Interpolation is allowed only when both capture and physics
+time gaps are at most 100 ms. Longer gaps hold the preceding pose and then show
+the next actual pose. A slow rendering frame cannot skip over a captured pose.
+Playback waits for late batches rather than extrapolating or advancing past
+recorded history. Its queue is bounded to 180 poses; lost history is reported.
+Background requests yield to user actions without an extra fixed 75 ms delay.
+Hidden or offscreen views suspend rendering and call `simulator_scene_pause` to
+stop observer capture. A 5-second idle lease, expiry and close also cancel it.
 
 Camera preview reads use the same background queue, are canceled on Stop or
 navigation, and include the last received sequence. The gateway renews the lease
@@ -80,7 +85,9 @@ random loopback port. Its URL, bearer token, resource URI and expiry are returne
 endpoint. The component calls the app-only `simulator_scene_read` tool through
 `app.callServerTool`, passing `session_id` and `part: "geometry" | "state"`.
 The gateway returns observer data only in `_meta.scene_data`, outside the model's
-context. Scene resource reads remain available for older clients, but ChatGPT's
+context. State calls with `history: true` and `after_sequence` return timestamped
+`frames`, a `sequence` cursor and a `dropped` flag. Older state calls and scene
+resource reads keep their single-snapshot contract, but ChatGPT's
 widget scope rejects them, so the widget uses tools instead.
 New widgets request `encoding: "gzip"` for geometry. Large scenes arrive as
 base64 gzip in `_meta.scene_data_gzip`; decoding retains the 32 MiB expanded limit

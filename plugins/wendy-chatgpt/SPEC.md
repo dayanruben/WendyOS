@@ -79,15 +79,22 @@ The gateway checks the viewer's simulator identity, profile and health before
 returning its loopback URL. The UI draws the scene directly with a canvas and
 calls the app-only `simulator_scene_read` tool with a session ID and `geometry`
 or `state`. Scene data stays in UI-only `_meta.scene_data`. Geometry loads once
-per scene; poses load at most four times per second with one request active and
-background priority. The widget does not read resources outside its scope.
+per scene; pose batches load at most four times per second with one request active
+and background priority. The gateway captures observer poses at up to 30 Hz,
+retaining at most 90 frames or 1 MiB per view. The widget does not read resources
+outside its scope.
 Large geometry responses can use opt-in gzip in UI-only `_meta.scene_data_gzip`,
 with a 32 MiB expanded response limit. The tested G1 geometry tool result shrinks
 from 11.4 MB to 4.8 MB. Initial geometry loading allows 45 seconds for host
 transfer; pose reads retain a 15-second limit. Older widgets receive JSON.
-The renderer buffers one recent pose arrival interval, capped at one second,
-and interpolates locally without predicting physics. It clears playback history
-when the world changes and holds the last received pose during an outage.
+The renderer replays actual capture timestamps and only interpolates when both
+capture and physics gaps are at most 100 ms. It shows intermediate recorded
+poses, including brief foot lifts between host polls, instead of blending widely
+separated snapshots. A slow render cannot jump past the next captured pose.
+Late batches hold playback; the browser queue is bounded to 180 poses and lost
+history is explicit. History clears on world changes and suspension. Hidden
+views use app-only `simulator_scene_pause` to stop capture; a 5-second idle lease,
+session expiry and close also cancel it. Physics remains unchanged.
 Background queue dispatch no longer adds a fixed 75 ms wait to every request.
 View simulation requests fullscreen immediately and opens a focused viewer,
 with camera controls and canvas fitted to desktop and narrow viewports. Host
@@ -206,6 +213,12 @@ camera checks covered canceled background reads and unchanged-frame retention.
 The gateway was rebuilt and reloaded with the green Running indicator. Actual
 ChatGPT verification of the new G1 transfer, ROSMaster view, and fullscreen flow
 is pending the user's check after refreshing tools and opening a new conversation.
+
+Captured-pose replay passed all 30 widget tests, the MCP and Go2 bundle suites,
+and targeted gateway race tests. Regression checks preserve a brief foot lift
+and landing between host polls, including late batches and slow rendering.
+Observer browser checks passed for Go2, G1, and ROSMaster. Actual G1 gait playback
+in ChatGPT still needs a user check after refreshing tools and opening a new view.
 
 Use real MCP HTTP and stdio transports with fixture agent/app servers. Test
 authentication, audience/scope enforcement, cross-principal robot access,

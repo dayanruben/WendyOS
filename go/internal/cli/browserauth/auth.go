@@ -237,6 +237,9 @@ func (s *Session) Complete(ctx context.Context, code, state, issuer string) (Pro
 		return Profile{}, errors.New("Login expired; start sign-in again")
 	}
 	s.state = "" // Consume before network access, including failed code exchanges.
+	if issuer != s.meta.Issuer {
+		return Profile{}, errors.New("Authentication issuer changed; start sign-in again")
+	}
 	if code == "" {
 		return Profile{}, errors.New("No authorization code received")
 	}
@@ -606,6 +609,9 @@ func (s *Session) DiscoverFiltered(ctx context.Context, dial func(context.Contex
 			}
 			if item.Asset == nil {
 				return nil, errors.New("Cloud returned an empty device record")
+			}
+			if item.Asset.GetOrganizationId() != s.profile.Tenant || !canonicalUUID(item.Asset.GetId()) {
+				return nil, errors.New("Cloud returned a device outside the signed-in tenant or an invalid asset ID")
 			}
 			if len(assets) >= 10000 {
 				return nil, errors.New("Cloud device limit exceeded")

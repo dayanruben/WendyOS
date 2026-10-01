@@ -15,6 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudlink"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -22,6 +25,7 @@ import (
 type GatewayHTTPConfig struct {
 	ResourceURL       string                    `json:"resource_url"`
 	OAuth             *GatewayOAuthConfig       `json:"oauth,omitempty"`
+	CloudLink         *cloudlink.Config         `json:"cloud_link,omitempty"`
 	DevelopmentTokens []GatewayDevelopmentToken `json:"development_tokens,omitempty"`
 }
 
@@ -78,17 +82,48 @@ func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) stri
 	if err != nil || u.Host == "" || u.Path != "/mcp" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, fmt.Errorf("resource_url must be an absolute URL ending in /mcp")
 	}
-	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1") && cfg.OAuth == nil) {
+	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1") && cfg.OAuth == nil && cfg.CloudLink == nil) {
 		return nil, fmt.Errorf("resource_url requires HTTPS except for local development tokens")
 	}
-	if (cfg.OAuth == nil) == (len(cfg.DevelopmentTokens) == 0) {
-		return nil, fmt.Errorf("configure exactly one HTTP authentication mode: oauth or development_tokens")
+	modes := 0
+	if cfg.OAuth != nil {
+		modes++
+	}
+	if cfg.CloudLink != nil {
+		modes++
+	}
+	if len(cfg.DevelopmentTokens) > 0 {
+		modes++
+	}
+	if modes != 1 {
+		return nil, fmt.Errorf("configure exactly one HTTP authentication mode: oauth, cloud_link, or development_tokens")
 	}
 	origin := u.Scheme + "://" + u.Host
 	metadataURL := origin + "/.well-known/oauth-protected-resource/mcp"
 	metadata := map[string]any{"resource": cfg.ResourceURL, "scopes_supported": robotGatewayScopes, "bearer_methods_supported": []string{"header"}}
 	var authenticate gatewayAuthenticate
-	if cfg.OAuth != nil {
+	if cfg.CloudLink != nil {
+		linked, linkErr := cloudlink.New(*cfg.CloudLink, cfg.ResourceURL, getenv)
+		if linkErr != nil {
+			return nil, linkErr
+		}
+		g.cloudLink = linked
+		// Hosted account linking deliberately replaces the operator connector.
+		// No request can read the CLI login or target a configured local device.
+		g.connect = func(ctx context.Context, device string) (*grpcclient.AgentConnection, error) {
+			p, _ := ctx.Value(gatewayPrincipalKey{}).(gatewayPrincipal)
+			if p.Subject == "" || !strings.HasPrefix(device, "linked-cloud:") {
+				return nil, fmt.Errorf("linked Cloud device access is not authorized")
+			}
+			return linked.Connect(ctx, p.Subject, strings.TrimPrefix(device, "linked-cloud:"))
+		}
+		authenticate = func(ctx context.Context, bearer string) (gatewayPrincipal, error) {
+			p, err := linked.Authenticate(ctx, bearer)
+			return gatewayPrincipal{p.Subject, p.Scopes}, err
+		}
+		metadata["authorization_servers"] = []string{origin}
+		metadata["scopes_supported"] = cfg.CloudLink.Scopes
+	} else if cfg.OAuth != nil {
 		authenticate, err = gatewayIntrospection(*cfg.OAuth, cfg.ResourceURL, client, getenv)
 		if err != nil {
 			return nil, err
@@ -144,12 +179,15 @@ func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) stri
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if g.cloudLink != nil && g.cloudLink.ServeOAuth(w, r) {
+			return
+		}
 		if r.URL.Path == "/healthz" && r.Method == http.MethodGet {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, "ok\n")
 			return
 		}
-		if cfg.OAuth != nil && (r.URL.Path == "/.well-known/oauth-protected-resource/mcp" || r.URL.Path == "/.well-known/oauth-protected-resource") && r.Method == http.MethodGet {
+		if (cfg.OAuth != nil || cfg.CloudLink != nil) && (r.URL.Path == "/.well-known/oauth-protected-resource/mcp" || r.URL.Path == "/.well-known/oauth-protected-resource") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(metadata)
 			return
@@ -179,7 +217,7 @@ func (g *RobotGateway) httpHandler(client *http.Client, getenv func(string) stri
 		}
 		if authErr != nil {
 			challenge := `Bearer`
-			if cfg.OAuth != nil {
+			if cfg.OAuth != nil || cfg.CloudLink != nil {
 				challenge += fmt.Sprintf(` resource_metadata=%q`, metadataURL)
 			}
 			w.Header().Set("WWW-Authenticate", challenge)

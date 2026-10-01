@@ -47,6 +47,9 @@ func (g *RobotGateway) catalog(ctx context.Context, includeOffline bool) ([]gate
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	if g.cloudLink != nil {
+		return g.linkedCloudCatalog(ctx, includeOffline)
+	}
 	rows := []gatewayCatalogRobot{}
 	warnings := []string{}
 	configured := map[string]bool{}
@@ -125,6 +128,30 @@ func (g *RobotGateway) catalog(ctx context.Context, includeOffline bool) ([]gate
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 	return rows, warnings
+}
+
+func (g *RobotGateway) linkedCloudCatalog(ctx context.Context, includeOffline bool) ([]gatewayCatalogRobot, []string) {
+	_, principal := g.grant(ctx)
+	assets, err := g.cloudLink.Discover(ctx, principal.Subject, !includeOffline)
+	if err != nil || len(assets) > 10000 {
+		return nil, []string{"Your Wendy Cloud inventory could not be refreshed. Reconnect your account if sign-in has expired."}
+	}
+	rows := []gatewayCatalogRobot{}
+	presence := "online"
+	if includeOffline {
+		presence = "unknown"
+	}
+	for _, asset := range assets {
+		device := "linked-cloud:" + asset.GetId()
+		name := strings.TrimSpace(asset.GetName())
+		if name == "" {
+			name = "Unnamed Cloud device"
+		}
+		name = string([]rune(name)[:min(len([]rune(name)), 128)])
+		rows = append(rows, gatewayCatalogRobot{GatewayRobot: GatewayRobot{ID: discoveredRobotID(device), Name: name, Device: device, AllowCamera: g.cfg.HTTP.CloudLink.AllowCamera, AllowAllApps: g.cfg.HTTP.CloudLink.AllowAllApps, discovered: true}, source: "cloud", presence: presence, deviceType: fmt.Sprint(asset.GetDeviceType())})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	return rows, nil
 }
 
 func (g *RobotGateway) listRobots(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

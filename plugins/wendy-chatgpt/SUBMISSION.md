@@ -1,4 +1,4 @@
-# Local Wendy Robots submission preparation
+# Local Wendy submission preparation
 
 The first proposed release runs `wendy mcp gateway` on the user's computer.
 It includes the Wendy onboarding skill and icon. Hosted Cloud account linking

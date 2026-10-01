@@ -11,6 +11,7 @@ GROUP = SOURCE.parent / "skill-group.json"
 MCP_TARGETS = [
     ROOT / "plugins/wendy-chatgpt/skills/wendy",
     ROOT / "plugins/wendy-get-started/skills/wendy",
+    ROOT / "plugins/wendyos/skills/wendy",
     ROOT / "go/internal/cli/assets/mcp-skills/wendy",
 ]
 
@@ -32,7 +33,7 @@ def mcp_bundle(skills):
     index = """
 ## Bundled workflows
 
-This MCP package includes the complete Wendy end-user skill group. Read the
+This package includes the complete Wendy end-user skill group. Read the
 relevant workflow below before acting, and resolve its references relative to
 that file. These supporting skills need no separate installation.
 

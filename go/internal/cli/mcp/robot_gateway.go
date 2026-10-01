@@ -14,6 +14,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudlink"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -69,6 +70,7 @@ type RobotGateway struct {
 	waitSlots         chan struct{}
 	connectApp        func(context.Context, context.Context, *grpcclient.AgentConnection, string) (appMCPClient, error)
 	discover          GatewayCloudDiscoverFunc
+	cloudLink         *cloudlink.Manager
 }
 
 func NewRobotGateway(cfg RobotGatewayConfig, connect ConnectFunc, options ...RobotGatewayOption) (*RobotGateway, error) {
@@ -186,8 +188,17 @@ func (g *RobotGateway) StopEventDelivery() {
 	g.mcpEvents.close()
 }
 
+func (g *RobotGateway) CloseCloudLink() {
+	if g.cloudLink != nil {
+		g.cloudLink.Close()
+	}
+}
+
 func (g *RobotGateway) grant(ctx context.Context) (*GatewayGrant, gatewayPrincipal) {
 	p, _ := ctx.Value(gatewayPrincipalKey{}).(gatewayPrincipal)
+	if g.cloudLink != nil && p.Subject != "" {
+		return &GatewayGrant{Subject: p.Subject, Scopes: g.cfg.HTTP.CloudLink.Scopes}, p
+	}
 	for i := range g.cfg.Grants {
 		if p.Subject != "" && g.cfg.Grants[i].Subject == p.Subject {
 			return &g.cfg.Grants[i], p

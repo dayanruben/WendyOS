@@ -59,6 +59,7 @@ func newMCPGatewayCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer gateway.CloseCloudLink()
 			ln, err := net.Listen("tcp", listen)
 			if err != nil {
 				return err
@@ -82,7 +83,7 @@ func newMCPGatewayCmd() *cobra.Command {
 				}
 			}()
 			fmt.Fprintf(cmd.ErrOrStderr(), "Wendy robot gateway listening on %s (MCP: /mcp)\n", ln.Addr())
-			if cfg.HTTP.OAuth == nil {
+			if cfg.HTTP.OAuth == nil && cfg.HTTP.CloudLink == nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "Development token authentication. Use OAuth before public distribution.")
 			}
 			err = srv.Serve(ln)

@@ -255,6 +255,7 @@ export class SandboxViewer {
     if (this.samples.length > (this.replayHistory ? 180 : 5)) {
       this.samples.shift();
       this.replayTime = Math.max(this.replayTime ?? received, this.samples[0].received);
+      if (this.replayHistory) this.playbackOverflow = true;
     }
     this.message(state.valid === false ? 'Physics fault · last valid pose' :
       state.mode === 'paused' ? 'Paused · camera controls available' : 'Live 3D');
@@ -263,6 +264,7 @@ export class SandboxViewer {
 
   acceptBatch(packet) {
     if (!Array.isArray(packet.frames) || packet.frames.length === 0 || packet.frames.length > 90) throw Error('Invalid pose history received');
+    this.playbackOverflow = false;
     if (packet.dropped) {
       this.samples = [];
       this.replayTime = this.playbackTarget = undefined;
@@ -282,7 +284,7 @@ export class SandboxViewer {
       this.lastSequence = frame.sequence;
       this.canvas.dataset.poseSequence = String(frame.sequence);
     }
-    if (packet.dropped) this.message('Live 3D · some movement history unavailable');
+    if (packet.dropped || this.playbackOverflow) this.message('Live 3D · some movement history unavailable');
   }
 
   async json(path) {
@@ -340,7 +342,10 @@ export class SandboxViewer {
         const previousTime = this.replayTime ?? samples[0].received;
         const next = samples.find(sample => sample.received > previousTime);
         this.replayDebt = Math.min(1000, (this.replayDebt ?? 0) + (this.lastDrawTime === undefined ? 0 : Math.max(0, now - this.lastDrawTime)));
-        if (next) {
+        if (this.replayTime === undefined) {
+          this.replayTime = samples[0].received;
+          this.replayDebt = 0;
+        } else if (next) {
           // Show each capture at least once even if a render frame is slow.
           this.replayTime = Math.min(previousTime + this.replayDebt, next.received);
           this.replayDebt -= this.replayTime - previousTime;

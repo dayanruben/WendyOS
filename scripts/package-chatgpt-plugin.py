@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the local Wendy Robots package without policies or credentials."""
+"""Export the local Wendy package without policies or credentials."""
 
 import argparse
 import json

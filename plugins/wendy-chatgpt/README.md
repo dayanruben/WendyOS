@@ -1,4 +1,24 @@
-# Wendy robots for ChatGPT
+# Wendy for ChatGPT
+
+## Add Wendy to your personal marketplace
+
+With the Wendy CLI installed, run:
+
+```sh
+wendy mcp setup chatgpt
+```
+
+1. **Quit and reopen ChatGPT Desktop.**
+2. **Open Plugins and select Personal.**
+3. **Open Wendy and select the plus button to install it.**
+4. **Start a new conversation with Wendy enabled.**
+
+Ask: "Help me get started with my first device or a simulator."
+The package includes the local MCP gateway, device workspace, and bundled skills.
+Local access needs no Cloud account. Add `--simulators` for simulator access or
+`--device <selector>` for device inspection. See the
+[user setup guide](../../docs/guides/chatgpt.mdx) for project permissions and
+troubleshooting.
 
 ## Start without an existing installation
 
@@ -389,6 +409,13 @@ implement automatic delegation from a Wendy Cloud user's login to Cloud relay
 credentials. Provisioning that identity mapping and credential lifecycle is a
 required step before public multi-tenant deployment. No introspection endpoint
 or production client registration is assumed to exist in Wendy Cloud today.
+
+For per-user Cloud credential delegation, use the separate
+[Cloud account-linking mode](cloud-account-linking.md). It replaces operator
+credentials with encrypted sessions for each linked account, serves the gateway
+OAuth flow, and discovers only that account's Cloud inventory. Production service
+configuration, client/callback registration, and a real ChatGPT connection check
+remain required before deployment. The packaged local MCP plugin is unchanged.
 
 For hosted distribution, change the installed `mcp.json` server to
 `{"type":"streamable-http","url":"https://<your-host>/mcp"}`. Register the

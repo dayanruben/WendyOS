@@ -137,6 +137,24 @@ func DecodeRobotGatewayConfig(r io.Reader) (RobotGatewayConfig, error) {
 }
 
 func (c RobotGatewayConfig) validate() error {
+	linked := c.HTTP != nil && c.HTTP.CloudLink != nil
+	if linked {
+		if err := c.HTTP.CloudLink.Validate(); err != nil {
+			return err
+		}
+		if c.LocalSubject != "" || len(c.Robots) != 0 || len(c.Grants) != 0 || len(c.CloudSources) != 0 || len(c.Workspaces) != 0 || c.AllowHostOperations || c.AllowSimulators || c.AllowSimulatorDeviceAccess || c.AllowEmptyInventory || !filepath.IsAbs(c.StateDirectory) {
+			return fmt.Errorf("Cloud account linking requires explicit state_directory and a Cloud-only policy without local targets, static grants, or host operations")
+		}
+		allowed := []string{RobotReadScope, RobotCameraScope, RobotControlScope, RobotSettingsScope}
+		if !slices.Contains(c.HTTP.CloudLink.Scopes, RobotReadScope) {
+			return fmt.Errorf("Cloud account linking requires robots:read")
+		}
+		for _, scope := range c.HTTP.CloudLink.Scopes {
+			if !slices.Contains(allowed, scope) {
+				return fmt.Errorf("scope %s is not supported by Cloud account linking", scope)
+			}
+		}
+	}
 	projects := map[string]bool{}
 	for _, w := range c.Workspaces {
 		if !gatewayIdentifier.MatchString(w.ID) || projects[w.ID] || !filepath.IsAbs(w.Path) || w.Name == "" {
@@ -147,7 +165,7 @@ func (c RobotGatewayConfig) validate() error {
 	if c.AllowEmptyInventory && (c.LocalSubject == "" || c.HTTP != nil) {
 		return fmt.Errorf("allow_empty_inventory requires a local stdio policy")
 	}
-	if (len(c.Robots) == 0 && len(c.CloudSources) == 0 && !c.AllowEmptyInventory && !(c.AllowSimulators && c.LocalSubject != "")) || len(c.Robots) > 100 || len(c.CloudSources) > 8 {
+	if (len(c.Robots) == 0 && len(c.CloudSources) == 0 && !linked && !c.AllowEmptyInventory && !(c.AllowSimulators && c.LocalSubject != "")) || len(c.Robots) > 100 || len(c.CloudSources) > 8 {
 		return fmt.Errorf("configure robots, Cloud sources, or local simulators, with at most 100 explicit robots and 8 sources")
 	}
 	sources, identities := map[string]bool{}, map[string]bool{}
@@ -240,7 +258,7 @@ func (c RobotGatewayConfig) validate() error {
 			}
 		}
 	}
-	if len(subjects) == 0 {
+	if len(subjects) == 0 && !linked {
 		return fmt.Errorf("at least one subject grant is required")
 	}
 	if c.LocalSubject != "" && !subjects[c.LocalSubject] {

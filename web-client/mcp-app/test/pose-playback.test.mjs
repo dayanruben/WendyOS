@@ -96,6 +96,17 @@ test("a slow render frame cannot jump past a captured foot lift", (t) => {
   assert.equal(viewer.bodies[0].position.z, 0);
 });
 
+test("the first pose of a late batch is displayed before later captures", (t) => {
+  const original = globalThis.document;
+  globalThis.document = { hidden: false };
+  t.after(() => { globalThis.document = original; });
+  const viewer = viewerFixture();
+  viewer.lastDrawTime = 100;
+  viewer.acceptBatch({ frames: [frame(1, 0, 0.18), frame(2, 33)] });
+  viewer.draw(300);
+  assert.equal(viewer.bodies[0].position.z, 0.18);
+});
+
 test("missing history is explicit and malformed capture ordering is rejected", () => {
   const viewer = viewerFixture();
   viewer.acceptBatch({ frames: [frame(1, 0), frame(2, 33)] });
