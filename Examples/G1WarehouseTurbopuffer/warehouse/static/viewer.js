@@ -267,12 +267,17 @@ export class WarehouseViewer {
     const materials = {
       post: new THREE.MeshStandardMaterial({ color: '#c8642e', roughness: 0.55, metalness: 0.25 }),
       board: new THREE.MeshStandardMaterial({ color: '#9aa1a9', roughness: 0.38, metalness: 0.55 }),
-      cartTop: new THREE.MeshStandardMaterial({ color: '#56779a', roughness: 0.5, metalness: 0.2 }),
+      cartDeck: new THREE.MeshStandardMaterial({ color: '#2e333a', roughness: 0.85, metalness: 0.1 }),
+      cartFrame: new THREE.MeshStandardMaterial({ color: '#4f79a8', roughness: 0.45, metalness: 0.45 }),
+      grip: new THREE.MeshStandardMaterial({ color: '#141619', roughness: 0.6 }),
       leg: new THREE.MeshStandardMaterial({ color: '#30363f', roughness: 0.5, metalness: 0.5 }),
       wheel: new THREE.MeshStandardMaterial({ color: '#15181c', roughness: 0.8 }),
     };
-    const pick = (name) => name.includes('_post_') ? materials.post : name.endsWith('_board') ? materials.board
-      : name === 'cart_top' ? materials.cartTop : name.startsWith('cart_wheel') ? materials.wheel : materials.leg;
+    const pick = (name) => name.startsWith('cart_') ? (
+        name === 'cart_top' || name === 'cart_shelf' ? materials.cartDeck
+        : name.startsWith('cart_post') || name.startsWith('cart_handle_') && name !== 'cart_handle_grip' ? materials.cartFrame
+        : name === 'cart_handle_grip' ? materials.grip : name.startsWith('cart_wheel') ? materials.wheel : materials.leg)
+      : name.includes('_post_') ? materials.post : name.endsWith('_board') ? materials.board : materials.leg;
     for (const fixture of description.fixtures) {
       const [a, b, c] = fixture.size;
       let geometry;

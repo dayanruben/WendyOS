@@ -70,8 +70,9 @@ INBOUND = (
     Item("charger", "65 W laptop charger", (0.22, 0.28, 0.20), 0.9, "#caa574"),
 )
 
-# Asked once everything is shelved; the robot fetches the best match back to the cart.
-QUESTION = "I need something to charge my laptop"
+# Asked once everything is shelved; the robot fetches the best match back to the cart. Its
+# answer was stocked before the shipment arrived, on a rack the robot has to walk across to.
+QUESTION = "I need a cable for my second monitor"
 
 BAYS = 3
 BAY_PITCH = 0.62

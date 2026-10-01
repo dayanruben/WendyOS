@@ -4,7 +4,7 @@ import uuid
 import pytest
 
 from warehouse import memory
-from warehouse.catalog import INBOUND, QUESTION
+from warehouse.catalog import INBOUND, QUESTION, SHELVED
 
 
 def test_keyword_stand_in_routes_boxes_and_answers_questions():
@@ -35,7 +35,7 @@ def test_memory_calls_run_off_the_caller_thread_and_are_logged(monkeypatch):
 
 
 @pytest.mark.skipif(not os.environ.get("TURBOPUFFER_API_KEY"), reason="needs TURBOPUFFER_API_KEY")
-def test_turbopuffer_shelves_the_charger_with_power_and_finds_it(monkeypatch):
+def test_turbopuffer_shelves_the_charger_with_power_and_answers_the_request(monkeypatch):
     monkeypatch.setattr(memory, "NAMESPACE", f"wendy-g1-warehouse-test-{uuid.uuid4().hex[:8]}")
     store = memory.TurbopufferMemory(os.environ["TURBOPUFFER_API_KEY"])
     try:
@@ -45,6 +45,6 @@ def test_turbopuffer_shelves_the_charger_with_power_and_finds_it(monkeypatch):
         assert answer.server_ms is not None
         store.remember(INBOUND[3], "power", 2)
         found = store.find(QUESTION)
-        assert found.best.label == INBOUND[3].label
+        assert found.best.label == SHELVED["cables"].label   # stocked before: the DisplayPort cable
     finally:
         store.ns.delete_all()

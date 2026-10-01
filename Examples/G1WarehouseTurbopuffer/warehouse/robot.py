@@ -30,6 +30,9 @@ OBS = 86
 HISTORY = int(CONFIG["obs_history_len"])
 POLICY_PERIOD = 0.02
 ARM_KP, ARM_KD, ARM_TORQUE = 120.0, 2.0, 25.0
+# Each arm has one joint more than a palm pose needs. That spare freedom holds the shoulders rolled
+# out by this much (rad), so the elbows stay clear of the torso while the palms do their job.
+ELBOWS_OUT = 0.35
 STAND_HEIGHT = 0.74
 ARM_JOINTS = [f"{side}_{joint}_joint" for side in ("left", "right") for joint in
               ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll", "wrist_pitch", "wrist_yaw")]
@@ -162,7 +165,13 @@ class G1:
                 mujoco.mj_jacSite(self.m, s, jp, jr, site)
                 cols = self.arm_dof[hand * 7:(hand + 1) * 7]
                 jac = np.vstack([jp[:, cols], 0.4 * jr[:, cols]])
-                dq = jac.T @ np.linalg.solve(jac @ jac.T + damping ** 2 * np.eye(6), err)
+                pinv = jac.T @ np.linalg.inv(jac @ jac.T + damping ** 2 * np.eye(6))
+                dq = pinv @ err
+                # in the null space of the palm task: roll the shoulder out toward ELBOWS_OUT
+                roll = hand * 7 + 1
+                posture = np.zeros(7)
+                posture[1] = 0.3 * ((ELBOWS_OUT if hand == 0 else -ELBOWS_OUT) - q[roll])
+                dq += (np.eye(7) - pinv @ jac) @ posture
                 step[hand * 7:(hand + 1) * 7] = np.clip(dq, -0.2, 0.2)
             q = np.clip(q + step, self.arm_range[:, 0] + 0.02, self.arm_range[:, 1] - 0.02)
             s.qpos[self.arm_qadr] = q

@@ -4,9 +4,10 @@ A Unitree G1 walks a small warehouse, lifts boxes off an inbound cart and
 shelves each one where similar things already live. The robot is never told
 which zone a box belongs in. It asks [Turbopuffer](https://turbopuffer.com),
 which stores every shelved item and each zone's description as text and embeds
-it natively. When the cart is empty, someone asks for "something to charge my
-laptop", and the robot looks up the best match and fetches that box back to the
-cart. The loop lasts about four minutes.
+it natively. When the cart is empty, someone asks for "a cable for my second
+monitor": the robot looks up the best match, a DisplayPort cable that was on the
+shelves before the shipment arrived, walks across the warehouse and brings it
+back to the cart. The loop lasts about four minutes.
 
 Everything runs in one container: MuJoCo physics, the G1's walking policy, the
 arm and grasp control, and a small web server that streams the warehouse to a

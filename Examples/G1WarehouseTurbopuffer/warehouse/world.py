@@ -66,22 +66,33 @@ def _rack_xml(zone: Zone) -> str:
 
 
 def _cart_xml() -> str:
+    """A two-deck utility cart on casters, with a push handle at the end the robot uses least."""
     rotation = CART["facing"] - math.pi / 2
     top = CART["top"]
-    length = CART_SLOTS[-1] - CART_SLOTS[0] + 0.62
-    # local x points opposite to the slots' lateral axis (see cart_slot), so mirror the centre
-    centre = -(CART_SLOTS[-1] + CART_SLOTS[0]) / 2
-    hl, hd = length / 2, 0.24
+    # local x points opposite to the slots' lateral axis (see cart_slot), so mirror the slot centre
+    slots_centre = -(CART_SLOTS[-1] + CART_SLOTS[0]) / 2
+    extra = 0.14                                   # extra deck beyond the last slot, under the handle
+    hl = (CART_SLOTS[-1] - CART_SLOTS[0] + 0.62 + extra) / 2
+    cx = slots_centre - extra / 2                  # deck centre (the handle end is local -x)
+    hd = 0.25
+    near = 0.03   # the deck starts a little behind the line the robot squats at, and the lower
+    #               shelf sits further back, so a crouching robot's hips and knees clear both
+    parts = [
+        f'<geom name="cart_top" type="box" size="{hl} {hd - near / 2} 0.01" pos="{cx} {hd + near / 2} {top - 0.01}" rgba="0.2 0.22 0.25 1" friction="1 0.01 0.001"/>',
+        f'<geom name="cart_shelf" type="box" size="{hl - 0.03} 0.17 0.012" pos="{cx} {2 * hd - 0.19} 0.17" rgba="0.2 0.22 0.25 1"/>',
+    ]
     corners = [(sx, sy) for sx in (-1, 1) for sy in (-1, 1)]
-    legs = "".join(f'<geom name="cart_leg_{i}" type="box" size="0.025 0.025 {top / 2 - 0.05}" '
-                   f'pos="{centre + sx * (hl - 0.05)} {hd + sy * (hd - 0.05)} {top / 2 + 0.03}" rgba="0.25 0.27 0.3 1"/>'
-                   for i, (sx, sy) in enumerate(corners))
-    wheels = "".join(f'<geom name="cart_wheel_{i}" type="cylinder" size="0.04 0.02" pos="{centre + sx * (hl - 0.05)} {hd + sy * (hd - 0.05)} 0.04" '
-                     f'quat="0.7071 0.7071 0 0" rgba="0.1 0.1 0.1 1" contype="0" conaffinity="0"/>'
-                     for i, (sx, sy) in enumerate(corners))
-    return (f'<body name="cart" pos="{CART["x"]} {CART["y"]} 0" quat="{_quat_z(rotation)}">'
-            f'<geom name="cart_top" type="box" size="{hl} {hd} 0.0125" pos="{centre} {hd} {top - 0.0125}" rgba="0.3 0.55 0.85 1" friction="1 0.01 0.001"/>'
-            f'{legs}{wheels}</body>')
+    for i, (sx, sy) in enumerate(corners):
+        x, y = cx + sx * (hl - 0.03), hd + near / 2 + sy * (hd - near / 2 - 0.03)
+        parts.append(f'<geom name="cart_post_{i}" type="box" size="0.02 0.02 {(top - 0.13) / 2}" pos="{x} {y} {(top + 0.13) / 2 - 0.015}" rgba="0.3 0.55 0.85 1"/>')
+        parts.append(f'<geom name="cart_fork_{i}" type="box" size="0.022 0.03 0.025" pos="{x} {y} 0.105" rgba="0.25 0.27 0.3 1" contype="0" conaffinity="0"/>')
+        parts.append(f'<geom name="cart_wheel_{i}" type="cylinder" size="0.05 0.018" pos="{x} {y} 0.05" quat="0.7071 0.7071 0 0" '
+                     f'rgba="0.1 0.1 0.1 1" contype="0" conaffinity="0"/>')
+    hx = cx - hl + 0.025                           # push handle: two uprights and a grip
+    for i, sy in enumerate((-1, 1)):
+        parts.append(f'<geom name="cart_handle_{i}" type="box" size="0.015 0.015 0.25" pos="{hx} {hd + sy * (hd - 0.05)} {top + 0.25}" rgba="0.3 0.55 0.85 1"/>')
+    parts.append(f'<geom name="cart_handle_grip" type="cylinder" size="0.02 {hd - 0.05}" pos="{hx} {hd} {top + 0.5}" quat="0.7071 0.7071 0 0" rgba="0.08 0.08 0.09 1"/>')
+    return f'<body name="cart" pos="{CART["x"]} {CART["y"]} 0" quat="{_quat_z(rotation)}">{"".join(parts)}</body>'
 
 
 def _box_xml(name: str, item: Item, slot: Slot, fixed: bool = False) -> str:

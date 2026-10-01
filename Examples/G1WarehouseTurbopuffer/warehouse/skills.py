@@ -26,6 +26,7 @@ class GraspMissed(RuntimeError):
 
 class Skills:
     STANDOFF = 0.34   # pelvis to box centre when grasping (m)
+    PICK_CLOSER = 0.04  # bending and reaching makes the balance policy step back about this much
     LEAN = 0.30       # torso pitch while reaching down to pick (rad)
     PLACE_LEAN = 0.10 # torso pitch while setting a box down low; more makes the balance policy step back
     BACK_OFF = 0.28   # extra distance for the stop-short before placing (m)
@@ -185,24 +186,23 @@ class Skills:
         # square up to the box where it actually is, not where it was meant to be
         centre = d.xpos[body].copy()
         facing = self._box_facing(body, slot.facing)
-        stand = centre[:2] - self.STANDOFF * np.array([np.cos(facing), np.sin(facing)])
+        stand = centre[:2] - (self.STANDOFF - self.PICK_CLOSER) * np.array([np.cos(facing), np.sin(facing)])
         normal = np.array([np.cos(slot.facing), np.sin(slot.facing)])
         too_close = (stand - np.array(self.stance(slot))) @ normal - 0.05   # keep clear of the shelf
         if too_close > 0:
             stand -= too_close * normal
-        yield from self.goto(stand[0], stand[1], facing)
+        yield from self.goto(stand[0], stand[1], facing, tol=0.04)
         g.height_goal = self.height_for(centre[2])
         g.rpy_goal = np.array([0.0, self.LEAN, 0.0])
-        yield from self.wait(1.2)
+        # The hands open toward the box while the body bends, then drop beside it and close in.
+        yield from self.reach_for(body, hy + 0.08, 0.10, 1.4)
         rel = self.to_robot(d.xpos[body])
         if not (0.24 < rel[0] < 0.42 and abs(rel[1]) < 0.09):
             # the balance policy sometimes steps while crouching: re-approach instead of overreaching
             raise GraspMissed(f"{name} out of reach after crouching: {rel[0]:.2f} ahead, {rel[1]:.2f} to the side")
+        yield from self.reach_for(body, hy + 0.08, 0.0, 0.8)
         # The palm surface sits ~1.7 cm inside the palm site, so "hy" presses it lightly into the box.
-        x, y, z = rel[0] - 0.02, rel[1], rel[2]
-        yield from self.move_palms([np.array([0.24, y + hy + 0.08, z + 0.08]), np.array([0.24, y - hy - 0.08, z + 0.08])], 0.8)
-        yield from self.move_palms([np.array([x, y + hy + 0.08, z]), np.array([x, y - hy - 0.08, z])], 1.2)
-        yield from self.move_palms([np.array([x, y + hy, z]), np.array([x, y - hy, z])], 0.9)
+        yield from self.reach_for(body, hy, 0.0, 0.7)
         touching = self.hand_contacts(body)
         if min(touching) == 0:
             raise GraspMissed(f"no two-handed contact on {name}: {touching}")
@@ -213,6 +213,20 @@ class Skills:
         g.rpy_goal = np.zeros(3)
         yield from self.carry_box(self.CARRY, 1.2)
         yield from self.retreat()
+
+    def reach_for(self, body: int, half_gap: float, above: float, seconds: float) -> Steps:
+        """Move the palms to either side of a box (half_gap from its centre, `above` over it),
+        following the box as the robot moves."""
+        start = [p.copy() for p in self.palms]
+        n = max(1, int(seconds / self.m.opt.timestep))
+        for i in range(n):
+            s = (i + 1) / n
+            s = s * s * (3 - 2 * s)
+            c = self.to_robot(self.d.xpos[body])
+            goal = [np.array([c[0] - 0.02, c[1] + half_gap, c[2] + above]),
+                    np.array([c[0] - 0.02, c[1] - half_gap, c[2] + above])]
+            self.palms = [a + (b - a) * s for a, b in zip(start, goal)]
+            yield from self.tick()
 
     def _box_facing(self, body: int, facing: float) -> float:
         """The box's heading nearest the slot's (a box looks the same turned around), within 20°."""
