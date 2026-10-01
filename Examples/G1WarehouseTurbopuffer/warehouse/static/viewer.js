@@ -515,6 +515,9 @@ export class WarehouseViewer {
     if (last) {
       text('#memory-query', last.purpose === 'find' ? `“${last.text}”` : `Where do things like “${last.text}” go?`);
       query.classList.remove('muted');
+    } else {   // a new loop: nothing asked yet
+      text('#memory-query', 'Waiting for the first box');
+      query.classList.add('muted');
     }
     const list = document.querySelector('#memory-matches');
     const key = last ? JSON.stringify(last.matches) + last.text : '';
