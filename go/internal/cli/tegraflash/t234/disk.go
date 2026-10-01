@@ -40,12 +40,13 @@ func splitInquiry(vendor, product string) (name, serial string) {
 // with a medium are listed: the initrd switches media in place, so a loaded
 // medium is what "exported" means.
 type UMSDisk struct {
-	DevPath   string // e.g. /dev/disk4 or /dev/sdb
-	RawPath   string // e.g. /dev/rdisk4 (same as DevPath on Linux)
-	SizeBytes int64
-	Vendor    string // SCSI inquiry vendor: "flashpkg" or "rootfs"
-	Serial    string // SCSI inquiry product: the device's 8-hex session id
-	PortPath  string // physical USB topology key, same form as rcm.RecoveryDevice.PathKey
+	DevPath      string // e.g. /dev/disk4 or /dev/sdb
+	RawPath      string // e.g. /dev/rdisk4 (same as DevPath on Linux)
+	SizeBytes    int64
+	USBSpeedMbps int64  // negotiated link speed; zero when unavailable
+	Vendor       string // SCSI inquiry vendor: "flashpkg", "rootfs" or a legacy device name such as "mmcblk0"
+	Serial       string // SCSI inquiry product: the device's 8-hex session id
+	PortPath     string // physical USB topology key, same form as rcm.RecoveryDevice.PathKey
 }
 
 type LUNSelector struct {

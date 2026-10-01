@@ -19,8 +19,11 @@ Declare them in the `entitlements` array of your `wendy.json`, or add one with `
 ## Notifications
 
 Use `{ "type": "notifications" }` when an app needs to alert operators through
-Wendy Cloud and Companion. WendyKit exposes this as
-`WendyNotification.send(_:)`.
+Wendy Cloud and Companion. WendyKit is currently the only application SDK for
+this API and is Swift-only. Apps in other languages must call the app-facing
+gRPC service directly. See [Send notifications from a device app](/docs/guides/device-notifications)
+for setup and examples, or the [Notifications API](../cloud/notifications-api.md#app-facing-api-wendysystemv1)
+for the exact RPC contract.
 
 | Boundary | Value |
 |---|---|
@@ -38,11 +41,11 @@ reuse returns `ALREADY_EXISTS` rather than replaying success. A local validation
 or rate-limit rejection does not claim the UUID, so that UUID remains valid for
 retry. All selector categories are unioned, normalized, and deduplicated. The
 app-facing API accepts at most 100 selector entries before deduplication; Cloud
-resolves at most 10,000 recipients. The agent/daemon stamps trusted `app_id`;
-Wendy Cloud stores it as `created_by_app_id` and derives device and organization
-identity from device mTLS. Apps without the entitlement receive no private app
-connection mount, environment variable, or socket group. The full administrative Agent socket
-remains separate and requires `admin`.
+resolves at most 100 recipients for a device-app send. The agent/daemon stamps
+trusted `app_id`; Wendy Cloud stores it as `created_by_app_id` and derives
+device and organization identity from device mTLS. Apps without the entitlement
+receive no private app connection mount, environment variable, or socket group.
+The full administrative Agent socket remains separate and requires `admin`.
 
 All entitled services in a multi-service app share the app's stable socket
 directory and app identity. Running containers reconnect on their next call
@@ -107,6 +110,24 @@ A "network" type entitlement can have the following values:
 }
 ```
 
+## HTTP
+
+Use `http` to declare a web endpoint for clients to discover. It grants no
+additional network access; combine it with host networking for a container
+server:
+
+```json
+[
+    { "type": "network", "mode": "host" },
+    { "type": "http", "port": 8080 }
+]
+```
+
+Ordinary detached agent deployments include HTTP URLs in their
+[endpoint report](../clients/wendy-cli/commands/run.md#detached-output), without
+checking application health. See the [full `http` reference](../apps/wendy.json.md#http)
+for discovery and attached-run behavior.
+
 ## Input
 
 The input entitlement allows the container to access Linux input devices such as game controllers, barcode scanners, keyboards, and other devices that appear under `/dev/input/`. This is separate from the USB entitlement — USB covers `/dev/bus/usb` (raw USB access), while input covers the higher-level Linux input subsystem.
@@ -157,6 +178,13 @@ Most USB HID devices (scanners, keyboards) should use `input`. You only need `us
 ## USB
 
 The USB entitlement allows the container to access USB devices.
+
+Wendy bind-mounts `/dev/bus/usb` when that directory exists on the host. On a
+host without a USB bus, including a VM, it skips the mount so container startup
+does not fail with `cannot stat /dev/bus/usb`. This grants no virtual USB devices:
+an app that needs a physical camera still needs that camera and its driver, or an
+explicit [simulator backend](../apps/wendy-services.md#simulation-backends).
+If the USB directory appears after deployment, redeploy to mount it.
 
 ## Serial / UART
 

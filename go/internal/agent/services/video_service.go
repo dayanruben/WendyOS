@@ -1196,12 +1196,17 @@ func (s *VideoService) listCameras(ctx context.Context) ([]*agentpb.VideoDevice,
 		if err != nil {
 			continue
 		}
-		// A v4l2loopback node lives at /dev/video<cameraID>, numbered from the
-		// same reserved band resolveSource treats as a network camera. Once
-		// EnsureNodes has created one, it would otherwise glob-enumerate here
-		// too and double-list the camera: once (correctly) from listIPCameras
-		// below and once (bogusly) as an indistinguishable local device.
-		if id >= uint64(ipcam.LoopbackBandStart) && id <= uint64(ipcam.IDBandEnd) {
+		// ROS 2 and network cameras have v4l2loopback nodes at
+		// /dev/video<cameraID>, numbered from the bands resolveSource routes to
+		// their registries. Those nodes would otherwise glob-enumerate here too
+		// and double-list the camera: once (correctly) from listROS2Cameras or
+		// listIPCameras below, once (bogusly) as an indistinguishable local
+		// device. MCU-band nodes (sensor pairing) have no registry to list
+		// them, so they stay: they are the local V4L2 devices resolveSource
+		// treats them as.
+		inROS2Band := id >= ros2camera.IDBandStart && id <= ros2camera.IDBandEnd
+		inIPBand := id >= ipcam.IDBandStart && id <= ipcam.IDBandEnd
+		if inROS2Band || inIPBand {
 			continue
 		}
 		if !s.hasVideoCapture(path) {
@@ -2756,6 +2761,7 @@ type limitedBuffer struct {
 const maxStderrBytes = 64 * 1024
 
 func (l *limitedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
 	remaining := l.limit - l.buf.Len()
 	if remaining <= 0 {
 		return len(p), nil
@@ -2763,7 +2769,10 @@ func (l *limitedBuffer) Write(p []byte) (int, error) {
 	if len(p) > remaining {
 		p = p[:remaining]
 	}
-	return l.buf.Write(p)
+	l.buf.Write(p)
+	// Discarding bytes at the limit is intentional, not a short write. Returning
+	// fewer bytes stops exec's stderr copier before the child has finished.
+	return n, nil
 }
 
 // gstFallbackDirs is the list of directories searched for GStreamer binaries
@@ -2934,25 +2943,15 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		}
 		io.Copy(io.Discard, stdout) // drain so Wait's internal goroutine can exit
 		waitErr := cmd.Wait()
-		if runErr == nil {
-			// Log stderr internally — do NOT embed in the gRPC response. GStreamer
-			// stderr routinely includes device paths, kernel module names, library
-			// versions, and pipeline topology. Returning it verbatim lets an
-			// authenticated client enumerate the system via deliberate failures.
-			msg := strings.TrimSpace(stderrBuf.buf.String())
-			if msg != "" {
-				s.logger.Error("GStreamer pipeline failed", zap.String("device", path), zap.String("stderr", msg))
-				// Contention is the one cause an operator can act on, and it is only ever
-				// reported as prose on stderr. Gated on the pipeline failing by itself: gst
-				// also prints busy warnings while probing modes it then recovers from.
-				if exitedOnError(waitErr) && isBusyStderr(msg, path) {
-					runErr = errCameraInUse(path)
-				} else {
-					runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
-				}
-			} else if waitErr != nil {
-				runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
-			}
+		if ctx.Err() != nil {
+			runErr = ctx.Err()
+			return
+		}
+		msg := strings.TrimSpace(stderrBuf.buf.String())
+		runErr = gstCameraPipelineError(path, enc.element, msg, waitErr, runErr)
+		if runErr != nil {
+			s.logger.Error("GStreamer pipeline failed", zap.String("device", path),
+				zap.String("encoder", enc.element), zap.String("stderr", msg), zap.Error(runErr))
 		}
 	}()
 

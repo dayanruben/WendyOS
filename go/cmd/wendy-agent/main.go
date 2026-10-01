@@ -180,7 +180,8 @@ func main() {
 		networkMgr = nm
 	}
 	hwDiscoverer := hardware.NewSystemHardwareDiscoverer(logger)
-	btManager := bluetooth.NewManager(logger)
+	linkWatcher := bluetooth.NewWatcher(logger)
+	btManager := bluetooth.NewManager(logger, bluetooth.WithLinkReporter(linkWatcher))
 
 	var proxyMgr *dbusproxy.Manager
 	if dbusproxy.IsAvailable() {
@@ -296,7 +297,7 @@ func main() {
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
 	agentUpdateSvc := services.NewAgentUpdateService(logger, installer)
 	agentUpdateSvc.PrimeExecPath()
-	osUpdateSvc := services.NewOSUpdateService(logger)
+	osUpdateSvc := services.NewOSUpdateService(logger, installer)
 	driverSvc := services.NewDriverService(logger)
 	// Before anything reads the store: devices updated from an older agent still
 	// have add-ons in the pre-keyed flat layout.
@@ -340,6 +341,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Keep the chunk store bounded (WDY-3212, WDY-3217). This retires the
+	// staging left by the previous run, so it must precede serving any RPC.
+	if ctrdErr == nil {
+		ctrdClient.StartChunkStoreMaintenance(ctx)
+	}
+
 	// The video service is constructed before the app socket managers because it
 	// owns the camera producer shared by capture, inference, and app loopback
 	// nodes, so it must exist before the capture adapters are registered.
@@ -358,7 +365,7 @@ func main() {
 	defer videoSvc.Shutdown()
 
 	notificationSender := services.NewCloudNotificationSender(logger, provisioningSvc)
-	stopInference := dataSvc.StartCampaignInference(ctx, &inference.ManagedFactory{Root: dataManager.InferenceDirectory()}, &services.CampaignWebhookSender{})
+	stopInference := dataSvc.StartCampaignInference(ctx, &inference.ManagedFactory{Root: dataManager.InferenceDirectory()}, &services.CampaignCloudSender{Cloud: notificationSender})
 	defer stopInference()
 	systemAPISocketManager := services.NewAppSystemAPISocketManager(ctx, logger, notificationSender)
 	appDataSocketManager := services.NewAppDataSocketManager(ctx, logger, dataManager)
@@ -417,6 +424,10 @@ func main() {
 		logger.Warn("loading sensor pairing store failed", zap.Error(err))
 	}
 	sensorTransportFor := func(p mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) {
+		if p.Transport == "wendycom" {
+			certPEM, chainPEM, keyPEM := mcuIdentity()
+			return mcusource.NewWendyComTransport(logger, certPEM, chainPEM, keyPEM, p, addr)
+		}
 		if p.Transport == "grpc" {
 			certPEM, chainPEM, keyPEM := mcuIdentity()
 			return mcusource.NewGRPCTransport(logger, certPEM, chainPEM, keyPEM, p, addr)
@@ -1048,6 +1059,11 @@ func main() {
 	// away never pages us. Runs once per boot and waits on the user audio
 	// session, so it neither delays startup nor repeats on agent restarts.
 	go btManager.ReconnectTrusted(ctx)
+
+	// Keep BLE HID links (gamepads) at a short supervision timeout, so a dead
+	// link is torn down in about 0.5 s instead of the ~3 s such devices ask
+	// for, and log every Bluetooth disconnect with its reason (WDY-3189).
+	go linkWatcher.Run(ctx)
 
 	otelPort := defaultOTELPort
 	if p := os.Getenv("WENDY_OTEL_PORT"); p != "" {
