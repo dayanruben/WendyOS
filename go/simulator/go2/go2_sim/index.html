@@ -7,7 +7,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 </style>
 <main><header><div><small>WENDY / SIMULATOR</small><h1>Unitree Go2</h1></div><span class="badge" id="mode">Starting</span></header>
 <div class="viewport"><canvas id="view" aria-label="Interactive 3D Go2 sandbox. Drag to orbit, shift-drag or right-drag to pan, scroll to zoom." aria-describedby="view-help"></canvas><img id="camera-view" alt="Go2 front sensor camera" hidden><span id="view-status" role="status">Loading 3D scene…</span></div>
-<div class="controls"><button id="observer" aria-pressed="true">3D sandbox</button><button id="camera" aria-pressed="false">Robot camera</button><button id="follow-robot" aria-pressed="true">Follow robot</button><button id="show-lidar" aria-pressed="true">Show lidar</button><button id="reset-view">Reset view</button></div>
+<div class="controls"><button id="observer" aria-pressed="true">3D sandbox</button><button id="camera" aria-pressed="false">Robot camera</button><button id="follow-robot" aria-pressed="true">Follow robot</button><button id="show-lidar" aria-pressed="true">Show lidar</button><button id="reset-view">Reset view</button><button id="retry-viewer" hidden>Retry 3D viewer</button></div>
 <p id="view-help">Drag to orbit · Shift-drag or right-drag to pan · Scroll to zoom · Touch: one finger to orbit, two fingers to pan or pinch to zoom.</p>
 <div class="controls"><button id="arm" aria-pressed="false">Enable controls</button><button id="release">Release controls</button><button id="stop">Stop</button><button id="pause">Pause</button><button id="resume">Resume</button><button id="reset">Reset world</button></div>
 <p class="hint">Hold <kbd>W</kbd><kbd>S</kbd> to walk, <kbd>A</kbd><kbd>D</kbd> to strafe, <kbd>Q</kbd><kbd>E</kbd> to turn. <kbd>Space</kbd> stops. Reset and pause require enabling controls again.</p>
@@ -89,11 +89,93 @@ function editing(target){return target instanceof Element&&!!target.closest('inp
 setInterval(async()=>{if(!token||busy)return;busy=true;try{let v=keys.has(' ')?[0,0,0]:[.35*(+keys.has('w')-keys.has('s')),.25*(+keys.has('a')-keys.has('d')),.6*(+keys.has('q')-keys.has('e'))];await post('command',{token,velocity:v})}catch(e){token=null;setArm(false);keys.clear();error.textContent=e.message}finally{busy=false}},50);
 async function status(){try{const s=await(await fetch('/api/status')).json();document.querySelector('#mode').textContent=s.mode+(s.armed?' · controls enabled':'');if(!s.armed&&token){token=null;setArm(false)}const m=s.metrics;document.querySelector('#metrics').textContent=`${m.real_time_factor.toFixed(2)}× real time · ${(m.camera_frames/Math.max(m.wall_seconds,0.001)).toFixed(1)} sensor camera fps · policy p95 ${(m.policy_p95_ms||0).toFixed(2)} ms`;if(s.ros_commands)sources(s.ros_commands);sensors(s.sensor_settings);if(s.error)error.textContent=s.error}catch(e){error.textContent='Connecting to simulator…'}setTimeout(status,500)}status();
 const canvas=document.querySelector('#view'),img=document.querySelector('#camera-view'),viewStatus=document.querySelector('#view-status');
-let viewer=null,viewerFailure=null,robotView=false,cameraTimer=null,cameraController=null,cameraGeneration=0,cameraObjectURL=null;
-async function startViewer(attempt=0){try{const{SandboxViewer}=await import('/viewer.js');viewer=new SandboxViewer(canvas,viewStatus);viewer.setActive(!robotView);viewer.setFollowRobot(document.querySelector('#follow-robot').getAttribute('aria-pressed')==='true');viewer.setLidarEnabled(document.querySelector('#show-lidar').getAttribute('aria-pressed')==='true')}catch(e){const noWebGL=!document.createElement('canvas').getContext('webgl2');if(!noWebGL&&attempt<4){if(!robotView)viewStatus.textContent='Loading 3D viewer…';setTimeout(()=>startViewer(attempt+1),300*(attempt+1));return}viewerFailure=noWebGL?'3D viewer unavailable. Enable WebGL 2 and reload this page.':'3D viewer failed to load. Reload this page.';if(!robotView)viewStatus.textContent=viewerFailure;viewStatus.title=e.message}}startViewer();
-function stopCamera(){clearTimeout(cameraTimer);cameraGeneration++;cameraController?.abort();cameraController=null;img.removeAttribute('src');if(cameraObjectURL){URL.revokeObjectURL(cameraObjectURL);cameraObjectURL=null}}
-async function frame(){if(!robotView||document.hidden||cameraController)return;const generation=cameraGeneration,controller=new AbortController();cameraController=controller;const timeout=setTimeout(()=>controller.abort(),5000);let delay=66;try{const response=await fetch('/camera.jpg',{cache:'no-store',signal:controller.signal});if(!response.ok){const result=await response.json();throw Error(result.error||'Camera unavailable')}const blob=await response.blob();if(generation!==cameraGeneration)return;const url=URL.createObjectURL(blob);if(cameraObjectURL)URL.revokeObjectURL(cameraObjectURL);cameraObjectURL=url;img.src=url;await img.decode();if(robotView&&generation===cameraGeneration)viewStatus.textContent='Robot sensor camera'}catch(e){delay=500;if(robotView&&generation===cameraGeneration)viewStatus.textContent=e.name==='AbortError'?'Camera connection timed out · retrying…':e.message}finally{clearTimeout(timeout);if(cameraController===controller)cameraController=null;if(robotView&&!document.hidden&&generation===cameraGeneration)cameraTimer=setTimeout(frame,delay)}}
-function chooseView(robot){robotView=robot;canvas.hidden=robot;img.hidden=!robot;stopCamera();for(const id of ['reset-view','follow-robot','show-lidar'])document.querySelector('#'+id).hidden=robot;document.querySelector('#view-help').textContent=robot?'Live image from the robot’s front sensor camera. Switch to 3D sandbox to move the viewpoint.':'Drag to orbit · Shift-drag or right-drag to pan · Scroll to zoom · Touch: one finger to orbit, two fingers to pan or pinch to zoom.';document.querySelector('#observer').setAttribute('aria-pressed',String(!robot));document.querySelector('#camera').setAttribute('aria-pressed',String(robot));if(robot){viewStatus.textContent='Connecting to robot camera…';frame()}else{viewStatus.textContent=viewerFailure||'Connecting to 3D scene…'}viewer?.setActive(!robot)}
+let viewer=null,viewerFailure=null,robotView=false,cameraTimer=null,cameraController=null,cameraGeneration=0,cameraObjectURL=null,cameraFailureSince=null;
+async function startViewer() {
+  let stage = 'files';
+  try {
+    // QEMU's host forward can queue only one pending TCP connection. Load
+    // dependencies in order so the module loader reuses them without a burst.
+    for (const path of ['/vendor/three.core.js', '/vendor/three.module.js', '/vendor/OrbitControls.js', '/lidar-view.js']) await import(path);
+    const {SandboxViewer} = await import('/viewer.js');
+    stage = 'graphics';
+    viewer = new SandboxViewer(canvas, viewStatus);
+    viewer.setActive(!robotView);
+    viewer.setFollowRobot(document.querySelector('#follow-robot').getAttribute('aria-pressed')==='true');
+    viewer.setLidarEnabled(document.querySelector('#show-lidar').getAttribute('aria-pressed')==='true');
+  } catch (e) {
+    viewerFailure = stage === 'graphics'
+      ? '3D graphics could not start. Retry the viewer or use Robot camera.'
+      : '3D viewer files could not load. Retry the viewer.';
+    if (!robotView) viewStatus.textContent = viewerFailure;
+    viewStatus.title = e.message;
+    document.querySelector('#retry-viewer').hidden = robotView;
+  }
+}
+canvas.addEventListener('webglcontextlost', () => {
+  viewerFailure = '3D graphics interrupted. Retry the viewer if it does not recover.';
+  document.querySelector('#retry-viewer').hidden = robotView;
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  viewerFailure = null;
+  document.querySelector('#retry-viewer').hidden = true;
+});
+// Reload clears failed imports cached by the browser's module loader.
+document.querySelector('#retry-viewer').onclick = () => location.reload();
+startViewer();
+function stopCamera() {
+  clearTimeout(cameraTimer);
+  cameraGeneration++;
+  cameraFailureSince = null;
+  cameraController?.abort();
+  cameraController = null;
+  img.removeAttribute('src');
+  if (cameraObjectURL) URL.revokeObjectURL(cameraObjectURL);
+  cameraObjectURL = null;
+}
+async function frame() {
+  if (!robotView || document.hidden || cameraController) return;
+  const generation = cameraGeneration, controller = new AbortController();
+  cameraController = controller;
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  let delay = 66, nextURL;
+  try {
+    const response = await fetch('/camera.jpg', {cache: 'no-store', signal: controller.signal});
+    if (!response.ok) {
+      const result = await response.json();
+      throw Error(result.error || `Camera unavailable (${response.status})`);
+    }
+    const blob = await response.blob();
+    if (generation !== cameraGeneration) return;
+    // Decode offscreen so a failed or incomplete JPEG never replaces the last
+    // good frame. Keep at most one fetch and one decoded frame in progress.
+    nextURL = URL.createObjectURL(blob);
+    const next = new Image();
+    next.src = nextURL;
+    await next.decode();
+    if (generation !== cameraGeneration) return;
+    img.src = nextURL;
+    if (cameraObjectURL) URL.revokeObjectURL(cameraObjectURL);
+    cameraObjectURL = nextURL;
+    nextURL = null;
+    cameraFailureSince = null;
+    viewStatus.textContent = 'Robot sensor camera';
+  } catch (e) {
+    delay = 500;
+    if (robotView && generation === cameraGeneration) {
+      cameraFailureSince ??= Date.now();
+      if (!cameraObjectURL || Date.now() - cameraFailureSince >= 1000) viewStatus.textContent = e.name === 'AbortError'
+        ? 'Camera connection timed out · retrying…'
+        : `${e.message} · retrying…`;
+    }
+  } finally {
+    if (nextURL) URL.revokeObjectURL(nextURL);
+    clearTimeout(timeout);
+    if (cameraController === controller) cameraController = null;
+    if (robotView && !document.hidden && generation === cameraGeneration)
+      cameraTimer = setTimeout(frame, delay);
+  }
+}
+function chooseView(robot){document.querySelector('#retry-viewer').hidden=robot||!viewerFailure;robotView=robot;canvas.hidden=robot;img.hidden=!robot;stopCamera();for(const id of ['reset-view','follow-robot','show-lidar'])document.querySelector('#'+id).hidden=robot;document.querySelector('#view-help').textContent=robot?'Live image from the robot’s front sensor camera. Switch to 3D sandbox to move the viewpoint.':'Drag to orbit · Shift-drag or right-drag to pan · Scroll to zoom · Touch: one finger to orbit, two fingers to pan or pinch to zoom.';document.querySelector('#observer').setAttribute('aria-pressed',String(!robot));document.querySelector('#camera').setAttribute('aria-pressed',String(robot));if(robot){viewStatus.textContent='Connecting to robot camera…';frame()}else{viewStatus.textContent=viewerFailure||'Connecting to 3D scene…'}viewer?.setActive(!robot)}
 for(const [id,method] of [['follow-robot','setFollowRobot'],['show-lidar','setLidarEnabled']])document.querySelector('#'+id).onclick=e=>{const enabled=e.currentTarget.getAttribute('aria-pressed')!=='true';e.currentTarget.setAttribute('aria-pressed',String(enabled));viewer?.[method](enabled)};
 document.querySelector('#observer').onclick=()=>chooseView(false);document.querySelector('#camera').onclick=()=>chooseView(true);document.querySelector('#reset-view').onclick=()=>viewer?.resetView();document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera();else if(robotView)frame()});
 </script></html>

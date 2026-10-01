@@ -47,7 +47,16 @@ export class SandboxViewer {
     this.camera = new THREE.PerspectiveCamera(48, 16 / 9, 0.015, 100);
     this.camera.up.set(0, 0, 1);
     this.camera.layers.enable(1);
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    // Retry without multisampling if the browser cannot allocate it. Use the
+    // actual canvas, rather than allocating a second context as a support probe.
+    const context = canvas.getContext('webgl2', { antialias: true }) ||
+      canvas.getContext('webgl2', { antialias: false });
+    if (!context) {
+      const error = Error('The browser could not create a WebGL 2 graphics context.');
+      error.name = 'WebGLUnavailableError';
+      throw error;
+    }
+    this.renderer = new THREE.WebGLRenderer({ canvas, context });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
@@ -97,11 +106,23 @@ export class SandboxViewer {
       this.needsRender = true;
     });
     this.resize.observe(canvas);
-    this.contextLostListener = () => {
+    this.contextLostListener = event => {
+      event.preventDefault();
       this.contextLost = true;
-      this.message('3D graphics interrupted. Reload this page to restore the view.');
+      this.samples = [];
+      this.message('3D graphics interrupted · waiting for recovery…');
+    };
+    this.contextRestoredListener = () => {
+      this.contextLost = false;
+      this.samples = [];
+      this.replayTime = this.playbackTarget = this.lastDrawTime = undefined;
+      this.replayDebt = 0;
+      this.needsRender = true;
+      this.renderer.shadowMap.needsUpdate = true;
+      this.message('Reconnecting to 3D scene…');
     };
     canvas.addEventListener('webglcontextlost', this.contextLostListener);
+    canvas.addEventListener('webglcontextrestored', this.contextRestoredListener);
     this.renderer.setAnimationLoop(now => this.draw(now));
     this.poll();
   }
@@ -235,6 +256,7 @@ export class SandboxViewer {
   }
 
   acceptState(state, received = performance.now()) {
+    if (this.contextLost) return;
     const count = this.bodies.length;
     if (state.positions.length !== count * 3 || state.quaternions.length !== count * 4 ||
         !Number.isFinite(state.time) || !state.positions.every(Number.isFinite) || !state.quaternions.every(Number.isFinite)) {
@@ -308,7 +330,7 @@ export class SandboxViewer {
           if (!this.active || document.hidden) return;
         }
         const state = await this.json('/api/scene/state');
-        if (this.disposed || !this.active || document.hidden) return;
+        if (this.disposed || !this.active || document.hidden || this.contextLost) return;
         if (this.replayHistory && Array.isArray(state.frames)) {
           this.acceptBatch(state);
         } else if (state.scene_id !== this.sceneId) {
@@ -323,7 +345,7 @@ export class SandboxViewer {
       }
     } catch (error) {
       if (this.disposed) return;
-      this.message('Connection interrupted · retrying…');
+      if (!this.contextLost) this.message('Connection interrupted · retrying…');
       if (this.active) this.status.title = error.message;
       delay = 1000;
     } finally {
@@ -415,6 +437,7 @@ export class SandboxViewer {
     this.renderer.setAnimationLoop(null);
     this.resize.disconnect();
     this.canvas.removeEventListener('webglcontextlost', this.contextLostListener);
+    this.canvas.removeEventListener('webglcontextrestored', this.contextRestoredListener);
     this.controls.dispose();
     this.lidar.dispose();
     const geometries = new Set(), materials = new Set();
