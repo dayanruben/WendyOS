@@ -113,7 +113,7 @@ func TestGatewayDataHelpersAreAppCallableWithoutRenderingViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wanted := map[string]bool{"list_robots": false, "inspect_robot": false, "read_device_settings": false, "read_device_logs": false, "read_device_metrics": false, "get_device_model": false, "start_camera_preview": false}
+	wanted := map[string]bool{"list_robots": false, "inspect_robot": false, "read_device_settings": false, "read_device_logs": false, "read_device_metrics": false, "start_camera_preview": false}
 	for _, tool := range catalog.Tools {
 		if _, ok := wanted[tool.Name]; !ok {
 			continue

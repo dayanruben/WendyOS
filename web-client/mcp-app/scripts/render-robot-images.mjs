@@ -1,6 +1,6 @@
-// Reproducible static renders of the repository's G1 MJCF/STL and Go2 GLB.
+// Reproducible static renders of G1 MJCF/STL and an externally supplied Go2 GLB.
 // Run from any directory after `npm --prefix web-client/mcp-app ci`:
-//   node web-client/mcp-app/scripts/render-robot-images.mjs
+//   GO2_GLB=/path/to/go2.web.glb node web-client/mcp-app/scripts/render-robot-images.mjs
 // CHROME_BIN can select a Chromium/Chrome executable on other platforms.
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
@@ -14,6 +14,9 @@ const app = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repo = resolve(app, "../..");
 const g1 = join(repo, "Examples/G1FruitNinjaMujoco/models/unitree_g1");
 const output = join(app, "src/assets/devices");
+const go2 = process.env.GO2_GLB;
+if (!go2) throw new Error("Set GO2_GLB to the external Wendy marketing Go2 display model");
+await access(go2);
 const chrome = process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 await access(chrome);
 await mkdir(output, { recursive: true });
@@ -50,7 +53,7 @@ const server = createServer(async (request, response) => {
     } else if (/^\/models\/g1\/meshes\/[a-zA-Z0-9_-]+\.STL$/.test(path)) {
       response.end(await readFile(join(g1, "meshes", path.split("/").at(-1))));
     } else if (path === "/models/go2.glb") {
-      response.end(await readFile(join(repo, "go/internal/cli/mcp/desktop_assets/go2.glb")));
+      response.end(await readFile(go2));
     } else {
       response.writeHead(404).end();
     }

@@ -37,7 +37,7 @@ giving the conversation unrestricted shell, installation, or network access.
 ## Desktop implementation approved on 2026-09-30
 
 The desktop workspace expands this pilot with a fleet sidebar entrypoint, a
-device thread entrypoint, existing Wendy 3D assets, device mentions, settings,
+device thread entrypoint, static Wendy device illustrations, device mentions, settings,
 and explicit camera and event actions. The user also approved installation,
 development, deployment, and fleet workflows described in
 `specs/2026-09-30-openai-mcp-desktop-plan.md`.

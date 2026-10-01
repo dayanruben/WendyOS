@@ -27,8 +27,8 @@ Device cards use bundled static images from Wendy's existing marketing assets.
 `src/assets/devices/manifest.json` records source paths and hashes. Robot images
 are still renders of the existing robot meshes. Unknown hardware uses a generic
 illustration; simulators carry a VM badge. These images are separate from the
-simulator's live MuJoCo scene. The old `get_device_model` tool remains available
-for compatibility. The fleet downloads no GLB files and creates no WebGL canvas.
+simulator's live MuJoCo scene. The fleet downloads no GLB files and creates no
+WebGL canvas. Display-model GLBs are not stored in this repository.
 Geist's license is in `src/assets/Geist-LICENSE.txt`; logos come from Wendy's brand
 assets.
 

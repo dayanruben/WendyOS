@@ -267,7 +267,7 @@ func (g *RobotGateway) toolScope(name string) string {
 		return RobotProjectWriteScope
 	case "start_device_deployment", "get_deployment_job", "cancel_deployment_job":
 		return RobotDeployScope
-	case "identify_device", "list_robots", "open_robot", "inspect_robot", "open_devices", "search_devices", "get_device_model", "read_device_metrics", "read_device_logs", "read_device_settings":
+	case "identify_device", "list_robots", "open_robot", "inspect_robot", "open_devices", "search_devices", "read_device_metrics", "read_device_logs", "read_device_settings":
 		return RobotReadScope
 	case "list_device_events", "wait_for_device_event", "list_device_triggers", "inspect_yolo_detector", "read_device_notifications":
 		return RobotEventsScope

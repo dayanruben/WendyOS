@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"crypto/sha256"
-	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -18,11 +17,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 )
 
-//go:embed desktop_assets/*.glb
-var gatewayAssets embed.FS
 var gatewayModels = map[string]bool{"thor": true, "go2": true, "orin": true, "dragonwing": true, "dgx": true, "macbook": true, "generic": true}
 var gatewaySettingsMu sync.Mutex
-var desktopToolNames = []string{"identify_device", "open_devices", "search_devices", "get_device_model", "read_device_settings", "update_device_settings", "read_device_metrics", "read_device_logs", "list_device_triggers", "configure_device_trigger", "list_device_events", "wait_for_device_event", "read_device_notifications", "deploy_yolo_detector", "inspect_yolo_detector", "stop_yolo_detector"}
+var desktopToolNames = []string{"identify_device", "open_devices", "search_devices", "read_device_settings", "update_device_settings", "read_device_metrics", "read_device_logs", "list_device_triggers", "configure_device_trigger", "list_device_events", "wait_for_device_event", "read_device_notifications", "deploy_yolo_detector", "inspect_yolo_detector", "stop_yolo_detector"}
 
 func gatewayModel(r GatewayRobot, deviceType string) string {
 	if r.Model != "" {
@@ -57,24 +54,6 @@ func (g *RobotGateway) registerDesktopTools() {
 	t.Icons = []mcpgo.Icon{{Src: "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="2" width="6" height="6" rx="1.5"/><rect x="2" y="12" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/></svg>`)), MIMEType: "image/svg+xml"}}
 	g.protocol.AddTool(t, g.listRobots)
 	g.registerDeviceMentions()
-	model := gatewayTool("get_device_model", "Load an embedded display model. Models are illustrations and do not establish device hardware capabilities.", readOnly(), mcpgo.WithString("model", mcpgo.Required(), mcpgo.Enum("go2", "orin", "dragonwing", "dgx", "macbook", "thor")))
-	model.Meta = mcpgo.NewMetaFromMap(map[string]any{"ui": map[string]any{"visibility": []string{"app"}}})
-	g.protocol.AddTool(model, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-		if !g.hasScope(ctx, RobotReadScope) {
-			return mcpgo.NewToolResultError("Unauthorized"), nil
-		}
-		id := req.GetString("model", "")
-		if !gatewayModels[id] || id == "generic" {
-			return mcpgo.NewToolResultError("Unknown model"), nil
-		}
-		b, err := gatewayAssets.ReadFile("desktop_assets/" + id + ".glb")
-		if err != nil {
-			return nil, err
-		}
-		res := okResult(map[string]any{"model": id})
-		res.Meta = mcpgo.NewMetaFromMap(map[string]any{"glb": base64.StdEncoding.EncodeToString(b)})
-		return res, nil
-	})
 	for _, kind := range []string{"metrics", "logs"} {
 		g.protocol.AddTool(gatewayTool("read_device_"+kind, "Read a bounded current device telemetry sample.", readOnly(), robotArgument()), g.withRobot(RobotReadScope, func(ctx context.Context, r *GatewayRobot, s *mcpServer, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 			q := mcpgo.CallToolRequest{}
