@@ -48,7 +48,7 @@ func pushLayersWithProgress(ctx context.Context, cs agentpb.WendyContainerServic
 		}()
 	}
 
-	if !buildProgressInteractive() {
+	if !buildProgressInteractive() || detachedJSONRun(ctx) {
 		out := buildProgressOut
 		if detachedJSONRun(ctx) {
 			out = os.Stderr
