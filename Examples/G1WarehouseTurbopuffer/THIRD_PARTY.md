@@ -47,5 +47,5 @@ contains an unverified copy.
 ## Python packages
 
 `requirements.txt` pins MuJoCo (Apache-2.0), NumPy (BSD-3-Clause), ONNX Runtime
-(MIT), PyYAML (MIT) and the Turbopuffer Python client (MIT). pip installs
+(MIT), PyYAML (MIT) and the turbopuffer Python client (MIT). pip installs
 them from PyPI when the image is built.

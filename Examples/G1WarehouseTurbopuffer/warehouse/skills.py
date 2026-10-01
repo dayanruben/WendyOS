@@ -1,7 +1,7 @@
 """Walking, picking and placing, written as generators that yield once per physics step.
 
 The simulation loop advances a skill one step at a time, so the robot keeps
-running in real time while it walks, reaches, or waits for Turbopuffer.
+running in real time while it walks, reaches, or waits for turbopuffer.
 """
 
 from __future__ import annotations

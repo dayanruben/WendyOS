@@ -1,8 +1,8 @@
 """What is in the warehouse: zones, items already on the shelves, and the inbound boxes.
 
-The robot never sees a zone for an inbound box. It asks Turbopuffer which stored
+The robot never sees a zone for an inbound box. It asks turbopuffer which stored
 items and zone descriptions are most similar to the box's label, and shelves the
-box in that zone. Item and zone text is embedded by Turbopuffer.
+box in that zone. Item and zone text is embedded by turbopuffer.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ ZONES = (
          3.0, 0.0, 0.0),
 )
 
-# One item already stored in bay 1 of each rack's work shelf. It is written to Turbopuffer at
+# One item already stored in bay 1 of each rack's work shelf. It is written to turbopuffer at
 # start-up, with the stock below, so the memory starts with examples of what each zone holds.
 SHELVED = {
     "power": Item("9v", "9V batteries, 10 pack", (0.20, 0.26, 0.18), 1.0, "#c9a36b"),

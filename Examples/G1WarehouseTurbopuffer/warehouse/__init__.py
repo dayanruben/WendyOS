@@ -1,1 +1,1 @@
-"""A Unitree G1 organises a warehouse with Turbopuffer as its memory."""
+"""A Unitree G1 organises a warehouse with turbopuffer as its memory."""

@@ -1,8 +1,8 @@
-# Warehouse G1 with Turbopuffer memory: MuJoCo with Wendy
+# Warehouse G1 with turbopuffer memory: MuJoCo with Wendy
 
 A Unitree G1 walks a small warehouse, lifts boxes off an inbound cart and
 shelves each one where similar things already live. The robot is never told
-which zone a box belongs in. It asks [Turbopuffer](https://turbopuffer.com),
+which zone a box belongs in. It asks [turbopuffer](https://turbopuffer.com),
 which stores every shelved item and each zone's description as text and embeds
 it natively. When the cart is empty, someone asks for "a cable for my second
 monitor": the robot looks up the best match, a DisplayPort cable that was on the
@@ -15,7 +15,7 @@ three.js viewer in your browser.
 
 ## Run it with Wendy
 
-Create an API key in the Turbopuffer dashboard and export it in the shell you
+Create an API key in the turbopuffer dashboard and export it in the shell you
 deploy from. Set the region too if your organization is not in
 `gcp-us-central1`:
 
@@ -42,15 +42,15 @@ the key is never stored in the image or in this repository. Without a key the
 app still runs, using a keyword stand-in that matches words instead of meaning.
 The viewer says which one is answering.
 
-## What Turbopuffer does here
+## What turbopuffer does here
 
 The robot's memory is one namespace (`wendy-g1-warehouse` by default). Each
 loop starts by clearing it and writing twelve rows: the description of each
 zone, and the three items already on each rack (one on the work shelf, two on
 the top shelf). Every row's `label` is plain text that
-Turbopuffer embeds itself (`TURBOPUFFER_EMBED_MODEL`, default
+turbopuffer embeds itself (`TURBOPUFFER_EMBED_MODEL`, default
 `nvidia/nemotron-3-embed-8b`), so the app never runs an embedding model. Not
-every model runs in every region; check Turbopuffer's model list if you change
+every model runs in every region; check turbopuffer's model list if you change
 either.
 
 For each box it picks up, the robot sends the box's label as a vector query
@@ -122,7 +122,7 @@ pytest -q
 ```
 
 `G1_WAREHOUSE_SPEED=2` fast-forwards the show while you tweak the viewer. The
-Turbopuffer test runs only when `TURBOPUFFER_API_KEY` is set, and it uses a
+turbopuffer test runs only when `TURBOPUFFER_API_KEY` is set, and it uses a
 temporary namespace that it deletes afterwards.
 
 ## Change the show

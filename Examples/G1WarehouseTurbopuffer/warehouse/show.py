@@ -1,4 +1,4 @@
-"""What the robot does, in order: shelve each inbound box where Turbopuffer says similar
+"""What the robot does, in order: shelve each inbound box where turbopuffer says similar
 things live, then answer a question by fetching the best match back to the cart."""
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def _ask(sim: "Simulation", name: str, *args, attempts: int = 3) -> Iterator[Non
             if attempt == attempts - 1:
                 raise
             title, detail = sim.activity
-            sim.say("Retrying Turbopuffer", f"{type(error).__name__}: {error}"[:120])
+            sim.say("Retrying turbopuffer", f"{type(error).__name__}: {error}"[:120])
             yield from sim.skills.wait(1.0 + attempt)
             sim.say(title, detail)
 
@@ -48,7 +48,7 @@ def run(sim: "Simulation") -> Iterator[None]:
                 yield from _ask(sim, "reset")
                 break
             except Exception as error:   # unreachable for now: wait, then try again
-                sim.say("Waiting for Turbopuffer", f"{type(error).__name__}: {error}"[:120])
+                sim.say("Waiting for turbopuffer", f"{type(error).__name__}: {error}"[:120])
                 yield from skills.wait(5.0)
         occupied = {z.key: {0} for z in ZONES}
 
@@ -58,7 +58,7 @@ def run(sim: "Simulation") -> Iterator[None]:
             sim.say("Picking up", item.label)
             yield from skills.pick(name, cart_slot(index))
             sim.target = None
-            sim.say("Asking Turbopuffer", f"Where do things like “{item.label}” go?")
+            sim.say("Asking turbopuffer", f"Where do things like “{item.label}” go?")
             try:
                 answer = yield from _ask(sim, "where_does", item.label)
                 zone_key = answer.best.zone

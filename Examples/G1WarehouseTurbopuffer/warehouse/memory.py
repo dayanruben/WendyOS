@@ -1,7 +1,7 @@
-"""The robot's shelf memory, stored in Turbopuffer.
+"""The robot's shelf memory, stored in turbopuffer.
 
 Every stored item and every zone description is a row whose `label` text
-Turbopuffer embeds itself (native embeddings), so the robot sends plain text and
+turbopuffer embeds itself (native embeddings), so the robot sends plain text and
 asks plain questions. Two questions matter:
 
 - where_does(label): which stored item or zone is most like this new box?
@@ -70,7 +70,7 @@ def _seed_rows() -> list[dict]:
 
 
 class TurbopufferMemory:
-    backend = "Turbopuffer"
+    backend = "turbopuffer"
 
     def __init__(self, api_key: str):
         import turbopuffer  # imported here so the stand-in works without the package
@@ -80,7 +80,7 @@ class TurbopufferMemory:
         self.detail = f"{REGION} · {NAMESPACE} · {EMBED_MODEL}"
 
     def describe(self) -> list[str]:
-        return ["Memory: Turbopuffer", f"Namespace: {NAMESPACE} ({REGION})", f"Embedding model: {EMBED_MODEL}"]
+        return ["Memory: turbopuffer", f"Namespace: {NAMESPACE} ({REGION})", f"Embedding model: {EMBED_MODEL}"]
 
     def reset(self) -> Answer:
         started = time.perf_counter()
@@ -138,13 +138,13 @@ class TurbopufferMemory:
 
 
 class KeywordMemory:
-    """Offline stand-in: word overlap instead of embeddings. Not Turbopuffer."""
+    """Offline stand-in: word overlap instead of embeddings. Not turbopuffer."""
 
     backend = "Keyword stand-in"
-    detail = "Set TURBOPUFFER_API_KEY to use Turbopuffer"
+    detail = "Set TURBOPUFFER_API_KEY to use turbopuffer"
 
     def describe(self) -> list[str]:
-        return ["Memory: keyword stand-in (set TURBOPUFFER_API_KEY to use Turbopuffer)"]
+        return ["Memory: keyword stand-in (set TURBOPUFFER_API_KEY to use turbopuffer)"]
     SYNONYMS = {"charge": "charger", "charging": "charger", "power": "charger", "battery": "batteries",
                 "screws": "screw", "screwdriver": "screwdrivers", "adapter": "adapters", "cable": "cables"}
 

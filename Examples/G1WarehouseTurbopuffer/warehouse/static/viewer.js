@@ -4,13 +4,13 @@ import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // MuJoCo is the authority. The browser draws the bodies it streams (the G1's links and
 // the boxes), the racks and cart from the scene description, and what the robot's
-// Turbopuffer memory just answered. Nothing here feeds back into the physics.
+// turbopuffer memory just answered. Nothing here feeds back into the physics.
 
 const params = new URLSearchParams(location.search);
 const DELAY = 0.08; // seconds of buffering behind the newest state
 const FONT = 'Geist, Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 const CREAM = '#f1eee7';
-const MATCH_STATES = new Set(['Asking Turbopuffer', 'Shelving', 'Question', 'Fetching']);
+const MATCH_STATES = new Set(['Asking turbopuffer', 'Shelving', 'Question', 'Fetching']);
 
 const smoothstep = (a, b, x) => { const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); };
 const text = (selector, value) => { const el = document.querySelector(selector); if (el.textContent !== value) el.textContent = value; };
@@ -476,7 +476,7 @@ export class WarehouseViewer {
     }
     const target = state.target;
     const marker = this.targetMarker;
-    marker.visible = !!target && state.activity.title !== 'Asking Turbopuffer';
+    marker.visible = !!target && state.activity.title !== 'Asking turbopuffer';
     if (marker.visible) {
       const slot = this.slots[target.zone][target.bay];
       marker.position.set(slot[0], slot[1], slot[2] + 0.13);
@@ -511,7 +511,7 @@ export class WarehouseViewer {
     text('#task-title', state.activity.title);
     text('#task-detail', state.activity.detail);
     const memory = state.memory;
-    const stand = memory.backend !== 'Turbopuffer';
+    const stand = memory.backend !== 'turbopuffer';
     text('#memory-backend', memory.backend);
     text('#memory-detail', memory.detail);
     const last = memory.last;
