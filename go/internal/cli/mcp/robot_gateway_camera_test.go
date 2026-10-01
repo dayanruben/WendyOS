@@ -85,6 +85,27 @@ func TestGatewayCameraPreviewOwnershipAndUIOnlyFrames(t *testing.T) {
 	if p.lastRead.IsZero() {
 		t.Fatal("lease not renewed")
 	}
+	p.mu.Lock()
+	p.lastRead = time.Now().Add(-time.Second)
+	p.mu.Unlock()
+	unchangedReq := callToolReq("read_camera_preview", map[string]any{"robot_id": "alpha", "preview_id": "test", "after_sequence": 1})
+	unchanged, _ := g.readCameraPreview(ctx, unchangedReq)
+	if unchanged.IsError || unchanged.Meta != nil || time.Since(p.lastRead) > time.Second/2 {
+		t.Fatal("unchanged frame must omit image bytes and renew the lease")
+	}
+	p.publish(cameraSnapshot{jpeg: []byte("new image bytes"), width: 16, height: 12})
+	newer, _ := g.readCameraPreview(ctx, unchangedReq)
+	if newer.IsError || newer.Meta == nil {
+		t.Fatal("newer frame was omitted")
+	}
+	denied, _ = g.readCameraPreview(other, unchangedReq)
+	if !denied.IsError {
+		t.Fatal("sequence hint bypassed ownership")
+	}
+	invalid, _ := g.readCameraPreview(ctx, callToolReq("read_camera_preview", map[string]any{"robot_id": "alpha", "preview_id": "test", "after_sequence": -1}))
+	if !invalid.IsError {
+		t.Fatal("negative sequence was accepted")
+	}
 	stopped, _ := g.stopCameraPreview(ctx, req)
 	if stopped.IsError || closed.Err() == nil || len(g.previews) != 0 {
 		t.Fatal("stop did not release preview")

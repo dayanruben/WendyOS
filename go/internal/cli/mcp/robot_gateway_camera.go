@@ -46,6 +46,7 @@ func (g *RobotGateway) registerCameraPreviewTools() {
 			if name == "read_camera_preview" {
 				description = "Read the latest frame of your active camera preview. Renews the viewer lease. Image bytes are UI-only metadata."
 				behavior = readOnly()
+				opts = append(opts, mcpgo.WithInteger("after_sequence", mcpgo.Description("Last frame sequence received. Omits image bytes when no newer frame is available."), mcpgo.Min(0), mcpgo.Max(9007199254740991)))
 			}
 		}
 		t := gatewayTool(name, description, behavior, opts...)
@@ -167,11 +168,20 @@ func (g *RobotGateway) readCameraPreview(ctx context.Context, req mcpgo.CallTool
 	if err != nil {
 		return mcpgo.NewToolResultError(err.Error()), nil
 	}
+	previous := int64(-1)
+	if _, supplied := req.GetArguments()["after_sequence"]; supplied {
+		previous, err = snapshotInteger(req, "after_sequence", -1, 0, 9007199254740991)
+		if err != nil {
+			return mcpgo.NewToolResultError(err.Error()), nil
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lastRead = time.Now()
 	r := okResult(map[string]any{"sequence": p.sequence, "received_at": p.observed.Format(time.RFC3339Nano), "width": p.frame.width, "height": p.frame.height, "live": true})
-	r.Meta = mcpgo.NewMetaFromMap(map[string]any{"frame": map[string]any{"data": base64.StdEncoding.EncodeToString(p.frame.jpeg), "mimeType": "image/jpeg"}})
+	if previous < 0 || p.sequence > uint64(previous) {
+		r.Meta = mcpgo.NewMetaFromMap(map[string]any{"frame": map[string]any{"data": base64.StdEncoding.EncodeToString(p.frame.jpeg), "mimeType": "image/jpeg"}})
+	}
 	return r, nil
 }
 func (g *RobotGateway) stopCameraPreview(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

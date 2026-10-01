@@ -1,5 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { app, call, share, toolErrorMessage } from "./bridge";
+import { app, call, requestFullscreen, sceneBridge, share, toolErrorMessage } from "./bridge";
+import { SimulatorView } from "./simulator-view";
+import {
+  closeSceneSession,
+  sceneSession,
+  type SceneSession,
+} from "./simulator-session";
 
 export type Simulator = {
   name: string;
@@ -16,6 +22,8 @@ type Viewer = {
   ready: boolean;
   healthy: boolean;
   checkedAt: string;
+  session?: SceneSession;
+  sessionError?: string;
 };
 
 export type SimulatorsPanelProps = {
@@ -44,7 +52,9 @@ function profileLabel(profile?: string) {
     ? "Unitree Go2"
     : profile === "g1"
       ? "Unitree G1"
-      : "WendyOS";
+      : profile === "rosmaster-r2"
+        ? "ROSMaster R2"
+        : "WendyOS";
 }
 
 function stateLabel(state: string) {
@@ -59,15 +69,15 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
   const profileId = useId();
   const [simulators, setSimulators] = useState<Simulator[]>([]);
   const [name, setName] = useState("go2-sim");
-  const [profile, setProfile] = useState<"go2" | "g1" | "generic">("go2");
+  const [profile, setProfile] = useState<"go2" | "g1" | "rosmaster-r2" | "generic">("go2");
   const [busy, setBusy] = useState("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [mustRefresh, setMustRefresh] = useState(false);
   const [viewer, setViewer] = useState<Viewer>();
-  const [embedded, setEmbedded] = useState(false);
-  const [embeddingError, setEmbeddingError] = useState(false);
+  const [viewerFocused, setViewerFocused] = useState(false);
+  const viewerElement = useRef<HTMLElement>(null);
   const epoch = useRef(0);
   const locked = useRef(false);
   const changed = useRef(onChanged);
@@ -146,8 +156,16 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
     });
   }
 
-  async function inspectViewer(simulatorName: string, current: number) {
-    const result = await call("simulator_viewer", { name: simulatorName });
+  async function inspectViewer(
+    simulatorName: string,
+    current: number,
+    embedded = false,
+    focus = false,
+  ) {
+    const result = await call("simulator_viewer", {
+      name: simulatorName,
+      embedded,
+    });
     const data = result.structuredContent;
     if (!data) throw Error("Wendy did not return a simulation viewer.");
     const next: Viewer = {
@@ -158,12 +176,16 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
       ready: data.ready === true,
       healthy: data.healthy === true,
       checkedAt: new Date().toLocaleTimeString(),
+      session: sceneSession(result._meta?.scene_session),
+      sessionError:
+        typeof result._meta?.scene_session_error === "string"
+          ? result._meta.scene_session_error
+          : undefined,
     };
     if (current === epoch.current) {
       setViewer(next);
-      setEmbedded(false);
-      setEmbeddingError(false);
-    }
+      if (focus) setViewerFocused(true);
+    } else closeSceneSession(next.session, sceneBridge);
     return next;
   }
 
@@ -202,12 +224,19 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
     setStatus(
       `${simulatorName} start finished. Check the reported state below.`,
     );
-    if (simulatorProfile === "go2" || simulatorProfile === "g1") {
+    if (simulatorProfile === "go2" || simulatorProfile === "g1" || simulatorProfile === "rosmaster-r2") {
       // Failure to open a viewer must not make an already completed start look failed.
       try {
-        const next = await inspectViewer(simulatorName, current);
+        const next = await inspectViewer(simulatorName, current, true);
         if (current !== epoch.current) return;
-        if (next.ready && next.healthy && next.url) await openBrowser(next);
+        if (next.session)
+          setStatus(
+            `${simulatorName} is ready. Connecting its live 3D view...`,
+          );
+        else if (next.ready && next.healthy && next.url)
+          setStatus(
+            `${simulatorName} is ready. Open the simulation in your browser.`,
+          );
         else
           setStatus(
             `${simulatorName} start finished. Its simulation viewer is not verified ready yet.`,
@@ -260,7 +289,6 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
         setViewer((previous) =>
           previous?.name === simulator.name ? undefined : previous,
         );
-        setEmbedded(false);
         await readList(current);
         if (current === epoch.current)
           setStatus(
@@ -276,7 +304,6 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
     locked.current = false;
     setBusy("");
     setViewer(undefined);
-    setEmbedded(false);
     setLoaded(false);
     setError("");
     if (enabled) void refresh();
@@ -285,6 +312,17 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
       locked.current = false;
     };
   }, [enabled]);
+
+  useEffect(() => () => closeSceneSession(viewer?.session, sceneBridge), [viewer?.session]);
+
+  useEffect(() => {
+    if (!viewerFocused || !viewer) return;
+    const frame = requestAnimationFrame(() => {
+      viewerElement.current?.focus({ preventScroll: true });
+      viewerElement.current?.scrollIntoView({ block: "start" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [viewerFocused, viewer?.name, viewer?.session]);
 
   if (!enabled)
     return (
@@ -308,7 +346,7 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
           </ol>
           <p>
             Once connected, you can create a WendyOS VM and launch a Unitree Go2
-            or G1 simulation on your laptop.
+            G1, or ROSMaster R2 simulation on your laptop.
           </p>
         </div>
       </section>
@@ -321,6 +359,7 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
   return (
     <section
       className="simulators-panel"
+      data-view-focused={viewerFocused && !!viewer ? "true" : undefined}
       aria-labelledby={titleId}
       aria-busy={!!busy}
     >
@@ -328,7 +367,7 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
         <div>
           <p className="eyebrow">ON YOUR LAPTOP</p>
           <h1 id={titleId}>Simulators</h1>
-          <p>Run WendyOS locally and open a real MuJoCo robot simulation.</p>
+          <p>Run WendyOS locally and open a live robot simulation.</p>
         </div>
         <button type="button" disabled={!!busy} onClick={() => void refresh()}>
           Refresh status
@@ -388,6 +427,7 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
             >
               <option value="go2">Unitree Go2 · MuJoCo</option>
               <option value="g1">Unitree G1 · MuJoCo</option>
+              <option value="rosmaster-r2">ROSMaster R2 · Ackermann</option>
               <option value="generic">WendyOS VM</option>
             </select>
           </label>
@@ -424,7 +464,7 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
           const running = state === "running";
           const stopped = state === "stopped";
           const robot =
-            simulator.profile === "go2" || simulator.profile === "g1";
+            simulator.profile === "go2" || simulator.profile === "g1" || simulator.profile === "rosmaster-r2";
           return (
             <li className="simulator-card" key={simulator.name}>
               <div className="simulator-card-heading">
@@ -452,45 +492,35 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
               </div>
               <code className="simulator-selector">{simulator.device}</code>
               <div className="simulator-card-controls">
-                <button
-                  type="button"
-                  disabled={
-                    !!busy || mustRefresh || (!stopped && !(running && robot))
-                  }
-                  title={
-                    running && robot
-                      ? "Connect to the robot runtime and finish any incomplete setup. An already healthy world is preserved."
-                      : !stopped
-                        ? "Start is available when the simulator is stopped."
-                        : undefined
-                  }
-                  onClick={() =>
-                    void perform(
-                      `Starting ${simulator.name}. The first launch can take several minutes...`,
-                      (current) =>
-                        startSimulator(
-                          simulator.name,
-                          simulator.profile,
-                          current,
-                        ),
-                      true,
-                    )
-                  }
-                >
-                  {running && robot ? "▷ Start simulation" : "▷ Start"}
-                </button>
-                <button
-                  type="button"
-                  disabled={!!busy || mustRefresh || !running}
-                  title={
-                    !running
-                      ? "Stop is available when the simulator is running."
-                      : undefined
-                  }
-                  onClick={() => stop(simulator)}
-                >
-                  □ Stop
-                </button>
+                {stopped && (
+                  <button
+                    type="button"
+                    disabled={!!busy || mustRefresh}
+                    onClick={() =>
+                      void perform(
+                        `Starting ${simulator.name}. The first launch can take several minutes...`,
+                        (current) =>
+                          startSimulator(
+                            simulator.name,
+                            simulator.profile,
+                            current,
+                          ),
+                        true,
+                      )
+                    }
+                  >
+                    ▷ Start
+                  </button>
+                )}
+                {running && (
+                  <button
+                    type="button"
+                    disabled={!!busy || mustRefresh}
+                    onClick={() => stop(simulator)}
+                  >
+                    □ Stop
+                  </button>
+                )}
                 {robot && (
                   <button
                     type="button"
@@ -524,27 +554,33 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
                   <button
                     type="button"
                     disabled={!!busy || !running}
-                    onClick={() =>
+                    onClick={() => {
+                      void requestFullscreen();
                       void perform(
                         "Checking simulation viewer...",
                         async (current) => {
                           const next = await inspectViewer(
                             simulator.name,
                             current,
+                            true,
+                            true,
                           );
                           if (current !== epoch.current) return;
                           if (next.ready && next.healthy && next.url) {
-                            await openBrowser(next);
-                            setStatus("Opened the verified simulation viewer.");
+                            setStatus(
+                              next.session
+                                ? "Connecting the live 3D simulation..."
+                                : "The simulation is ready. Open it in your browser.",
+                            );
                           } else
                             setStatus(
                               "The simulation viewer is not verified ready yet. Refresh status before trying again.",
                             );
                         },
-                      )
-                    }
+                      );
+                    }}
                   >
-                    View simulation ↗
+                    View simulation
                   </button>
                 )}
                 <button
@@ -555,7 +591,7 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
                       "Sending simulator context to ChatGPT...",
                       async () => {
                         await share(
-                          `Help me develop an application for local Wendy simulator ${simulator.name}, device selector ${simulator.device}, profile ${simulator.profile || "generic"}. Inspect its current state first and use this explicit simulator target for any deployment.`,
+                          `Help me develop an application for local Wendy simulator ${simulator.name}, device selector ${simulator.device}, profile ${simulator.profile || "generic"}. Use list_robots to resolve this simulator's robot_id and inspect its current state. Use list_workspaces to select an approved project for that robot_id, then the workspace file tools to write or edit code. Validate and deploy through start_device_deployment to this exact simulator, poll the job, and check the app state and logs.`,
                         );
                         setStatus("Simulator context sent to ChatGPT.");
                       },
@@ -572,6 +608,8 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
       {viewer && (
         <section
           className="simulator-viewer"
+          ref={viewerElement}
+          tabIndex={-1}
           aria-label={`Simulation viewer for ${viewer.name}`}
         >
           <div className="simulator-viewer-heading">
@@ -595,40 +633,60 @@ export function SimulatorsPanel({ enabled, onChanged }: SimulatorsPanelProps) {
               >
                 Open in browser ↗
               </button>
-              {verified && viewer.url && (
+              {(viewerFocused || (verified && viewer.session)) && (
                 <button
                   type="button"
                   disabled={!!busy}
                   onClick={() => {
-                    setEmbedded((value) => !value);
-                    setEmbeddingError(false);
+                    if (viewerFocused) {
+                      setViewerFocused(false);
+                      setViewer(undefined);
+                      return;
+                    }
+                    setViewer(
+                      (previous) =>
+                        previous && { ...previous, session: undefined },
+                    );
                   }}
                 >
-                  {embedded ? "Hide viewer" : "Show here"}
+                  {viewerFocused ? "Back to simulators" : "Hide viewer"}
+                </button>
+              )}
+              {verified && viewer.url && (
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  onClick={() =>
+                    void perform(
+                      "Connecting simulation viewer...",
+                      async (current) => {
+                        await inspectViewer(viewer.name, current, true);
+                      },
+                    )
+                  }
+                >
+                  {viewer.session ? "Reconnect view" : "Show here"}
                 </button>
               )}
             </div>
           </div>
           <small>
-            Viewer checked at {viewer.checkedAt}. ChatGPT may block a localhost
-            viewer here; Open in browser remains available.
+            Viewer checked at {viewer.checkedAt}. The 3D view follows the
+            simulator's actual state. Drag to orbit and scroll to zoom.
           </small>
           {viewer.url && (
             <code className="simulator-viewer-address">{viewer.url}</code>
           )}
-          {embedded && verified && viewer.url && (
-            <iframe
-              className="simulator-viewer-frame"
-              title={`${viewer.name} live simulation`}
-              src={viewer.url}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
-              referrerPolicy="no-referrer"
-              onError={() => setEmbeddingError(true)}
+          {verified && viewer.session && (
+            <SimulatorView
+              session={viewer.session}
+              profile={viewer.profile}
+              name={viewer.name}
             />
           )}
-          {embeddingError && (
+          {viewer.sessionError && (
             <p className="simulator-embed-note">
-              The viewer could not load here. Open it in your browser.
+              {viewer.sessionError}. Open the viewer in your browser.
             </p>
           )}
         </section>

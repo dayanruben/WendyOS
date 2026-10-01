@@ -58,7 +58,11 @@ func (g *RobotGateway) catalog(ctx context.Context, includeOffline bool) ([]gate
 			continue
 		}
 		byDevice[r.Device], seen[r.ID] = len(rows), true
-		rows = append(rows, gatewayCatalogRobot{GatewayRobot: r, source: "configured", presence: "unknown"})
+		source := "configured"
+		if strings.HasPrefix(r.Device, "vm:") {
+			source = "simulator"
+		}
+		rows = append(rows, gatewayCatalogRobot{GatewayRobot: r, source: source, presence: "unknown"})
 	}
 	if g.localSimulatorAllowed(ctx) && g.lifecycle.simulators.List != nil {
 		items, err := g.lifecycle.simulators.List(ctx)
@@ -131,9 +135,13 @@ func (g *RobotGateway) listRobots(ctx context.Context, req mcpgo.CallToolRequest
 	rows, warnings := g.catalog(ctx, includeOffline)
 	query := strings.ToLower(strings.TrimSpace(req.GetString("query", "")))
 	robots := []map[string]any{}
+	simulatorCount := 0
 	for _, row := range rows {
 		if query != "" && !strings.Contains(strings.ToLower(row.Name), query) && !strings.Contains(strings.ToLower(row.ID), query) {
 			continue
+		}
+		if row.source == "simulator" {
+			simulatorCount++
 		}
 		robots = append(robots, map[string]any{"id": row.ID, "name": row.Name, "connection": "unknown", "cloud_presence": row.presence, "source": row.source, "device_type": row.deviceType, "model": gatewayModel(row.GatewayRobot, row.deviceType), "can_read_events": g.hasScope(ctx, RobotEventsScope), "can_deploy_detector": row.AllowCamera && g.hasScope(ctx, RobotCameraScope) && g.hasScope(ctx, RobotTriggerScope), "can_capture": row.AllowCamera && g.hasScope(ctx, RobotCameraScope), "can_control_apps": (row.AllowAllApps || len(row.Apps) > 0) && g.hasScope(ctx, RobotControlScope)})
 	}
@@ -147,5 +155,5 @@ func (g *RobotGateway) listRobots(ctx context.Context, req mcpgo.CallToolRequest
 	if end < len(robots) {
 		next = end
 	}
-	return okResult(map[string]any{"robots": robots[start:end], "total_count": len(robots), "next_offset": next, "include_offline": includeOffline, "discovery_complete": len(warnings) == 0, "warnings": warnings, "can_manage_simulators": g.localSimulatorAllowed(ctx), "note": "Cloud presence is not an agent connection check. Permission flags do not establish hardware capability."}), nil
+	return okResult(map[string]any{"robots": robots[start:end], "total_count": len(robots), "simulator_count": simulatorCount, "next_offset": next, "include_offline": includeOffline, "discovery_complete": len(warnings) == 0, "warnings": warnings, "can_manage_simulators": g.localSimulatorAllowed(ctx), "note": "Cloud presence is not an agent connection check. Permission flags do not establish hardware capability."}), nil
 }

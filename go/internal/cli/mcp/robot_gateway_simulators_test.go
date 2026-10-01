@@ -88,3 +88,45 @@ func TestGatewaySimulatorStartFailureDoesNotReportReady(t *testing.T) {
 		t.Fatalf("failed provision reported success: %v, %v", result, err)
 	}
 }
+
+func TestGatewayCatalogSimulatorCountAcrossPages(t *testing.T) {
+	cfg := gatewayTestConfig()
+	cfg.AllowSimulators = true
+	cfg.Robots[1].Device = "vm:configured-sim"
+	cfg.Grants[0].Robots = append(cfg.Grants[0].Robots, "beta")
+	g, err := NewRobotGateway(cfg, func(context.Context, string) (*grpcclient.AgentConnection, error) {
+		t.Fatal("listing must not connect to a device")
+		return nil, nil
+	}, WithGatewayLifecycle(onboarding.Backend{}, ProjectBackend{}, SimulatorBackend{
+		List: func(context.Context) ([]SimulatorInfo, error) {
+			return []SimulatorInfo{
+				{Name: "configured-sim", Device: "vm:configured-sim", State: "running"},
+				{Name: "discovered-sim", Device: "vm:discovered-sim", State: "running"},
+			}, nil
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), gatewayPrincipalKey{}, gatewayPrincipal{"alice", robotGatewayScopes})
+	ctx = context.WithValue(ctx, gatewayLocalContextKey{}, true)
+	for page := 0; page < 3; page++ {
+		result, err := g.listRobots(ctx, callToolReq("list_robots", map[string]any{"limit": 1, "offset": page}))
+		if err != nil || result.IsError {
+			t.Fatal("catalog failed", err)
+		}
+		data := result.StructuredContent.(map[string]any)
+		if data["total_count"] != 3 || data["simulator_count"] != 2 {
+			t.Fatal("device count must exclude simulators outside the current page", data)
+		}
+		rows := data["robots"].([]map[string]any)
+		if len(rows) != 1 || (page > 0 && rows[0]["source"] != "simulator") {
+			t.Fatal("configured and discovered VMs must both be marked as simulators", rows)
+		}
+	}
+	result, _ := g.listRobots(ctx, callToolReq("list_robots", map[string]any{"query": "Alpha"}))
+	data := result.StructuredContent.(map[string]any)
+	if data["total_count"] != 1 || data["simulator_count"] != 0 {
+		t.Fatal("simulator count must respect the device search", data)
+	}
+}

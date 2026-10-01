@@ -1,13 +1,85 @@
 ---
 name: wendy-onboarding
-description: Get started with WendyOS by installing and verifying a first physical device, or creating a local simulator when hardware has not arrived or is unavailable. Use for first-time Wendy setup and plugin onboarding.
+description: Help a first-time user who may not know Wendy or have its CLI installed choose local or hosted access, install tools when needed, and verify a first physical device or simulator. Use for getting started and plugin onboarding, including when no MCP tools are connected.
 ---
 
 # Get started with WendyOS
 
-Help the user reach one verified Wendy target they can develop against. They can
-start with physical hardware or a simulator, and keep the same app project when
-their hardware arrives.
+Start with what the user wants to build or try. If Wendy is unfamiliar, explain
+it once in plain language: "Wendy helps you build and run apps on robots and
+small computers, and lets you try them in a simulator first." Do not require
+knowledge of WendyOS, the CLI, MCP, device selectors, or Cloud accounts.
+
+Help the user reach one verified target they can develop against. They can
+start with hardware or a simulator and keep the same project when hardware
+arrives. Plugin installation does not establish that the CLI exists or that
+any MCP server successfully started.
+
+## Start before tools are connected
+
+Use the user's goal and environment first. When missing, ask which computer OS
+they use and whether they have hardware, want a simulator, or already have
+devices connected to a hosted account. Ask only what the next step needs.
+
+- Local hardware, simulators, and project files use the desktop connection.
+  A Wendy Cloud account is optional. A local gateway can also access Cloud
+  devices when the user explicitly adds those targets and logs in.
+- Existing hosted devices use the registered hosted plugin and its connection
+  flow. No CLI is needed on the user's computer for hosted inspection and app
+  control. Do not install a CLI just to connect their hosted account.
+- Browser/mobile conversations cannot directly launch laptop processes. Use
+  the hosted connection or guide the user through local desktop setup. A
+  private OpenAI MCP tunnel is an optional advanced route, with its own setup.
+
+If a local terminal is available on the user's selected computer, check whether
+`wendy --version` works. If absent, use
+[wendy-install](../wendy-install/SKILL.md). Their request to get started with a
+local workflow authorizes ordinary CLI installation and connection setup;
+explain what you are installing and proceed within the host's permissions.
+Do not install into a remote execution environment and call it their laptop.
+Without local terminal access, provide the OS-specific command and wait for
+the user to report the result. Never ask them to run an unexplained list of
+commands or to install all supported AI clients.
+
+After CLI installation, check `wendy mcp setup chatgpt --help`. If available,
+run `wendy mcp setup chatgpt` for the local desktop connection. It creates a
+restricted gateway policy that can start before there are any devices, plus a
+personal plugin marketplace. Use the printed paths and restart/install steps.
+No Cloud login, simulator, disk write, or broader developer toolset is enabled
+by this default setup. Missing capabilities require a CLI update and a new MCP
+process, not repeatedly calling unavailable tools.
+
+Apply only the permissions needed for the user's chosen next step:
+
+```sh
+# A discovered physical device, using the exact address returned by discovery:
+wendy mcp setup chatgpt --device <address>
+# A simulator, before hardware arrives:
+wendy mcp setup chatgpt --simulators
+# A project the user wants to edit and deploy, bound to the chosen targets:
+wendy mcp setup chatgpt --workspace <project-directory> --device <address>
+# Local installation tools when the user asks to install hardware:
+wendy mcp setup chatgpt --host-operations
+```
+
+Repeat `--device` to authorize both local and Cloud targets. Use `wendy discover
+--json` for local discovery. A device is read-only by default; app control and
+camera permissions are separate from simply listing it. Restart the gateway
+after a policy change. Do not widen physical-device app or camera permissions
+without the corresponding user task.
+
+Hosted personal/workspace packaging uses an existing registered app ID with
+`--connection hosted --app-id <registered-app-id>`. `--connection both` creates
+separate local and hosted entries. These commands are operator packaging steps,
+not prerequisites for a novice connecting an already available hosted plugin.
+They do not deploy a server, register an app, or publish to the public directory.
+
+The broader `wendy mcp serve` tools are opt-in through `--developer-tools`.
+Explain that they have broader access and do not inherit the gateway policy.
+When both toolsets exist, use the gateway for scoped device UI operations and
+explicit `robot_id` values. Use the developer server only for the requested
+developer task and its explicit target. Its selected device does not select a
+device in the gateway. Never use it to work around a denied gateway operation.
 
 ## Choose a starting point
 

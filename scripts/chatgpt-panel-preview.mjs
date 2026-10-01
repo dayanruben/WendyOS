@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 const port = Number(process.env.PORT || 8790);
 const gatewayURL = process.env.WENDY_GATEWAY_URL;
 const gatewayToken = process.env.WENDY_GATEWAY_TOKEN;
+const emptyInventory = process.argv.includes("--empty");
 if (!!gatewayURL !== !!gatewayToken) throw new Error("Set both gateway URL and token, or neither for fixtures.");
 const panelURL = new URL("../go/internal/cli/mcp/desktop_app.html", import.meta.url);
 const apps = new Map([["companion", "RUNNING"]]);
@@ -19,6 +20,7 @@ window.addEventListener('message',async event=>{
   if(m.method==='ui/initialize')result={protocolVersion:'2026-01-26',hostInfo:{name:'Wendy local test host',version:'1'},hostCapabilities:{serverTools:{},updateModelContext:{},message:{}},hostContext:{theme:matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}};
   else if(m.method==='ui/notifications/initialized'){const r=await fetch('/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'open_devices',arguments:{}})});frame.contentWindow.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:await r.json()},location.origin);return;}
   else if(m.method==='tools/call'){const r=await fetch('/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m.params)});if(!r.ok)throw new Error(await r.text());result=await r.json()}
+  else if(m.method==='resources/read')throw new Error('MCP app cannot read resource outside its widget scope.');
   else if(m.method==='ui/update-model-context'||m.method==='ui/message'){document.getElementById('context').textContent=JSON.stringify(m.params,(key,value)=>key==='data'?'[image bytes]':value,2)}
   else if(m.method==='ui/notifications/size-changed'){frame.style.height=m.params.height+'px'}
   if(m.id!==undefined)frame.contentWindow.postMessage({jsonrpc:'2.0',id:m.id,result},location.origin);
@@ -29,7 +31,7 @@ window.addEventListener('message',async event=>{
 async function fixture({ name, arguments: args }) {
   let data;
   switch (name) {
-    case "open_devices": case "list_robots": data = {total_count:7,robots:[['go2','Lab Go2','Unitree Go2'],['orin','Vision bench','Jetson Orin Nano'],['dragonwing','Warehouse edge','Dragonwing IQ-9075'],['dgx','Training server','NVIDIA DGX Spark'],['macbook','Development Mac','MacBook'],['g1','Unitree G1','Unitree G1'],['generic','Local VM','WendyOS simulator']].map(([model,name,device_type])=>({id:model,model,name,device_type,source: model==='generic'?'simulator':'configured',cloud_presence:model==='generic'?'running':'online',can_capture:true,can_control_apps:true,can_read_events:true,can_deploy_detector:true}))};break;
+    case "open_devices": case "list_robots": data = emptyInventory ? {total_count:0, robots:[], discovery_complete:true, can_manage_simulators:false} : {total_count:7,robots:[['go2','Lab Go2','Unitree Go2'],['orin','Vision bench','Jetson Orin Nano'],['dragonwing','Warehouse edge','Dragonwing IQ-9075'],['dgx','Training server','NVIDIA DGX Spark'],['macbook','Development Mac','MacBook'],['g1','Unitree G1','Unitree G1'],['generic','Local VM','WendyOS simulator']].map(([model,name,device_type])=>({id:model,model,name,device_type,source: model==='generic'?'simulator':'configured',cloud_presence:model==='generic'?'running':'online',can_capture:true,can_control_apps:true,can_read_events:true,can_deploy_detector:true}))};break;
     case "read_device_settings":data={values:{include_offline:false}};break;
     case "update_device_settings":data={values:args.set};break;
     case "list_device_triggers":data={triggers:[{id:'people',name:'Person detected',event:'person_detected',state:'fixture',managed:false,can_configure:false}]};break;

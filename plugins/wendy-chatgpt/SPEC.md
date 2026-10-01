@@ -65,12 +65,52 @@ stream and a decoder per session, with latest-frame buffering, a 15-second idle
 lease and a 10-minute maximum. Preview images remain in UI-only metadata until
 the user attaches a still frame. Changing devices, tabs or camera, hiding the
 page, or clicking Stop releases the session.
+Camera reads have background priority and cancellation. A last-sequence hint
+omits unchanged JPEGs while renewing the lease. The decoder is capped at 5 fps
+and the app reads at most 4 frames per second.
 
-Local simulator tools reuse Wendy's existing VM lifecycle and MuJoCo viewer.
+Local simulator tools reuse Wendy's existing VM lifecycle and robot viewers.
+Go2 and G1 retain their MuJoCo scene contract. ROSMaster R2 uses its existing
+procedural robot model and Ackermann observer state, adapted to the same canvas
+geometry and world poses. Only read-only scene/status GETs are used; controller
+ownership and credentials are excluded. ROSMaster appears in the simulator
+profile picker and has the same embedded View simulation action.
 The gateway checks the viewer's simulator identity, profile and health before
-returning its loopback URL. The UI opens the viewer in a browser and offers an
-embedded view. Simulator access has its own local-only policy switch and scope,
+returning its loopback URL. The UI draws the scene directly with a canvas and
+calls the app-only `simulator_scene_read` tool with a session ID and `geometry`
+or `state`. Scene data stays in UI-only `_meta.scene_data`. Geometry loads once
+per scene; poses load at most four times per second with one request active and
+background priority. The widget does not read resources outside its scope.
+Large geometry responses can use opt-in gzip in UI-only `_meta.scene_data_gzip`,
+with a 32 MiB expanded response limit. The tested G1 geometry tool result shrinks
+from 11.4 MB to 4.8 MB. Initial geometry loading allows 45 seconds for host
+transfer; pose reads retain a 15-second limit. Older widgets receive JSON.
+The renderer buffers one recent pose arrival interval, capped at one second,
+and interpolates locally without predicting physics. It clears playback history
+when the world changes and holds the last received pose during an outage.
+Background queue dispatch no longer adds a fixed 75 ms wait to every request.
+View simulation requests fullscreen immediately and opens a focused viewer,
+with camera controls and canvas fitted to desktop and narrow viewports. Host
+refusal or lack of fullscreen support falls back to the focused inline view.
+Back to simulators releases the session and restores simulator management.
+Failed loading stops the loading status and exposes the underlying error in
+expandable details. It does not need
+browser access to localhost or a nested iframe. A browser viewer remains available.
+Simulator access has its own local-only policy switch and scope,
 without enabling OS installation.
+
+The Devices grid and device sidebar omit simulator entries. Simulators remain
+in their dedicated tab. The catalog reports the simulator count before
+pagination so the Devices total excludes simulators on every page, including
+explicitly configured VM entries.
+
+The local development loop also exposes directory listing, UTF-8 file reads,
+and revision-checked writes within approved workspace roots. `projects:write`
+is separate from project reads and `apps:deploy`. File tools are local stdio only.
+A workspace can opt into running local simulators with `allow_simulators`;
+explicit VM policies still take precedence. This supports authoring code in
+ChatGPT and deploying through the existing durable jobs without granting an
+arbitrary host path or shell. A simulator-only policy requires no physical device.
 
 Running apps with an HTTP entitlement have an Open app control. A bounded
 loopback proxy routes their declared port through the device connection. Its
@@ -139,6 +179,33 @@ repository cannot assume those registrations or the Cloud delegation service
 already exist. A private tunnel is the initial real-account connection path.
 
 ## Verification
+
+The simulator widget uses app-only tool calls because ChatGPT rejects scene
+resource reads outside the widget's scope. The integration host now rejects
+those reads with the same scope error. Real, already-running Go2 and G1 scenes
+passed browser verification through the gateway tool handlers with browser
+localhost access blocked. Checks cover geometry loading once, pose updates at
+most four times per second, one active request, camera controls, visibility
+suspension, recovery, failure details, fallback and cleanup. The stdio gateway
+also returned Go2 geometry and poses only in UI metadata. The gateway was rebuilt
+and reloaded on the existing private tunnel. After refreshing Wendy's tools and
+opening the Go2 simulator view, the user confirmed that the robot visibly renders
+inside ChatGPT. This host check was user-verified because the available
+computer-use tool denied access to the native ChatGPT window.
+
+The running ROSMaster R2 simulator also passed the observer browser check with
+localhost access blocked. Its detailed robot visibly rendered from one small
+geometry response, with pose updates, camera controls, visibility suspension,
+recovery and session cleanup. The test issued no simulator control commands.
+
+The integrated revision passed all 26 widget tests, TypeScript checking, the MCP
+and CLI command suites, the Go2 bundle suite, and targeted gateway race tests.
+Browser checks passed for Go2, G1, and ROSMaster, including immediate fullscreen,
+mobile viewport fit, host refusal, and return-to-management cleanup. Fixture
+camera checks covered canceled background reads and unchanged-frame retention.
+The gateway was rebuilt and reloaded with the green Running indicator. Actual
+ChatGPT verification of the new G1 transfer, ROSMaster view, and fullscreen flow
+is pending the user's check after refreshing tools and opening a new conversation.
 
 Use real MCP HTTP and stdio transports with fixture agent/app servers. Test
 authentication, audience/scope enforcement, cross-principal robot access,

@@ -47,7 +47,7 @@ func (g *RobotGateway) workspace(ctx context.Context, id, robot string) (Gateway
 		return GatewayWorkspace{}, fmt.Errorf("workspace is not authorized")
 	}
 	for _, w := range g.cfg.Workspaces {
-		if w.ID == id && (robot == "" || slices.Contains(w.Robots, robot)) {
+		if w.ID == id && (robot == "" || slices.Contains(w.Robots, robot) || (w.AllowSimulators && g.discoveredSimulatorAllowed(ctx, robot))) {
 			return w, nil
 		}
 	}
@@ -98,6 +98,10 @@ func (g *RobotGateway) registerLifecycleTools() {
 		}
 		out := []map[string]any{}
 		grant, _ := g.grant(ctx)
+		var simulators []gatewayCatalogRobot
+		if g.localSimulatorAllowed(ctx) {
+			simulators, _ = g.catalog(ctx, false)
+		}
 		for _, w := range g.cfg.Workspaces {
 			if _, err := g.workspace(ctx, w.ID, ""); err == nil {
 				ids := []string{}
@@ -106,7 +110,14 @@ func (g *RobotGateway) registerLifecycleTools() {
 						ids = append(ids, id)
 					}
 				}
-				out = append(out, map[string]any{"id": w.ID, "name": w.Name, "robot_ids": ids})
+				if w.AllowSimulators {
+					for _, row := range simulators {
+						if row.source == "simulator" && !slices.Contains(ids, row.ID) {
+							ids = append(ids, row.ID)
+						}
+					}
+				}
+				out = append(out, map[string]any{"id": w.ID, "name": w.Name, "robot_ids": ids, "can_read_files": g.localWorkspaceAllowed(ctx, RobotProjectScope), "can_write_files": g.localWorkspaceAllowed(ctx, RobotProjectWriteScope)})
 			}
 		}
 		return okResult(map[string]any{"workspaces": out}), nil
@@ -265,6 +276,9 @@ func (g *RobotGateway) startGatewayDeployment(ctx context.Context, req mcpgo.Cal
 	v, err := g.lifecycle.project.Validate(ctx, ProjectValidationOptions{ProjectPath: w.Path})
 	if err != nil {
 		return mcpgo.NewToolResultError("Project validation failed"), nil
+	}
+	if v == nil {
+		return mcpgo.NewToolResultError("Project validation returned no result"), nil
 	}
 	if !v.Valid {
 		return okResult(map[string]any{"status": "validation_failed", "validation": v}), nil

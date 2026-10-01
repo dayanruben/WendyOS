@@ -19,10 +19,13 @@ export function CameraPanel({
   const session = useRef("");
   const epoch = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const readController = useRef<AbortController | undefined>(undefined);
 
   async function stop() {
     epoch.current++;
     clearTimeout(timer.current);
+    readController.current?.abort();
+    readController.current = undefined;
     setLive(false);
     setBusy("");
     const id = session.current;
@@ -64,15 +67,30 @@ export function CameraPanel({
         return;
       }
       session.current = id;
+      const controller = new AbortController();
+      readController.current = controller;
+      let sequence: number | undefined;
       setLive(true);
       setBusy("");
       const next = async () => {
         try {
-          const r = await call("read_camera_preview", {
-            robot_id: robot,
-            preview_id: id,
-          });
+          const r = await call(
+            "read_camera_preview",
+            {
+              robot_id: robot,
+              preview_id: id,
+              ...(sequence !== undefined && { after_sequence: sequence }),
+            },
+            {
+              signal: controller.signal,
+              priority: "background",
+              timeout: 10_000,
+              maxTotalTimeout: 10_000,
+            },
+          );
           if (current !== epoch.current) return;
+          if (typeof r.structuredContent?.sequence === "number")
+            sequence = r.structuredContent.sequence;
           const f = r._meta?.frame as
             | { data?: string; mimeType?: string }
             | undefined;

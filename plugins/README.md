@@ -1,5 +1,16 @@
 # Wendy skill groups
 
+For users who do not yet know Wendy or have its CLI, the skills-only
+[getting-started plugin](wendy-get-started/README.md) guides them through choosing
+local hardware, a simulator, or an existing hosted connection. It can be used
+before any Wendy MCP server is connected. Hosted use needs no local CLI.
+
+`wendy mcp setup chatgpt` creates the local ChatGPT package and personal
+marketplace with a restricted first-run policy. `--connection both --app-id
+<registered-MCP-app-id>` adds a separate hosted package bound to an existing
+registered connection. The broader developer server is opt-in through
+`--developer-tools`. See the [ChatGPT setup instructions](wendy-chatgpt/README.md).
+
 The separate [Wendy ChatGPT robot plugin](wendy-chatgpt/README.md) provides a
 robot panel, scoped device operations, and reviewed app tools. Its gateway is
 configured separately from the agentic coding skill groups below.

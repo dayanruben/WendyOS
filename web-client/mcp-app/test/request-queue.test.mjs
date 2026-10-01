@@ -20,6 +20,13 @@ const deferred = () => {
   const promise = new Promise((r) => (resolve = r));
   return { promise, resolve };
 };
+test("an idle background poll yields to a user action in the same turn", async () => {
+  const queue = new RequestQueue(), order = [];
+  const background = queue.enqueue(async () => order.push("background"), "background");
+  const foreground = queue.enqueue(async () => order.push("foreground"));
+  await Promise.all([background, foreground]);
+  assert.deepEqual(order, ["foreground", "background"]);
+});
 test("foreground requests jump queued discovery without interrupting an active call", async () => {
   const queue = new RequestQueue(),
     gate = deferred(),

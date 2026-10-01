@@ -233,7 +233,8 @@ aside {
   overflow: auto;
   min-height: 0;
 }
-.device-nav .dot.online {
+.device-nav .dot.online,
+.simulator-state .dot.online {
   /* Hosts may supply a neutral success token; online presence must stay green. */
   background: #2d9d63;
   border-color: #2d9d63;
@@ -374,6 +375,9 @@ label {
   background: var(--panel);
 }
 .card-top {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -390,7 +394,7 @@ label {
   border: 1px solid var(--line);
   padding: 4px 6px;
   color: var(--muted);
-  background: transparent;
+  background: var(--panel);
 }
 .badge i {
   width: 5px;
@@ -400,7 +404,8 @@ label {
   background: transparent;
 }
 .badge.online i {
-  background: var(--muted);
+  background: #2d9d63;
+  border-color: #2d9d63;
 }
 .model {
   height: 176px;
@@ -408,10 +413,15 @@ label {
   background: transparent;
 }
 .device-image {
+  display: block;
   width: 100%;
   height: 100%;
-  object-fit: contain;
-  padding: 12px 20px;
+  object-fit: cover;
+}
+.device-card .model {
+  height: auto;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
 }
 .simulation-label {
   position: absolute;
@@ -1102,6 +1112,45 @@ footer {
   padding: 22px;
   border: 1px solid var(--line);
 }
+.workspace:has(.simulators-panel[data-view-focused="true"]) {
+  min-height: 0;
+}
+.workspace:has(.simulators-panel[data-view-focused="true"]) > aside,
+.workspace:has(.simulators-panel[data-view-focused="true"]) > main > header,
+.workspace:has(.simulators-panel[data-view-focused="true"]) .content > .status,
+.simulators-panel[data-view-focused="true"] > :not(.simulator-viewer) {
+  display: none;
+}
+.workspace:has(.simulators-panel[data-view-focused="true"]) .content {
+  max-width: none;
+  margin: 0;
+  padding: calc(12px + var(--wendy-safe-top, 0px)) calc(12px + var(--wendy-safe-right, 0px)) calc(12px + var(--wendy-safe-bottom, 0px)) calc(12px + var(--wendy-safe-left, 0px));
+}
+.simulators-panel[data-view-focused="true"] > .simulator-viewer {
+  margin-top: 0;
+  height: calc(100dvh - 24px - var(--wendy-safe-top, 0px) - var(--wendy-safe-bottom, 0px));
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.simulators-panel[data-view-focused="true"] .simulator-viewer > small,
+.simulators-panel[data-view-focused="true"] .simulator-viewer-address {
+  display: none;
+}
+.simulators-panel[data-view-focused="true"] .simulator-live-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.simulators-panel[data-view-focused="true"] .simulator-viewer-frame {
+  height: 0;
+  min-height: 100px;
+  flex: 1;
+}
+.simulators-panel[data-view-focused="true"] .simulator-view-controls {
+  margin-top: 0;
+}
 .simulator-viewer-heading {
   display: flex;
   flex-wrap: wrap;
@@ -1137,6 +1186,28 @@ footer {
 }
 .simulator-embed-note {
   margin-top: 12px;
+  font-size: 12px;
+}
+.simulator-live-view canvas {
+  background: #171e22;
+  touch-action: none;
+}
+.simulator-view-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+.simulator-view-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.simulator-render-status {
+  margin-top: 10px;
+  color: var(--muted);
   font-size: 12px;
 }
 

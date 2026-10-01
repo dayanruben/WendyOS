@@ -8,15 +8,37 @@ import (
 	"time"
 )
 
+func (g *RobotGateway) discoveredSimulatorAllowed(ctx context.Context, id string) bool {
+	if !g.localSimulatorAllowed(ctx) {
+		return false
+	}
+	// A configured simulator keeps its explicit workspace and subject policy.
+	for _, robot := range g.cfg.Robots {
+		if robot.ID == id {
+			return false
+		}
+	}
+	rows, _ := g.catalog(ctx, false)
+	for _, row := range rows {
+		if row.ID == id && row.source == "simulator" {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *RobotGateway) registerGatewaySimulators() {
 	for _, name := range []string{"simulator_start", "simulator_update_agent", "simulator_viewer"} {
 		opts := []mcpgo.ToolOption{mcpgo.WithString("name", mcpgo.Required(), mcpgo.MaxLength(32))}
 		behavior := readOnly()
-		description := "Read the verified live MuJoCo sandbox URL for this local simulator. Does not start or move it. Open the URL to visualize its actual state."
+		description := "Read the verified live robot simulation URL for this local simulator. Does not start or move it. Open the URL to visualize its actual state."
+		if name == "simulator_viewer" {
+			opts = append(opts, mcpgo.WithBoolean("embedded", mcpgo.DefaultBool(false), mcpgo.Description("Create a temporary read-only scene session for rendering inside the Wendy UI. Access details are returned only in UI metadata.")))
+		}
 		if name == "simulator_start" {
 			behavior = mutating()
 			opts = append(opts, mcpgo.WithTaskSupport(mcpgo.TaskSupportOptional))
-			description = "Boot an existing laptop simulator and provision its robot runtime. First start can take several minutes. Use task augmentation when supported. This only targets vm:name, never physical hardware. Read simulator_viewer after completion to open its live MuJoCo scene."
+			description = "Boot an existing laptop simulator and provision its robot runtime. First start can take several minutes. Use task augmentation when supported. This only targets vm:name, never physical hardware. Read simulator_viewer after completion to open its live robot scene."
 		}
 		if name == "simulator_update_agent" {
 			behavior = mutating()
@@ -67,7 +89,16 @@ func (g *RobotGateway) registerGatewaySimulators() {
 			if err != nil {
 				return mcpgo.NewToolResultError(fmt.Sprintf("Simulator viewer is not ready: %v", err)), nil
 			}
-			return okResult(viewer), nil
+			result := okResult(viewer)
+			if req.GetBool("embedded", false) && viewer.Ready && viewer.Healthy {
+				session, err := g.openSimulatorScene(ctx, viewer, 30*time.Minute)
+				if err != nil {
+					result.Meta = mcpgo.NewMetaFromMap(map[string]any{"scene_session_error": err.Error()})
+				} else {
+					result.Meta = mcpgo.NewMetaFromMap(map[string]any{"scene_session": session})
+				}
+			}
+			return result, nil
 		})
 	}
 }

@@ -47,7 +47,9 @@ type Catalog = {
   selected_robot_id?: string;
   next_offset?: number | null;
   total_count?: number;
+  simulator_count?: number;
   warnings?: string[];
+  discovery_complete?: boolean;
   can_manage_simulators?: boolean;
 };
 type Inspection = {
@@ -105,6 +107,12 @@ function Workspace() {
     preferencesTouched = useRef({ offline: false }),
     lastDeepLink = useRef("");
   const row = catalog.robots.find((r) => r.id === selected);
+  const devices = catalog.robots.filter((r) => r.source !== "simulator");
+  const deviceCount = Math.max(
+    0,
+    (catalog.total_count ?? catalog.robots.length) -
+      (catalog.simulator_count ?? catalog.robots.length - devices.length),
+  );
   function select(id: string) {
     setSection("devices");
     if (id === selectedRef.current) return;
@@ -391,7 +399,7 @@ function Workspace() {
         >
           ▦ <span>Devices</span>
           <span className="count">
-            {catalog.total_count ?? catalog.robots.length}
+            {deviceCount}
           </span>
         </button>
         <button
@@ -406,20 +414,13 @@ function Workspace() {
         </button>
         <div className="nav-label">YOUR DEVICES</div>
         <div className="device-nav">
-          {catalog.robots.map((r) => {
-            const simulator = r.source === "simulator";
-            const online = simulator
-              ? r.cloud_presence === "running"
-              : r.cloud_presence === "online";
+          {devices.map((r) => {
+            const online = r.cloud_presence === "online";
             const presence = online
-              ? simulator
-                ? "Local simulator running"
-                : "Cloud online"
-              : simulator && r.cloud_presence === "stopped"
-                ? "Local simulator stopped"
-                : !simulator && r.cloud_presence === "offline"
-                  ? "Cloud offline"
-                  : "Presence unknown";
+              ? "Cloud online"
+              : r.cloud_presence === "offline"
+                ? "Cloud offline"
+                : "Presence unknown";
             return (
               <button
                 key={r.id}
@@ -432,7 +433,6 @@ function Workspace() {
                   className={"dot " + (online ? "online" : "")}
                   aria-hidden="true"
                 />
-                {simulator && <SimulatorIcon className="simulator-nav-icon" />}
                 <span>{r.name}</span>
               </button>
             );
@@ -510,9 +510,9 @@ function Workspace() {
                 <button
                   className="primary"
                   disabled={!ready || !!busy}
-                  onClick={() => lifecycle("Install WendyOS")}
+                  onClick={() => send("Help me get started with Wendy. Ask what I want to build and whether I have hardware or want a simulator, then guide setup. Check what is installed and which local or hosted connection is available. Verify my first connection before continuing.")}
                 >
-                  + Set up a device
+                    + Get started
                 </button>
               </div>
               <div className="toolbar">
@@ -546,14 +546,14 @@ function Workspace() {
               </div>
               <div className="fleet-summary">
                 <span>
-                  {catalog.total_count ?? catalog.robots.length} devices
+                  {deviceCount} {deviceCount === 1 ? "device" : "devices"}
                 </span>
                 <span>
-                  Cloud presence shown. Open a device to check its agent.
+                  Open a device to check its connection.
                 </span>
               </div>
               <div className="grid">
-                {catalog.robots.map((r) => (
+                {devices.map((r) => (
                   <button
                     className="device-card"
                     key={r.id}
@@ -576,7 +576,6 @@ function Workspace() {
                     <Model
                       id={r.model}
                       name={r.name}
-                      kind={r.source === "simulator" ? "simulator" : undefined}
                     />
                     <div className="card-info">
                       <h2>{r.name}</h2>
@@ -591,12 +590,17 @@ function Workspace() {
                   </button>
                 ))}
               </div>
-              {!catalog.robots.length && (
+              {!devices.length && (
                 <div className="empty">
-                  <h2>{ready ? "Find your devices" : "Connecting to Wendy"}</h2>
+                  <h2>{!ready ? "Connecting to Wendy" : query.trim() ? "No matching devices" : catalog.discovery_complete === false ? "Device list unavailable" : "Start with a device or simulator"}</h2>
                   <p>
-                    Refresh to load the devices authorized for this account.
+                    {query.trim() ? "Try another name or clear your search." : catalog.discovery_complete === false ? "Check the connection warning and refresh to try again." : "Wendy helps you build and run apps on robots and small computers. Connect your first device, or try a simulator before your hardware arrives."}
                   </p>
+                  {ready && !query.trim() && catalog.discovery_complete !== false && (
+                    <button className="primary" disabled={!!busy} onClick={() => send("Help me get started. I have not used Wendy before. Help me choose a physical device or simulator, check whether I need local tools or a hosted connection, and verify the result.")}>
+                      Help me get started
+                    </button>
+                  )}
                   <button disabled={!ready || !!busy} onClick={() => refresh()}>
                     Load devices
                   </button>

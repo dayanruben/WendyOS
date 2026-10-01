@@ -59,11 +59,13 @@ export class RequestQueue {
       this.timer = undefined;
       this.start(this.foreground.shift()!);
     } else if (this.background.length && !this.timer) {
+      // Yield once so a user action in this turn can take priority, without
+      // adding a fixed delay to every live preview or pose snapshot.
       this.timer = setTimeout(() => {
         this.timer = undefined;
         const job = this.foreground.shift() ?? this.background.shift();
         if (job) this.start(job);
-      }, 75);
+      }, 0);
     }
   }
 

@@ -10,6 +10,7 @@ TARGET = ROOT / "go/internal/cli/assets/skills"
 GROUP = SOURCE.parent / "skill-group.json"
 MCP_TARGETS = [
     ROOT / "plugins/wendy-chatgpt/skills/wendy",
+    ROOT / "plugins/wendy-get-started/skills/wendy",
     ROOT / "go/internal/cli/assets/mcp-skills/wendy",
 ]
 
@@ -37,7 +38,10 @@ that file. These supporting skills need no separate installation.
 
 For first-time setup, read
 [wendy-onboarding](references/skills/wendy-onboarding/SKILL.md). It guides the user
-through their first physical device or a simulator while waiting for hardware.
+from their goal through CLI installation when needed, a local or hosted
+connection, and their first physical device or simulator. It also works before
+any Wendy MCP tools are connected. Do not assume the user knows Wendy or has
+installed its CLI.
 
 Inspect the available tools first. The CLI server uses `wendy_status` and
 `device_list`; the ChatGPT gateway uses `list_robots` and `inspect_robot`.
@@ -99,6 +103,16 @@ def main():
     bundle = mcp_bundle(skills)
     for target in MCP_TARGETS:
         sync_files(bundle, target, args.check, differences)
+    plugin_source = ROOT / "plugins/wendy-chatgpt"
+    plugin_files = {Path("plugin.json"): (plugin_source / "plugin.json").read_bytes()}
+    plugin_files.update({
+        p.relative_to(plugin_source): p.read_bytes()
+        for p in (plugin_source / "assets").rglob("*") if p.is_file()
+    })
+    sync_files(
+        plugin_files,
+        ROOT / "go/internal/cli/assets/chatgpt-plugin", args.check, differences,
+    )
     if args.check and differences:
         raise SystemExit("Run python3 scripts/sync-agent-skills.py:\n" + "\n".join(differences))
     print(f"{'Checked' if args.check else 'Synced'} {len(skills)} end-user skills")

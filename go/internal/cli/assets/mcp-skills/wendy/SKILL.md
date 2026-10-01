@@ -11,7 +11,10 @@ that file. These supporting skills need no separate installation.
 
 For first-time setup, read
 [wendy-onboarding](references/skills/wendy-onboarding/SKILL.md). It guides the user
-through their first physical device or a simulator while waiting for hardware.
+from their goal through CLI installation when needed, a local or hosted
+connection, and their first physical device or simulator. It also works before
+any Wendy MCP tools are connected. Do not assume the user knows Wendy or has
+installed its CLI.
 
 Inspect the available tools first. The CLI server uses `wendy_status` and
 `device_list`; the ChatGPT gateway uses `list_robots` and `inspect_robot`.

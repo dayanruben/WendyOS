@@ -52,10 +52,13 @@ type gatewayPrincipalKey struct{}
 // RobotGateway has no mutable current device. Connections belong to one call.
 type RobotGateway struct {
 	webSlots          chan struct{}
+	sceneMu           sync.Mutex
+	scenes            map[string]*gatewaySimulatorScene
 	previewMu         sync.Mutex
 	previews          map[string]*gatewayCameraPreview
 	lifecycle         *mcpServer
 	jobMu             sync.Mutex
+	workspaceMu       sync.Mutex
 	jobCancels        map[string]context.CancelFunc
 	cfg               RobotGatewayConfig
 	connect           ConnectFunc
@@ -124,6 +127,8 @@ func NewRobotGateway(cfg RobotGatewayConfig, connect ConnectFunc, options ...Rob
 	g.registerAppWebTool()
 	g.registerEventTools()
 	g.registerLifecycleTools()
+	g.registerSimulatorSceneResources()
+	g.registerWorkspaceFileTools()
 	g.registerYOLOTools()
 	if err := g.initMCPEvents(); err != nil {
 		return nil, err
@@ -137,7 +142,7 @@ func NewRobotGateway(cfg RobotGatewayConfig, connect ConnectFunc, options ...Rob
 	}
 	meta := map[string]any{"ui": map[string]any{"csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{"data:", "blob:"}}}, "openai/ui": map[string]any{"availableDisplayModes": []string{"fullscreen"}, "preferredDisplayMode": "fullscreen"}}
 	if cfg.AllowSimulators || cfg.AllowHostOperations {
-		meta["ui"].(map[string]any)["csp"].(map[string]any)["frameDomains"] = []string{"http://127.0.0.1:*"}
+		meta["ui"].(map[string]any)["csp"].(map[string]any)["connectDomains"] = []string{"http://127.0.0.1:*"}
 	}
 	resource := mcpgo.NewResource(robotPanelURI, "Wendy robot panel", mcpgo.WithMIMEType("text/html;profile=mcp-app"))
 	resource.Meta = mcpgo.NewMetaFromMap(meta)
@@ -209,6 +214,16 @@ func (g *RobotGateway) authorize(ctx context.Context, id, scope string) (*Gatewa
 			return &g.cfg.Robots[i], nil
 		}
 	}
+	// Project access to discovered simulators still requires the caller's local
+	// simulator permission. The workspace separately opts in to these targets.
+	if (scope == RobotProjectScope || scope == RobotDeployScope) && g.localSimulatorAllowed(ctx) {
+		rows, _ := g.catalog(ctx, false)
+		for _, row := range rows {
+			if row.ID == id && row.source == "simulator" {
+				return &row.GatewayRobot, nil
+			}
+		}
+	}
 	// Discovery permits inspection by default. Camera capture and app control
 	// each require an explicit source opt-in as well as the caller's scope.
 	// App tool exports still require a reviewed, explicit robot configuration.
@@ -235,8 +250,10 @@ func (g *RobotGateway) toolScope(name string) string {
 		return RobotHostScope
 	}
 	switch name {
-	case "list_workspaces", "validate_device_project", "plan_fleet_deployment":
+	case "list_workspaces", "validate_device_project", "plan_fleet_deployment", "list_workspace_files", "read_workspace_file":
 		return RobotProjectScope
+	case "write_workspace_file":
+		return RobotProjectWriteScope
 	case "start_device_deployment", "get_deployment_job", "cancel_deployment_job":
 		return RobotDeployScope
 	case "identify_device", "list_robots", "open_robot", "inspect_robot", "open_devices", "search_devices", "get_device_model", "read_device_metrics", "read_device_logs", "read_device_settings":
@@ -261,6 +278,9 @@ func (g *RobotGateway) toolScope(name string) string {
 func (g *RobotGateway) filterTools(ctx context.Context, tools []mcpgo.Tool) []mcpgo.Tool {
 	out := make([]mcpgo.Tool, 0, len(tools))
 	for _, t := range tools {
+		if slices.Contains(gatewayWorkspaceFileTools, t.Name) && !g.localWorkspaceAllowed(ctx, g.toolScope(t.Name)) {
+			continue
+		}
 		if t.Name == "open_robot_app" && ctx.Value(gatewayLocalContextKey{}) != true {
 			continue
 		}
@@ -340,7 +360,13 @@ func (g *RobotGateway) registerTools() {
 			data := result.StructuredContent.(map[string]any)
 			rows := data["robots"].([]map[string]any)
 			if !slices.ContainsFunc(rows, func(row map[string]any) bool { return row["id"] == id }) {
-				data["robots"] = append(rows, map[string]any{"id": r.ID, "name": r.Name, "connection": "unknown", "can_capture": r.AllowCamera && g.hasScope(ctx, RobotCameraScope), "can_control_apps": (r.AllowAllApps || len(r.Apps) > 0) && g.hasScope(ctx, RobotControlScope)})
+				source := "configured"
+				if strings.HasPrefix(r.Device, "vm:") {
+					source = "simulator"
+				} else if r.discovered {
+					source = "cloud"
+				}
+				data["robots"] = append(rows, map[string]any{"id": r.ID, "name": r.Name, "source": source, "connection": "unknown", "can_capture": r.AllowCamera && g.hasScope(ctx, RobotCameraScope), "can_control_apps": (r.AllowAllApps || len(r.Apps) > 0) && g.hasScope(ctx, RobotControlScope)})
 			}
 			result.StructuredContent.(map[string]any)["selected_robot_id"] = id
 			return okResult(result.StructuredContent), nil

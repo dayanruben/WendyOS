@@ -1,5 +1,86 @@
 # Wendy robots for ChatGPT
 
+## Start without an existing installation
+
+For a user who has not used Wendy, start with the skills-only
+[Get started with Wendy](../wendy-get-started/README.md) package. It has no CLI
+or MCP dependency and guides them from their goal to the right connection.
+Wendy helps users build and run apps on robots and small computers, or try a
+simulator before their hardware arrives.
+
+For local use, the assistant checks the user's computer and installs the CLI
+only when needed. On macOS/Linux:
+
+```sh
+curl -fsSL https://install.wendy.dev/cli.sh | bash
+wendy mcp setup chatgpt
+```
+
+On Windows, use `winget install WendyLabs.Wendy --source winget`, then the same
+setup command. This requires a CLI build containing `mcp setup chatgpt`; check
+its help if an older published CLI is installed. A web-only assistant gives
+the user the command instead of installing into its own remote environment.
+
+Setup writes a private policy at `~/.wendy/chatgpt/gateway.json`, extracts the
+plugin and its skills into `~/.codex/plugins/sources/wendy-robots`, and adds it
+to `~/.agents/plugins/marketplace.json`. It preserves unrelated marketplace
+entries and existing policy grants. The generated MCP command uses absolute
+binary and policy paths, so no shell environment variable is needed. Follow
+the printed instructions to restart ChatGPT desktop and install the local
+entry. The command makes the plugin available; it does not automatically
+install it into a live chat or edit the host's plugin cache.
+
+Default setup can start with no targets. It permits the device gallery and
+preferences, with no Cloud source, simulator management, host operation,
+project access, or broader developer server enabled. Add permissions for the
+user's chosen task:
+
+```sh
+wendy mcp setup chatgpt --device workshop.local:50052
+wendy mcp setup chatgpt --simulators
+wendy mcp setup chatgpt --simulators --workspace /path/to/project
+wendy mcp setup chatgpt --host-operations
+# Optional broader developer tools, as a separate MCP process:
+wendy mcp setup chatgpt --developer-tools
+```
+
+Devices added by setup are read-only, with installed-app inventory visible.
+Simulator permissions do not grant physical-device cameras or app control.
+`--workspace` authorizes project reading/writing and deployment to the policy's
+granted devices and permitted simulators. Re-run it with the same project when
+adding deployment targets. Existing policy permissions survive ordinary setup
+reruns. Disable the separate developer MCP with `--developer-tools=false`.
+It has broader access than the gateway and does not inherit its grants or
+selected device. Restart the MCP connection after policy or tool changes.
+
+## Local and hosted access together
+
+A local gateway can use both LAN/USB targets and Cloud selectors in the same
+policy. Repeat `--device` for each target. Only Cloud targets need their saved
+Cloud login; local access does not require `wendy auth login`. Configured
+`cloud_sources` also remain supported for authorized Cloud inventory discovery.
+
+For browser/mobile access, deploy the authenticated HTTP gateway described
+below and register it in ChatGPT. Hosted users connect that available plugin
+through its account flow without installing a local CLI. The hosted operator
+can package a registered connection with:
+
+```sh
+wendy mcp setup chatgpt --connection hosted --app-id '<registered-MCP-app-id>'
+# Offer both entries in the personal marketplace:
+wendy mcp setup chatgpt --connection both --app-id '<registered-MCP-app-id>'
+```
+
+The hosted package is `wendy-robots-cloud`. It references the supplied app via
+`.app.json` and includes the same onboarding skill, with no local `mcp.json`.
+This separates it from the Desktop-only package. Use an app ID belonging to
+the intended account/workspace; setup checks its format, not account ownership
+or remote availability. A URL, tunnel ID, or invented app ID is not a substitute
+for registration. These are personal/workspace packaging commands, not public
+submission or hosted deployment. Public submission still requires the stable
+HTTPS endpoint and review, and the existing Cloud credential-delegation work
+described below remains a separate production dependency.
+
 This desktop workspace adds Wendy to ChatGPT's global navigation and conversation
 extensions. It opens on a device gallery with static renders of existing Wendy device assets, then lets
 you inspect devices, preview cameras, share selected frames, read telemetry, and
@@ -260,6 +341,10 @@ and open `http://127.0.0.1:8790`. Its default fixture has no real camera. Set
 `WENDY_GATEWAY_URL` and `WENDY_GATEWAY_TOKEN` on that process to use a local HTTP
 gateway; the token stays on the host and is never sent into the panel iframe.
 
+Add `--empty` to preview the first-run getting-started screen with no devices
+or simulator permissions. Fixture buttons only update the fixture host's
+displayed conversation context; they do not send a real ChatGPT message.
+
 Regression checks:
 
 ```sh
@@ -311,6 +396,58 @@ actual MCP endpoint through OpenAI's plugin builder and complete review before
 public distribution. The plugin package deliberately contains no invented app ID.
 
 ## Simulators and app web UIs
+
+### Develop and deploy from ChatGPT
+
+Use [gateway.simulator.example.json](gateway.simulator.example.json) for a local
+simulator development session without physical hardware. Create an empty project
+directory on the gateway laptop, replace the example workspace's `path` with its
+absolute path, and start the gateway with that policy. The existing local plugin
+or private tunnel connection can use it. Restart the MCP process and refresh the
+plugin's tool catalog after updating the CLI or policy.
+
+This policy permits ChatGPT to create and operate local simulators, read and edit
+that project directory, and deploy it to running local simulators. It does not
+enable OS installation. The build runtime must be installed on the gateway host.
+The workspace remains on that host; a hosted HTTP gateway cannot edit the user's
+laptop files.
+
+Try "Create a generic Wendy simulator, write a small Python web app in the
+Simulator app workspace, deploy it there, and check its startup logs."
+For robot work, choose Go2 or G1 and have ChatGPT inspect the simulator and camera
+output while iterating on the app.
+
+The tool sequence is:
+
+1. `simulator_list`, then `simulator_create` if needed and `simulator_start`.
+   For Go2/G1, use `simulator_viewer` to check the live scene.
+2. `list_robots` to resolve the running simulator's `robot_id`, usually
+   `sim-<name>`. Explicitly configured VMs retain their configured IDs.
+3. `list_workspaces` to choose an approved project and see its permitted
+   `robot_ids` and file permissions. `list_workspace_files` lists a directory;
+   `read_workspace_file` returns text and its SHA-256 revision.
+4. `write_workspace_file` creates or replaces a UTF-8 file up to 256 KiB. Use
+   `expected_sha256: "missing"` for a new file, or the revision returned by a
+   read for an edit. A stale revision fails without changing the file. Parent
+   directories are created as needed. Author the app source and its Wendy
+   configuration/build files before validating.
+5. `validate_device_project` with the workspace and exact `robot_id`, then
+   `start_device_deployment` with those IDs and a fresh stable `request_id`.
+   Poll `get_deployment_job`. Reuse that request ID after an uncertain response;
+   use a new ID for a new deployment after editing. Cancellation can leave an
+   already started app running.
+6. `inspect_robot` and `read_device_logs` to check the app and actual output.
+   For an HTTP app, `open_robot_app` returns its declared web UI. Deployment
+   completion alone does not establish readiness.
+
+Project file tools are local stdio only, require a workspace grant, and separate
+`projects:read` from `projects:write`. Paths stay inside the approved root;
+absolute paths, parent traversal, escaping symlinks, and `.git` paths are rejected.
+Deployments require `apps:deploy` independently of file editing. Setting
+`allow_simulators` on a workspace opts that project into running local simulators
+that the caller may manage, including ones created later. It does not permit
+Cloud deployment or override an explicitly configured VM's grants and workspace
+`robots` list. Physical targets use that list and their separate robot grants.
 
 For a private local gateway, set `"allow_simulators": true` and add
 `"simulators:manage"` to its local subject's scopes. The Simulators view can

@@ -16,25 +16,29 @@ import (
 )
 
 const (
-	RobotReadScope      = "robots:read"
-	RobotCameraScope    = "cameras:capture"
-	RobotControlScope   = "apps:control"
-	RobotToolsScope     = "apps:tools"
-	RobotEventsScope    = "events:read"
-	RobotTriggerScope   = "triggers:write"
-	RobotSettingsScope  = "preferences:write"
-	RobotProjectScope   = "projects:read"
-	RobotDeployScope    = "apps:deploy"
-	RobotHostScope      = "host:manage"
-	RobotSimulatorScope = "simulators:manage"
+	RobotReadScope         = "robots:read"
+	RobotCameraScope       = "cameras:capture"
+	RobotControlScope      = "apps:control"
+	RobotToolsScope        = "apps:tools"
+	RobotEventsScope       = "events:read"
+	RobotTriggerScope      = "triggers:write"
+	RobotSettingsScope     = "preferences:write"
+	RobotProjectScope      = "projects:read"
+	RobotProjectWriteScope = "projects:write"
+	RobotDeployScope       = "apps:deploy"
+	RobotHostScope         = "host:manage"
+	RobotSimulatorScope    = "simulators:manage"
 )
 
-var robotGatewayScopes = []string{RobotReadScope, RobotCameraScope, RobotControlScope, RobotToolsScope, RobotEventsScope, RobotTriggerScope, RobotSettingsScope, RobotProjectScope, RobotDeployScope, RobotHostScope, RobotSimulatorScope}
+var robotGatewayScopes = []string{RobotReadScope, RobotCameraScope, RobotControlScope, RobotToolsScope, RobotEventsScope, RobotTriggerScope, RobotSettingsScope, RobotProjectScope, RobotProjectWriteScope, RobotDeployScope, RobotHostScope, RobotSimulatorScope}
 var gatewayIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // RobotGatewayConfig is operator-owned policy, never model-provided routing.
 // HTTP users can only exercise the intersection of OAuth scopes and their grant.
 type RobotGatewayConfig struct {
+	// An explicit local onboarding policy may start before any targets exist.
+	// This grants no device, simulator, or host access by itself.
+	AllowEmptyInventory bool               `json:"allow_empty_inventory,omitempty"`
 	Workspaces          []GatewayWorkspace `json:"workspaces,omitempty"`
 	AllowHostOperations bool               `json:"allow_host_operations,omitempty"`
 	AllowSimulators     bool               `json:"allow_simulators,omitempty"`
@@ -107,6 +111,9 @@ type GatewayWorkspace struct {
 	Name   string   `json:"name"`
 	Path   string   `json:"path"`
 	Robots []string `json:"robots"`
+	// Allows this project on running simulators managed by the local subject.
+	// Explicit robot entries still require their own grant and workspace binding.
+	AllowSimulators bool `json:"allow_simulators,omitempty"`
 }
 
 func DecodeRobotGatewayConfig(r io.Reader) (RobotGatewayConfig, error) {
@@ -137,8 +144,11 @@ func (c RobotGatewayConfig) validate() error {
 		}
 		projects[w.ID] = true
 	}
-	if (len(c.Robots) == 0 && len(c.CloudSources) == 0) || len(c.Robots) > 100 || len(c.CloudSources) > 8 {
-		return fmt.Errorf("configure robots or Cloud sources, with at most 100 explicit robots and 8 sources")
+	if c.AllowEmptyInventory && (c.LocalSubject == "" || c.HTTP != nil) {
+		return fmt.Errorf("allow_empty_inventory requires a local stdio policy")
+	}
+	if (len(c.Robots) == 0 && len(c.CloudSources) == 0 && !c.AllowEmptyInventory && !(c.AllowSimulators && c.LocalSubject != "")) || len(c.Robots) > 100 || len(c.CloudSources) > 8 {
+		return fmt.Errorf("configure robots, Cloud sources, or local simulators, with at most 100 explicit robots and 8 sources")
 	}
 	sources, identities := map[string]bool{}, map[string]bool{}
 	for _, source := range c.CloudSources {
@@ -162,7 +172,7 @@ func (c RobotGatewayConfig) validate() error {
 		sources[source.ID], identities[key] = true, true
 	}
 	ids, names := map[string]bool{}, map[string]bool{}
-	for _, name := range append(append(desktopToolNames, gatewayLifecycleTools...), gatewayHostTools...) {
+	for _, name := range append(append(append(desktopToolNames, gatewayLifecycleTools...), gatewayWorkspaceFileTools...), gatewayHostTools...) {
 		names[name] = true
 	}
 	for _, name := range []string{"list_robots", "open_robot", "inspect_robot", "capture_robot_image", "start_robot_app", "stop_robot_app", "open_robot_app", "start_camera_preview", "read_camera_preview", "stop_camera_preview"} {
