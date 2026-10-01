@@ -158,6 +158,28 @@ func TestACMEProvisioningStateFailureDoesNotCommit(t *testing.T) {
 	}
 }
 
+func TestACMEEnrollmentReadinessIsReadOnly(t *testing.T) {
+	for _, flag := range []string{"", "0", "true", "1"} {
+		t.Run("flag="+flag, func(t *testing.T) {
+			t.Setenv("WENDY_EXPERIMENTAL_ACME_ENROLLMENT", flag)
+			dir := t.TempDir()
+			svc := NewProvisioningServiceV2(NewProvisioningService(zap.NewNop(), dir))
+			resp, err := svc.IsProvisioned(context.Background(), &agentpbv2.IsProvisionedRequest{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := resp.GetNotProvisioned()
+			if state == nil || state.AcmeEnrollmentEnabled == nil || state.GetAcmeEnrollmentEnabled() != (flag == "1") {
+				t.Fatal("readiness does not reflect the experimental gate")
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 0 {
+				t.Fatal("read-only readiness wrote provisioning material")
+			}
+		})
+	}
+}
+
 func TestACMEProvisioningRequiresExplicitOptIn(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewProvisioningService(zap.NewNop(), dir)

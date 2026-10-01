@@ -22,9 +22,10 @@ func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.
 	s.v1.mu.Lock()
 	defer s.v1.mu.Unlock()
 	if !s.v1.enrolled {
+		enabled := acmeEnrollmentEnabled()
 		return &agentpbv2.IsProvisionedResponse{
 			ResponseType: &agentpbv2.IsProvisionedResponse_NotProvisioned{
-				NotProvisioned: &agentpbv2.NotProvisionedResponse{},
+				NotProvisioned: &agentpbv2.NotProvisionedResponse{AcmeEnrollmentEnabled: &enabled},
 			},
 		}, nil
 	}
