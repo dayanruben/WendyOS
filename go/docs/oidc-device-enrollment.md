@@ -97,6 +97,14 @@ ACME directory, EAB and Cloud host to `/config/acme-enrollment.json`. This is
 credential staging, not verified device enrollment, and does not enable the
 experimental flag. Agents predating this consumer do not read that file.
 
+The baked handoff is trusted provisioning input, not a signed artifact. Anyone
+who can replace it before consumption can choose the device's PKI deployment,
+tenant and identity. Use only trusted imaging hosts/media and restrict access
+to the config partition through first boot; FAT media do not enforce Unix file
+permissions. The experimental flag does not authenticate the handoff. Do not
+use this experimental path where the imaging/config-partition write boundary
+is untrusted; handoff signing/sealing is not implemented here.
+
 With explicit experimental opt-in, the agent reads the baked handoff after
 provisioning callbacks are installed and uses the same ACME provisioning path
 as manual enrollment. The attempt is non-blocking, bounded to two minutes,
