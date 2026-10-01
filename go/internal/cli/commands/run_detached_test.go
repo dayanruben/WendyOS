@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
@@ -285,6 +287,48 @@ func TestDetachedJSONBuildProgressStaysOnStderr(t *testing.T) {
 	})
 	if stdout != "" || !strings.Contains(stderr, "Building fixture") || !strings.Contains(stderr, "Built & pushed") {
 		t.Fatalf("build contaminated JSON stdout: stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestDetachedJSONChunkPushHeartbeatStaysOnStderr(t *testing.T) {
+	// Piped output selects the plain chunk-push heartbeat. A JSON deploy's
+	// stdout must still carry only its final result when a push outlasts a
+	// heartbeat, so `wendy --json run --detach | jq` keeps parsing.
+	defer forceBuildProgressInteractive(false)()
+	manifestCacheTestDir = t.TempDir()
+	oldOut, oldInterval := buildProgressOut, chunkPushPlainHeartbeatInterval
+	t.Cleanup(func() {
+		manifestCacheTestDir = ""
+		buildProgressOut, chunkPushPlainHeartbeatInterval = oldOut, oldInterval
+	})
+	var stdout bytes.Buffer
+	buildProgressOut = &stdout
+	chunkPushPlainHeartbeatInterval = time.Millisecond
+
+	diffID := "sha256:" + strings.Repeat("ab", 32)
+	cs := &fakeContainerClient{
+		queryFn: func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{}
+		},
+		queryLayersFn: func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+			time.Sleep(50 * time.Millisecond) // outlast several heartbeats
+			return &agentpb.QueryLayersResponse{Present: []*agentpb.PresentLayer{{DiffId: diffID, Size: 4096}}}
+		},
+	}
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex([]byte("compressed-bytes")),
+		DiffID:    diffID,
+		MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+		Blob:      []byte("this is not gzip"),
+	}}
+	ctx := context.WithValue(context.Background(), detachedJSONRunKey{}, true)
+	stderr := captureStderr(t, func() {
+		if _, err := pushLayersWithProgress(ctx, cs, layers, nil, gzipChunkUploadConfig, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if stdout.Len() != 0 || !strings.Contains(stderr, "  ...  ") {
+		t.Fatalf("chunk push heartbeat contaminated JSON stdout: stdout=%q stderr=%q", stdout.String(), stderr)
 	}
 }
 

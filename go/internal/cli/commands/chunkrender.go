@@ -19,6 +19,8 @@ import (
 // goroutines only mutate shared counters — so a ticker is the render loop.
 const chunkPushInteractiveTickInterval = 200 * time.Millisecond
 
+// chunkPushPlainHeartbeatInterval is the non-interactive heartbeat cadence. It
+// is a variable so tests need not wait out tui.PlainHeartbeatInterval.
 var chunkPushPlainHeartbeatInterval = tui.PlainHeartbeatInterval
 
 // pushLayersWithProgress wraps the chunk push with live progress: a
@@ -30,8 +32,9 @@ var chunkPushPlainHeartbeatInterval = tui.PlainHeartbeatInterval
 // prepare, when non-nil, runs device-side image preparation concurrently
 // with the upload (see pushLayersByChunksWithPrepare).
 //
-// Detach needs no branch here: it only diverges after Started, downstream
-// of this call.
+// A detached --json run keeps stdout for its single final result, so the
+// plain heartbeat goes to stderr there; the interactive bar always renders
+// to stderr.
 //
 // observe, when non-nil, receives the push's final snapshot — on failure too
 // — so the caller can record upload and device timings (WDY-3215).
