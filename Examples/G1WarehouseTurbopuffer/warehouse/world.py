@@ -19,6 +19,11 @@ TIMESTEP = 0.0025
 RACK_DEPTH = 0.44
 RACK_WIDTH = BAYS * BAY_PITCH + 0.2
 BOX_INSET = 0.13  # box centre behind the front edge of a shelf or cart
+# The model's Dex3 hand joints are fixed at zero, which leaves each thumb sticking ~9 cm straight out
+# of the palm. Pose the hands as the real joints can: thumb folded toward the fingers (thumb_1 at its
+# limit), fingers a little curled. Left-hand angles; the right hand mirrors them.
+HAND_POSE = {"thumb_1": 1.047, "thumb_2": 1.2, "index_0": -0.45, "middle_0": -0.45,
+             "index_1": -0.40, "middle_1": -0.40}
 
 
 @dataclass(frozen=True)
@@ -129,6 +134,11 @@ def build_xml() -> str:
     for side, y in (("left", -0.012), ("right", 0.012)):
         xml = re.sub(rf'(<body name="{side}_wrist_yaw_link"[^>]*>)',
                      rf'\1<site name="{side}_palm" pos="0.115 {y} 0" size="0.01"/>', xml, count=1)
+    for side, sign in (("left", 1.0), ("right", -1.0)):
+        for link, angle in HAND_POSE.items():   # each of these joints turns about its body's z axis
+            half = sign * angle / 2
+            xml = re.sub(rf'(<body name="{side}_hand_{link}_link" pos="[^"]*")',
+                         rf'\1 quat="{math.cos(half):.6f} 0 0 {math.sin(half):.6f}"', xml, count=1)
     xml = xml.replace("<option>", '<option cone="elliptic" impratio="10">', 1)
     xml = xml.replace('<compiler angle="radian" meshdir="meshes"/>',
                       f'<compiler angle="radian" meshdir="{ROBOT_DIR / "meshes"}"/>', 1)
@@ -153,8 +163,8 @@ def build_xml() -> str:
 def build_model() -> mujoco.MjModel:
     model = mujoco.MjModel.from_xml_string(build_xml())
     model.opt.timestep = TIMESTEP
-    # The Dex3 hands are rigid here, with the thumbs fixed pointing ~10 cm out of the palm. Let
-    # them pass through boxes so the palms and fingers make the grip.
+    # Even folded, a thumb stands ~3 cm proud of the palm. The thumbs don't collide; the palms stop
+    # short of the box (Skills.GRIP_GAP) so the curled fingertips and the thumb meet its side.
     for geom in range(model.ngeom):
         if "_hand_thumb_" in model.body(model.geom_bodyid[geom]).name:
             model.geom_contype[geom] = 0

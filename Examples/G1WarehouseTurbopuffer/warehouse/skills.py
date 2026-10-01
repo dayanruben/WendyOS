@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Iterator
 
+import mujoco
 import numpy as np
 
 from .robot import G1, STAND_HEIGHT, yaw_of
@@ -32,12 +33,20 @@ class Skills:
     BACK_OFF = 0.28   # extra distance for the stop-short before placing (m)
     CARRY = np.array([0.31, 0.0, 0.93])  # held box centre while walking: robot frame, height above floor
     SHARE = 0.006     # the following right palm aims this far above its grip to take some weight (m)
+    # Palm site to box side when gripping: the curled fingertips and folded thumb reach ~4.2 cm past
+    # the palm site, so they meet the box and the palm stops just short of it.
+    GRIP_GAP = 0.039
+    WALK_SPEED = 0.85  # m/s between stations; the gait policy strides out properly at this pace
+    TURN_RATE = 0.9   # rad/s, at most, while steering
 
     def __init__(self, robot: G1, boxes: dict[str, dict]):
         self.g = robot
         self.m, self.d = robot.m, robot.d
         self.boxes = boxes      # name -> {"body", "weld", "connect", "half"}
-        self.palms = self.tucked()
+        self.palms = [np.zeros(3), np.zeros(3)]   # IK targets, robot frame (while the hands work)
+        self.relaxed = True     # empty hands: the arms hang and swing instead of following targets
+        self.relax_blend, self.relax_from = 1.0, None
+        self.turn_from = None   # palm orientations to turn from on the next reach
         self.held: str | None = None
         self.grip_half = np.zeros(3)    # while holding: half the right-to-left palm vector, robot frame
         self.box_offset = np.zeros(3)   # while holding: box centre minus palm midpoint, robot frame
@@ -50,16 +59,12 @@ class Skills:
             for side in ("left", "right")]
 
     def reset(self) -> None:
-        """Empty hands, arms tucked (after the robot is put back at its start)."""
-        self.palms = self.tucked()
+        """Empty hands, arms relaxed (after the robot is put back at its start)."""
         self.palm_turn = [np.eye(3), np.eye(3)]
+        self.relaxed, self.relax_blend, self.relax_from, self.turn_from = True, 1.0, None, None
         self.held = None
 
     # --- basics ---------------------------------------------------------------------------------
-    @staticmethod
-    def tucked():
-        return [np.array([0.20, 0.24, 0.92]), np.array([0.20, -0.24, 0.92])]
-
     def to_robot(self, world) -> np.ndarray:
         """World point to the robot frame: forward, left, and height above the floor."""
         origin, rotation = self.g.base_frame()
@@ -84,7 +89,10 @@ class Skills:
 
     def tick(self) -> Steps:
         if self.g.steps % self.g.decimation == 0:
-            self.g.solve_arms(self._palm_targets())
+            if self.relaxed:
+                self.g.relax_arms(self.relax_blend, self.relax_from)
+            else:
+                self.g.solve_arms(self._palm_targets())
         self.g.step()
         if self.g.fallen():
             raise RobotFell(f"G1 fell at t={self.d.time:.2f}")
@@ -94,6 +102,27 @@ class Skills:
         for _ in range(int(seconds / self.m.opt.timestep)):
             yield from self.tick()
 
+    def relax(self, seconds: float) -> Steps:
+        """Let the arms down: ease from wherever they are into hanging (and swinging) by the sides."""
+        self.relax_from = self.d.qpos[self.g.arm_qadr].copy()
+        self.relaxed = True
+        n = max(1, int(seconds / self.m.opt.timestep))
+        for i in range(n):
+            s = (i + 1) / n
+            self.relax_blend = s * s * (3 - 2 * s)
+            yield from self.tick()
+        self.relax_blend = 1.0
+
+    def take_hands(self) -> None:
+        """Hand the arms from hanging to palm targets, starting exactly where the palms are."""
+        if not self.relaxed:
+            return
+        rotation = self.g.base_frame()[1]
+        self.palms = [self.to_robot(self.d.site_xpos[site]) for site in self.g.palm]
+        self.palm_turn = [rotation.T @ self.d.site_xmat[site].reshape(3, 3) for site in self.g.palm]
+        self.turn_from = [turn.copy() for turn in self.palm_turn]   # the next reach turns them to the grip
+        self.relaxed = False
+
     def move_palms(self, goal, seconds: float) -> Steps:
         start = [p.copy() for p in self.palms]
         n = max(1, int(seconds / self.m.opt.timestep))
@@ -101,7 +130,10 @@ class Skills:
             s = (i + 1) / n
             s = s * s * (3 - 2 * s)
             self.palms = [a + (b - a) * s for a, b in zip(start, goal)]
+            if self.turn_from is not None:   # hands just taken from hanging: turn them to face forward
+                self.palm_turn = [_slerp(turn, np.eye(3), s) for turn in self.turn_from]
             yield from self.tick()
+        self.turn_from = None
 
     def hand_contacts(self, body: int) -> list[int]:
         geoms = {i for i in range(self.m.ngeom) if self.m.geom_bodyid[i] == body}
@@ -114,10 +146,11 @@ class Skills:
         return counts
 
     # --- walking ---------------------------------------------------------------------------------
-    def goto(self, x: float, y: float, yaw: float, speed: float = 0.45, tol: float = 0.06,
+    def goto(self, x: float, y: float, yaw: float, speed: float | None = None, tol: float = 0.06,
              yaw_tol: float = 0.07, timeout: float = 60.0, settle: float = 0.8) -> Steps:
         """Walk to a stance: steer toward it, then align position and heading in the body frame."""
         g, d = self.g, self.d
+        speed = self.WALK_SPEED if speed is None else speed
         deadline = d.time + timeout
         while True:
             delta = np.array([x, y]) - d.qpos[:2]
@@ -125,15 +158,18 @@ class Skills:
             yaw_err = (yaw - g.heading() + np.pi) % (2 * np.pi) - np.pi
             if dist > 0.5:
                 bearing = (np.arctan2(delta[1], delta[0]) - g.heading() + np.pi) % (2 * np.pi) - np.pi
-                g.cmd_goal = np.array([speed * max(0.0, np.cos(bearing)) ** 2, 0.0, np.clip(1.5 * bearing, -0.6, 0.6)])
+                # full pace until the last metre, then ease off so the approach doesn't overshoot
+                pace = speed * min(1.0, 0.45 + 0.55 * (dist - 0.5) / 0.6)
+                g.cmd_goal = np.array([pace * max(0.0, np.cos(bearing)) ** 2, 0.0,
+                                       np.clip(1.8 * bearing, -self.TURN_RATE, self.TURN_RATE)])
             else:
                 c, s = np.cos(g.heading()), np.sin(g.heading())
                 local = np.array([c * delta[0] + s * delta[1], -s * delta[0] + c * delta[1]])
                 if dist < tol and abs(yaw_err) < yaw_tol:
                     g.cmd_goal = np.zeros(3)
                     break
-                command = np.array([np.clip(1.2 * local[0], -0.2, 0.25), np.clip(1.2 * local[1], -0.15, 0.15),
-                                    np.clip(1.5 * yaw_err, -0.4, 0.4)])
+                command = np.array([np.clip(1.2 * local[0], -0.2, 0.3), np.clip(1.2 * local[1], -0.18, 0.18),
+                                    np.clip(1.5 * yaw_err, -0.5, 0.5)])
                 # stay above the walk threshold, or the balance policy takes over mid-step
                 norm = float(np.linalg.norm(command))
                 if norm < 0.12:
@@ -153,7 +189,7 @@ class Skills:
         """Pelvis height so the box centre sits at a comfortable hand height."""
         return float(np.clip(STAND_HEIGHT - max(0.0, 0.86 - z_centre), 0.50, STAND_HEIGHT))
 
-    def retreat(self, distance: float = 0.45, speed: float = 0.25) -> Steps:
+    def retreat(self, distance: float = 0.45, speed: float = 0.32) -> Steps:
         """Walk straight back from a shelf before turning, so hands and boxes clear it."""
         start = self.d.qpos[:2].copy()
         self.g.cmd_goal = np.array([-speed, 0.0, 0.0])
@@ -175,8 +211,8 @@ class Skills:
                     raise
                 self.g.height_goal = STAND_HEIGHT
                 self.g.rpy_goal = np.zeros(3)
-                yield from self.move_palms(self.tucked(), 0.8)
-                yield from self.retreat()
+                yield from self.retreat()      # clear of the shelf first, then let the arms down
+                yield from self.relax(0.8)
 
     def _pick_once(self, name: str, slot: Slot) -> Steps:
         box = self.boxes[name]
@@ -194,15 +230,19 @@ class Skills:
         yield from self.goto(stand[0], stand[1], facing, tol=0.04)
         g.height_goal = self.height_for(centre[2])
         g.rpy_goal = np.array([0.0, self.LEAN, 0.0])
-        # The hands open toward the box while the body bends, then drop beside it and close in.
-        yield from self.reach_for(body, hy + 0.08, 0.10, 1.4)
+        # The hands come up and open toward the box while the body bends, then drop beside it and close in.
+        self.take_hands()
+        surface = centre[2] - box["half"][2]
+        if surface > 0.55:
+            # hanging hands start below a shelf: raise them in front of the chest, behind its edge, first
+            yield from self.move_palms([np.array([0.13, side * (hy + 0.12), surface + 0.22]) for side in (1, -1)], 0.8)
+        yield from self.reach_for(body, hy + 0.10, 0.10, 1.4 if surface <= 0.55 else 1.0)
         rel = self.to_robot(d.xpos[body])
         if not (0.24 < rel[0] < 0.42 and abs(rel[1]) < 0.09):
             # the balance policy sometimes steps while crouching: re-approach instead of overreaching
             raise GraspMissed(f"{name} out of reach after crouching: {rel[0]:.2f} ahead, {rel[1]:.2f} to the side")
-        yield from self.reach_for(body, hy + 0.08, 0.0, 0.8)
-        # The palm surface sits ~1.7 cm inside the palm site, so "hy" presses it lightly into the box.
-        yield from self.reach_for(body, hy, 0.0, 0.7)
+        yield from self.reach_for(body, hy + 0.10, 0.0, 0.8)
+        yield from self.reach_for(body, hy + self.GRIP_GAP, 0.0, 0.7)
         touching = self.hand_contacts(body)
         if min(touching) == 0:
             raise GraspMissed(f"no two-handed contact on {name}: {touching}")
@@ -226,7 +266,10 @@ class Skills:
             goal = [np.array([c[0] - 0.02, c[1] + half_gap, c[2] + above]),
                     np.array([c[0] - 0.02, c[1] - half_gap, c[2] + above])]
             self.palms = [a + (b - a) * s for a, b in zip(start, goal)]
+            if self.turn_from is not None:   # turn the palms from hanging to facing the box
+                self.palm_turn = [_slerp(turn, np.eye(3), s) for turn in self.turn_from]
             yield from self.tick()
+        self.turn_from = None
 
     def _box_facing(self, body: int, facing: float) -> float:
         """The box's heading nearest the slot's (a box looks the same turned around), within 20°."""
@@ -292,20 +335,38 @@ class Skills:
         yield from self.goto(sx, sy, slot.facing)
         yield from self.carry_box(np.array([self.CARRY[0], 0.0, approach]), 1.0)
         sx, sy = self.stance(slot)
-        yield from self.goto(sx, sy, slot.facing, speed=0.2, tol=0.03, settle=1.5)
+        yield from self.goto(sx, sy, slot.facing, speed=0.25, tol=0.03, settle=1.5)
         g.height_goal = self.height_for(rest)
         if g.height_goal < STAND_HEIGHT:   # lean in only when crouching to a low surface
             g.rpy_goal = np.array([0.0, self.PLACE_LEAN, 0.0])
         yield from self.set_box_down([slot.x, slot.y, rest + 0.03], 2.0)
         yield from self.set_box_down([slot.x, slot.y, rest - 0.01], 0.8)
         self._release()
-        # open the hands along the grip, lift them clear, then tuck
+        # open the hands along the grip, lift them clear, then let the arms down
         apart = self.grip_half * np.array([1.0, 1.0, 0.0])
         apart = 0.09 * apart / max(float(np.linalg.norm(apart)), 1e-6)
         up = np.array([0.0, 0.0, 0.02])
         yield from self.move_palms([self.palms[0] + apart + up, self.palms[1] - apart + up], 0.7)
-        self.palm_turn = [np.eye(3), np.eye(3)]
         g.height_goal = STAND_HEIGHT
         g.rpy_goal = np.zeros(3)
-        yield from self.move_palms(self.tucked(), 1.0)
-        yield from self.retreat()
+        yield from self.retreat()          # clear of the shelf first, then let the arms down
+        yield from self.relax(1.0)
+
+
+def _slerp(a: np.ndarray, b: np.ndarray, s: float) -> np.ndarray:
+    """Rotation part way from matrix a to matrix b."""
+    qa, qb = np.zeros(4), np.zeros(4)
+    mujoco.mju_mat2Quat(qa, a.reshape(9))
+    mujoco.mju_mat2Quat(qb, b.reshape(9))
+    if qa @ qb < 0:
+        qb = -qb
+    dot = min(1.0, float(qa @ qb))
+    if dot > 0.9995:
+        q = qa + s * (qb - qa)
+    else:
+        angle = np.arccos(dot)
+        q = (np.sin((1 - s) * angle) * qa + np.sin(s * angle) * qb) / np.sin(angle)
+    q /= np.linalg.norm(q)
+    out = np.zeros(9)
+    mujoco.mju_quat2Mat(out, q)
+    return out.reshape(3, 3)

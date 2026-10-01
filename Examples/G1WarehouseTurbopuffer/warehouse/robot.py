@@ -36,6 +36,13 @@ ELBOWS_OUT = 0.35
 STAND_HEIGHT = 0.74
 ARM_JOINTS = [f"{side}_{joint}_joint" for side in ("left", "right") for joint in
               ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll", "wrist_pitch", "wrist_yaw")]
+# Empty hands: arms hang by the sides, elbows a little bent (at zero the G1's forearms point forward).
+RELAXED = np.array([0.12, 0.16, 0.0, 1.3, 0.0, 0.0, 0.0,
+                    0.12, -0.16, 0.0, 1.3, 0.0, 0.0, 0.0])
+# While walking empty-handed each arm swings with the opposite leg: shoulder pitch follows the other
+# hip's pitch (both axes point the same way, so forward leg means forward arm).
+ARM_SWING = 0.55
+LEFT_HIP_PITCH, RIGHT_HIP_PITCH = 0, 6   # indices into the policy joints
 
 
 def _session(name: str) -> ort.InferenceSession:
@@ -87,7 +94,9 @@ class G1:
         self.height_goal = STAND_HEIGHT
         self.rpy = np.zeros(3)
         self.rpy_goal = np.zeros(3)
-        self.arm_q = np.zeros(14)
+        self.arm_q = RELAXED.copy()
+        d.qpos[self.arm_qadr] = RELAXED
+        self.hip_mean = DEFAULT[[LEFT_HIP_PITCH, RIGHT_HIP_PITCH]].copy()
         self.steps = 0
 
     # --- policy -----------------------------------------------------------------------
@@ -140,6 +149,20 @@ class G1:
         yaw = self.heading()
         c, s = np.cos(yaw), np.sin(yaw)
         return np.array([self.d.qpos[0], self.d.qpos[1], 0.0]), np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+    # --- empty hands -------------------------------------------------------------------------
+    def relax_arms(self, blend: float = 1.0, start: np.ndarray | None = None) -> None:
+        """Arms hanging by the sides, swinging with the opposite leg while walking. `blend` eases
+        from `start` (the arms' joints when the hands let go) into that pose."""
+        hips = self.d.qpos[7 + np.array([LEFT_HIP_PITCH, RIGHT_HIP_PITCH])]
+        self.hip_mean += 0.02 * (hips - self.hip_mean)            # ~1 s average: the stance, not the stride
+        swing = ARM_SWING * (hips - self.hip_mean)
+        goal = RELAXED.copy()
+        goal[0] += swing[1]       # left shoulder follows the right hip
+        goal[7] += swing[0]       # right shoulder follows the left hip
+        if start is not None and blend < 1.0:
+            goal = start + (goal - start) * blend
+        self.arm_q = np.clip(goal, self.arm_range[:, 0] + 0.02, self.arm_range[:, 1] - 0.02)
 
     # --- arm IK ---------------------------------------------------------------------------
     def solve_arms(self, targets, iterations: int = 12, damping: float = 0.05) -> None:

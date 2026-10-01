@@ -72,12 +72,14 @@ from NVIDIA's GR00T whole-body-control repository.
   joints through PD control, as in the upstream `sim2mujoco` runner. Their
   height and torso-pitch commands let the robot crouch to the low cart and lean
   in.
-- **Arms.** A damped least-squares IK moves both palms, with gravity
-  compensation and a 25 N·m torque limit per joint.
-- **Grasping.** The palms squeeze the box. MuJoCo constraints then stand in for
-  finger friction, because the Dex3 fingers are rigid in this model: a weld to
-  the left hand and a pin at the right palm. The left arm steers the box and the
-  right palm follows it, taking part of the load.
+- **Arms.** A damped least-squares IK moves both palms when the hands work,
+  with gravity compensation and a 25 N·m torque limit per joint. With empty
+  hands the arms hang by the sides and swing with the opposite leg.
+- **Grasping.** The Dex3 finger joints are fixed in this model, so the hands are
+  posed as the real joints allow: thumb folded, fingers a little curled. The
+  fingertips close on the box's sides, then MuJoCo constraints stand in for
+  finger friction: a weld to the left hand and a pin at the right palm. The left
+  arm steers the box and the right palm follows it, taking part of the load.
 - **Skills** (`warehouse/skills.py`):
   - walk to a stance, then crouch and pick with both hands;
   - carry, stop short of the shelf and step in, set the box down, back away.
