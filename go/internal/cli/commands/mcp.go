@@ -43,6 +43,7 @@ func newMCPServeCmd() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 			srv := wendymcp.New(cfg, connectMCPDevice)
+			srv.SetCLIUpdateChecker(checkCLIUpdateIfDue)
 			if err := srv.SetToolGroups(toolGroups); err != nil {
 				return err
 			}

@@ -70,6 +70,7 @@ async function sameOptions(message) {
 
 try {
   await page.goto(origin);
+  await page.locator('#app-control > summary').click();
   await poll();
   const select = page.locator('#source');
   assert.equal(await select.locator('option').count(), 1);

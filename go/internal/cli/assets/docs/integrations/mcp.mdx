@@ -28,6 +28,21 @@ through `wendy mcp setup` remains available for other clients.
 OpenAI imports MCP skills as a snapshot during Scan Tools. Restart the MCP
 server after a CLI update, then scan again before submitting updated skills.
 
+## CLI update notices
+
+`wendy_status` includes `cli_version` for the running MCP server and `cli_update`
+for cached update details. When a newer release is known, `cli_update` includes
+`latest_version`, `update_command`, `restart_required`, and a message to relay to
+the user. `last_checked_at` records the last release-check attempt;
+`available=false` does not confirm that the check succeeded or the CLI is current.
+
+`wendy mcp serve` checks the cache at startup and hourly, contacting the release
+API only when the existing 24-hour check interval expires. Development builds
+skip release checks. The next tool result carries a text notice once per release
+per MCP session, including sessions where a terminal already printed the notice.
+The notice preserves the tool's result and error state. Run the supplied update
+command, then restart the Wendy MCP server to load the new version and tools.
+
 ## Enable specialist tools
 
 Call `wendy_tools` with `{"groups":["robotics"]}` to expose ROS inspection tools.

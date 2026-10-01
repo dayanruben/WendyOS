@@ -28,6 +28,14 @@ required. Installation calls return a durable job ID, state, next action, and
 instructions; users perform physical steps between calls. Success after flashing
 does not imply successful boot or application readiness.
 
+CLI updates appear in `wendy_status.cli_update` and as a text notice appended
+to the next tool result once per release per session. Keep notices independent
+of terminal notice state and preserve tool payloads and errors. Relay the update
+command and MCP restart step to the user. The injected release checker runs off
+the startup path and hourly, respects the existing 24-hour cache and development
+build exclusion, and cancels when serving stops. Cached availability is not proof
+of a successful latest check; the check timestamp records an attempt.
+
 ## Constraints
 
 Reuse existing Go CLI, VM, onboarding, and gRPC services. Host backends are injected

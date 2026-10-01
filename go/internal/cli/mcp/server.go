@@ -40,6 +40,7 @@ type mcpServer struct {
 	cfg                  *config.Config
 	connectFn            ConnectFunc
 	startupConnectFn     func(context.Context)
+	cliUpdateCheckFn     func(context.Context)
 	conn                 *grpcclient.AgentConnection
 	connRevision         uint64
 	connType             string
@@ -263,6 +264,7 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 		server.WithInstructions(serverInstructions),
 		server.WithToolFilter(s.filterTools),
 	)
+	srv.Use(s.cliUpdateMiddleware())
 	if err := registerSkills(srv); err != nil {
 		return nil, err
 	}
@@ -303,6 +305,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	stopContainerMCP := s.startContainerMCP(startupCtx, srv)
 	defer stopContainerMCP()
 	go s.runStartupConnect(startupCtx)
+	go s.runCLIUpdateChecks(startupCtx, time.Hour)
 
 	return serveStdio(srv)
 }

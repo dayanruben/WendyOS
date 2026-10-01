@@ -4,6 +4,8 @@
 // BROWSER_CHANNEL=chrome also runs against the installed Google Chrome.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const browser = await chromium.launch({ headless: true, channel: process.env.BROWSER_CHANNEL || 'chromium' });
@@ -79,6 +81,18 @@ try {
     await page.waitForFunction(() => document.querySelector('#view-status').textContent.includes('Paused'));
     assert.equal(test.maxModules(), 1, `${robot}: module downloads must be sequential`);
     assert.deepEqual(test.modules.slice(0, 3), ['/vendor/three.core.js', '/vendor/three.module.js', '/vendor/OrbitControls.js']);
+    assert(!(await page.locator('#pause').isVisible()), 'Paused scenes show Resume instead of Pause');
+    assert(await page.locator('#resume').isVisible());
+    assert(!(await page.locator('#source').isVisible()), 'Advanced app controls start collapsed');
+    await page.screenshot({ path: join(tmpdir(), `${robot}-ui-desktop.png`), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'The mobile UI must fit without horizontal scrolling');
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: join(tmpdir(), `${robot}-ui-mobile.png`) });
+    await page.locator('details').last().scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(tmpdir(), `${robot}-ui-mobile-settings.png`) });
+    await page.setViewportSize({ width: 1000, height: 850 });
+    await page.evaluate(() => scrollTo(0, 0));
 
     // Use a real GPU context loss, not just synthetic DOM events. Three.js
     // rebuilds its resources on restoration; the viewer must resume polling.

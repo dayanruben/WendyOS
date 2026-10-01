@@ -11,7 +11,7 @@ import (
 
 func (s *mcpServer) registerStatusTools(srv *server.MCPServer) {
 	statusOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Return current MCP session connection state and a plain-English suggested next step. Call this first to orient yourself."),
+		mcpgo.WithDescription("Return current MCP session connection state, cached CLI update details, and a plain-English suggested next step. Call this first to orient yourself. cli_update.available means a newer release is known; false does not confirm a successful release check."),
 	}
 	statusOpts = append(statusOpts, readOnly()...)
 	statusOpts = append(statusOpts, localOnly()...)
@@ -27,6 +27,7 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 			"suggested_next_step":   "Call device_list, then device_connect with the returned device selector. For uninstalled hardware enable setup with wendy_tools, then use os_install_plan. An empty scan does not establish a network failure.",
 			"tool_groups":           s.selectedToolGroups(),
 			"cli_version":           version.Version,
+			"cli_update":            s.cliUpdateStatus(),
 			"installation_planning": s.installation.Plan != nil,
 			"installation_jobs":     s.installation.Start != nil,
 			"simulator_management":  s.simulators.List != nil,
@@ -43,6 +44,7 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 		"connected":             true,
 		"tool_groups":           s.selectedToolGroups(),
 		"cli_version":           version.Version,
+		"cli_update":            s.cliUpdateStatus(),
 		"installation_planning": s.installation.Plan != nil,
 		"installation_jobs":     s.installation.Start != nil,
 		"simulator_management":  s.simulators.List != nil,
