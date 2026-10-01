@@ -83,7 +83,7 @@ func TestServerInstructionsShape(t *testing.T) {
 			t.Errorf("first paragraph does not mention %s", want)
 		}
 	}
-	for _, want := range []string{"vm:NAME", "cloud://", "before verifying", "NOT_CONNECTED", "AUTH_REQUIRED", "wendy://guide", "separate words"} {
+	for _, want := range []string{"vm:NAME", "cloud://", "before verifying", "NOT_CONNECTED", "AUTH_REQUIRED", "wendy://guide", "separate words", "Relay CLI update notices", "MCP server restart"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("instructions do not mention %q", want)
 		}

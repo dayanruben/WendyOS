@@ -27,8 +27,9 @@ struct `'wendy mcp serve'` {
     }
 
     /**
-     Negotiates an MCP session over newline-delimited stdio and lists Wendy
-     tools without mixing diagnostics into protocol stdout.
+     Negotiates an MCP session over newline-delimited stdio and lists Wendy's
+     core tools without mixing diagnostics into protocol stdout. Specialist
+     groups such as `cloud` stay unlisted until `wendy_tools` enables them.
      */
     @Test
     func `serves MCP tools over stdio`() async throws {

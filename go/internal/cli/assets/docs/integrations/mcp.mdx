@@ -6,6 +6,43 @@ description: Tool groups, device selectors, compact results, and current CLI cov
 Wendy starts with 15 core tools for connecting, deploying, inspecting containers,
 reading logs, and discovering hardware. Running apps can provide additional tools.
 
+For ChatGPT Desktop, run `wendy mcp setup chatgpt` to add the Wendy plugin to
+your personal marketplace. It includes a scoped local MCP gateway, device
+workspace, and bundled skills. Follow the
+[ChatGPT setup guide](/docs/guides/chatgpt) to install it and enable access.
+The tool groups below describe the broader `wendy mcp serve` developer server.
+
+## Skills and first-time setup
+
+The server also exposes the bundled end-user skills through the MCP skills
+extension. Call `skills/list` with `{}` to get the single `wendy` entry, then
+`skills/get` with its URI. Read instructions and supporting files through
+`resources/read`; each catalog resource includes its SHA-256 digest. These calls
+work offline without a device connection or a local skill installation.
+
+The bundle includes `wendy-onboarding` for installing and verifying a first
+physical device, or setting up a local simulator when hardware is unavailable.
+The ChatGPT plugin's setup entry opens this skill. Native skill installation
+through `wendy mcp setup` remains available for other clients.
+
+OpenAI imports MCP skills as a snapshot during Scan Tools. Restart the MCP
+server after a CLI update, then scan again before submitting updated skills.
+
+## CLI update notices
+
+`wendy_status` includes `cli_version` for the running MCP server and `cli_update`
+for cached update details. When a newer release is known, `cli_update` includes
+`latest_version`, `update_command`, `restart_required`, and a message to relay to
+the user. `last_checked_at` records the last release-check attempt;
+`available=false` does not confirm that the check succeeded or the CLI is current.
+
+`wendy mcp serve` checks the cache at startup and hourly, contacting the release
+API only when the existing 24-hour check interval expires. Development builds
+skip release checks. The next tool result carries a text notice once per release
+per MCP session, including sessions where a terminal already printed the notice.
+The notice preserves the tool's result and error state. Run the supplied update
+command, then restart the Wendy MCP server to load the new version and tools.
+
 ## Enable specialist tools
 
 Call `wendy_tools` with `{"groups":["robotics"]}` to expose ROS inspection tools.

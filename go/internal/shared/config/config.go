@@ -4,9 +4,11 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"os"
 	"path/filepath"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 )
 
 // Config represents the top-level CLI configuration.
@@ -270,11 +272,45 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := writeConfigFile(path, data); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 
 	return nil
+}
+
+// writeConfigFile replaces path with data without ever exposing a partial
+// file: a crash or a concurrent reader sees the old config or the new one,
+// never the truncated file os.WriteFile leaves mid-write. The file is always
+// 0600 — it holds credentials. A symlinked config.json (a dotfiles repo) is
+// written through to its target — including a dangling target that does not
+// exist yet — so the link survives the rename. The write preserves the
+// existing owner (or, for a fresh config.json, its directory's owner)
+// instead of leaving it root-owned, since `wendy` re-execs itself under sudo
+// with the invoking user's HOME for some operations.
+//
+// Before writing, it probes the target for write permission and fails
+// without touching the file if that probe fails. A rename replaces a file
+// regardless of that file's own permissions — only the containing
+// directory's permissions matter — so without this probe Save would silently
+// override a config.json the user deliberately made read-only (e.g. chmod
+// 444 to stop `wendy` from rewriting a hand-edited or generated config).
+// os.WriteFile respected that mode by construction; this preserves the same
+// behavior under the new rename-based write path.
+func writeConfigFile(path string, data []byte) error {
+	resolved, err := atomicfile.ResolveWritePath(path)
+	if err != nil {
+		return err
+	}
+	path = resolved
+	if f, err := os.OpenFile(path, os.O_WRONLY, 0); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+	} else {
+		_ = f.Close()
+	}
+	return atomicfile.WritePreservingOwner(path, data, 0o600)
 }
 
 // authEntryOrgID returns the organization ID from the first certificate in an

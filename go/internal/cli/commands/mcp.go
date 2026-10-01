@@ -21,6 +21,8 @@ func newMCPCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newMCPServeCmd())
 	cmd.AddCommand(newMCPSetupCmd())
+	cmd.AddCommand(newMCPGatewayCmd())
+	cmd.AddCommand(newMCPExportRobotToolCmd())
 	return cmd
 }
 
@@ -32,12 +34,16 @@ func newMCPServeCmd() *cobra.Command {
 		Short: "Start the MCP server on stdio",
 		Long:  "Start a Model Context Protocol server that exposes wendy device tools over stdio.\nConfigure your AI tool to run: wendy mcp serve\nOr run 'wendy mcp setup' to configure automatically.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Long-lived: read credentials fresh rather than from the snapshot
+			// loaded below (see wendymcp.EnableConfigReload).
+			wendymcp.EnableConfigReload(config.Load)
 			ctx := cmd.Context()
 			cfg, err := config.Load()
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
 			}
 			srv := wendymcp.New(cfg, connectMCPDevice)
+			srv.SetCLIUpdateChecker(checkCLIUpdateIfDue)
 			if err := srv.SetToolGroups(toolGroups); err != nil {
 				return err
 			}
@@ -48,10 +54,7 @@ func newMCPServeCmd() *cobra.Command {
 				return discovery.CollectLAN(ctx, cliLANStreamOptions(ctx), timeout)
 			})
 			srv.SetUSBSetupNotice(pendingUSBSetupNotice)
-			address := deviceFlag
-			if address == "" {
-				address = cfg.DefaultDevice
-			}
+			address := mcpStartupDevice(deviceFlag, cfg)
 			switch {
 			case os.Getenv("WENDY_AGENT_SOCKET") != "":
 				// Admin-entitled on-device container: connect over the local
