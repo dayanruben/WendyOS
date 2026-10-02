@@ -7,7 +7,7 @@ which stores every shelved item and each zone's description as text and embeds
 it natively. When the cart is empty, someone asks for "a cable for my second
 monitor": the robot looks up the best match, a DisplayPort cable that was on the
 shelves before the shipment arrived, walks across the warehouse and brings it
-back to the cart. The loop lasts about four minutes.
+back to the cart. The loop lasts a little over three minutes.
 
 Everything runs in one container: MuJoCo physics, the G1's walking policy, the
 arm and grasp control, and a small web server that streams the warehouse to a

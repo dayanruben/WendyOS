@@ -27,7 +27,9 @@ contains an unverified copy.
     Corporation under the NVIDIA Open Model License".
 - The files are used unmodified. At load time:
   - `warehouse/world.py` adds palm sites, grasp constraints, contact exclusions
-    and the warehouse to the model, and turns off collisions for the Dex3 thumbs.
+    and the warehouse to the model, poses the Dex3 fingers within their joint
+    limits (the model fixes those joints at zero), and turns off collisions for
+    the Dex3 thumbs.
   - `warehouse/robot.py` runs the policies with the upstream `sim2mujoco`
     runner's observation layout and gains.
 
