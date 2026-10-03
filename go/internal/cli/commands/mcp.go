@@ -21,6 +21,8 @@ func newMCPCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newMCPServeCmd())
 	cmd.AddCommand(newMCPSetupCmd())
+	cmd.AddCommand(newMCPGatewayCmd())
+	cmd.AddCommand(newMCPExportRobotToolCmd())
 	return cmd
 }
 
@@ -41,6 +43,7 @@ func newMCPServeCmd() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 			srv := wendymcp.New(cfg, connectMCPDevice)
+			srv.SetCLIUpdateChecker(checkCLIUpdateIfDue)
 			if err := srv.SetToolGroups(toolGroups); err != nil {
 				return err
 			}
