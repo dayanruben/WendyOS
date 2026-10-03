@@ -26,7 +26,7 @@ const serverInstructions = "Wendy MCP manages WendyOS edge devices (Raspberry Pi
 	"MCP or CLI: prefer these tools for device state, containers, logs and deploys; " +
 	"results are structured and reuse this session's connection. " +
 	"Only core tools are listed at first: enable setup, simulator, hardware, robotics, observability or cloud tools with `wendy_tools`. " +
-	"Use the CLI for work without a tool, such as `wendy auth login` and `wendy run --watch`. " +
+	"Use the CLI where no tool exists, such as `wendy run --watch`. " +
 	"In a shell, keep each flag and its value as separate words (wendy run --device \"$DEVICE\"). " +
 	"Avoid DEV=\"--device robot\": zsh passes it as one argument. " +
 	"Relay CLI update notices to the user with the update command and MCP server restart step.\n\n" +

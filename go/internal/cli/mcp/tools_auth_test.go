@@ -268,7 +268,10 @@ func TestDesktopSessionFor(t *testing.T) {
 
 func TestAuthLogin_AdvertisedInCoreWithAnnotations(t *testing.T) {
 	s := New(&config.Config{}, nil)
-	srv := s.newProtocolServer()
+	srv, err := s.newProtocolServer()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var names []string
 	for _, tool := range protocolTools(t, srv) {
 		names = append(names, tool.Name)
