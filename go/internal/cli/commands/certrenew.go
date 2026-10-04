@@ -295,7 +295,11 @@ func signRenewalJWS(key crypto.PrivateKey, payload []byte) (string, error) {
 		sign = func(in []byte) ([]byte, error) { return ed25519.Sign(k, in), nil }
 	}
 	if alg == "" {
-		return "", fmt.Errorf("cannot sign a renewal proof with a %T key", key)
+		// Reported, not swallowed by the pre-flight: no later run can fix it.
+		return "", renewUnavailableError{
+			reason:         fmt.Sprintf("this certificate's %T key cannot sign the renewal proof pki-core requires", key),
+			needsFreshCert: true,
+		}
 	}
 	enc := base64.RawURLEncoding.EncodeToString
 	input := enc([]byte(`{"alg":"`+alg+`"}`)) + "." + enc(payload)

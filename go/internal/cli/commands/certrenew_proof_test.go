@@ -10,11 +10,13 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -183,8 +185,10 @@ func TestRenewalPossessionProofAlgorithmFollowsTheKey(t *testing.T) {
 	}
 	for name, key := range refused {
 		t.Run("refuses "+name, func(t *testing.T) {
-			if _, err := renewalPossessionProof(proofTestCert(t, key), csrPEM, time.Now()); err == nil {
-				t.Fatalf("a %s key produced a proof; want a refusal, never a substitute algorithm", name)
+			_, err := renewalPossessionProof(proofTestCert(t, key), csrPEM, time.Now())
+			var ru renewUnavailableError
+			if !errors.As(err, &ru) {
+				t.Fatalf("a %s key: err = %v; want a reported refusal, never a substitute algorithm", name, err)
 			}
 		})
 	}
@@ -220,16 +224,21 @@ func TestRenewSendsPossessionProofForThePresentedCert(t *testing.T) {
 	key, _ := mldsa.GenerateKey(mldsa.MLDSA65())
 	current := proofTestCert(t, key)
 	csrPEM, csrDER := proofTestCSR(t)
-	block, _ := pem.Decode([]byte(current.PemCertificate))
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		if len(r.TLS.PeerCertificates) == 0 {
+			t.Error("no client certificate presented")
+			return
+		}
+		presented := r.TLS.PeerCertificates[0].Raw
 		var body renewRequestBody
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode: %v", err)
 		}
 		parts := strings.Split(body.PossessionProof, ".")
 		if len(parts) != 3 {
-			t.Fatalf("possession_proof = %q, want JWS Compact", body.PossessionProof)
+			t.Errorf("possession_proof = %q, want JWS Compact", body.PossessionProof)
+			return
 		}
 		raw, _ := base64.RawURLEncoding.DecodeString(parts[1])
 		var p struct {
@@ -237,17 +246,26 @@ func TestRenewSendsPossessionProofForThePresentedCert(t *testing.T) {
 			CSRSHA256  string `json:"csr_sha256"`
 		}
 		_ = json.Unmarshal(raw, &p)
-		if p.CertSHA256 != b64Sum(block.Bytes) || p.CSRSHA256 != b64Sum(csrDER) || body.CSR != csrPEM {
+		if p.CertSHA256 != b64Sum(presented) || p.CSRSHA256 != b64Sum(csrDER) || body.CSR != csrPEM {
 			t.Errorf("proof not bound to the presented cert and this CSR: %+v", p)
 		}
 		sig, _ := base64.RawURLEncoding.DecodeString(parts[2])
 		verifyProofSig(t, key.Public(), "ML-DSA-65", parts[0]+"."+parts[1], sig)
-		w.WriteHeader(http.StatusUnauthorized)
 	}))
+	srv.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
+	srv.StartTLS()
 	defer srv.Close()
 
+	// The production client config, trusting only the test server.
+	serverPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))
+	tlsCfg, err := certs.LoadTLSConfig(current.PemCertificate, "", current.PemPrivateKey, serverPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
 	origClient, origCSR := renewHTTPClientForFn, renewCSRForFn
-	renewHTTPClientForFn = func(config.CertificateInfo) (*http.Client, error) { return srv.Client(), nil }
+	renewHTTPClientForFn = func(config.CertificateInfo) (*http.Client, error) {
+		return &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}}, nil
+	}
 	renewCSRForFn = func(config.CertificateInfo) (string, string, error) { return csrPEM, "new-key", nil }
 	t.Cleanup(func() { renewHTTPClientForFn, renewCSRForFn = origClient, origCSR })
 
@@ -262,7 +280,8 @@ func TestRenewSendsPossessionProofForThePresentedCert(t *testing.T) {
 func TestRenewCSRKeepsTheCurrentKeyAlgorithm(t *testing.T) {
 	mlKey, _ := mldsa.GenerateKey(mldsa.MLDSA65())
 	ecKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	for name, key := range map[string]crypto.Signer{"ML-DSA-65": mlKey, "P-256": ecKey} {
+	_, edKey, _ := ed25519.GenerateKey(rand.Reader)
+	for name, key := range map[string]crypto.Signer{"ML-DSA-65": mlKey, "P-256": ecKey, "Ed25519": edKey} {
 		t.Run(name, func(t *testing.T) {
 			cur := proofTestCert(t, key)
 			_, newKeyPEM, err := renewCSRFor(cur)
@@ -286,6 +305,8 @@ func keyAlgName(k crypto.Signer) string {
 		return pub.Parameters().String()
 	case *ecdsa.PublicKey:
 		return pub.Curve.Params().Name
+	case ed25519.PublicKey:
+		return "Ed25519"
 	}
 	return "other"
 }
