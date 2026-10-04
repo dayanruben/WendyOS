@@ -3,6 +3,7 @@
 package cloudrequest
 
 import (
+	"context"
 	"crypto"
 	"crypto/mldsa"
 	"crypto/rand"
@@ -12,12 +13,16 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -33,25 +38,94 @@ type Signer struct {
 	privateKey crypto.Signer
 	tenantUUID string
 	x5c        []string
+	kid        string // base64url(SHA-256(leaf DER)): the RFC 7515 x5t#S256 value
 	audience   string
 	now        func() time.Time
 	random     io.Reader
 }
 
-// SignRequest wraps req in the wendycloud.v2.SignedRequest envelope that the
-// operator-signed method takes (WDY-3458): payload is req serialized once,
-// payload_type its message name, and signature a JWS whose body_sha256 binds
-// exactly those payload bytes. The signature travels in the body; nothing is
-// added to the call's metadata.
-func SignRequest(auth *config.AuthConfig, method string, req proto.Message) (*cloudpbv2.SignedRequest, error) {
+// Invoke calls an operator-signed method with req wrapped in the
+// wendycloud.v2.SignedRequest envelope it takes (WDY-3458): payload is req
+// serialized once, payload_type its message name, and signature a JWS whose
+// body_sha256 binds exactly those payload bytes. Nothing is added to the call's
+// metadata.
+//
+// The JWS names the operator leaf by kid (WDY-3463) once the leaf is
+// registered, which happens once per process with RegisterOperatorLeaf, signed
+// with x5c. Cloud refuses an unknown, revoked or expired kid with a generic
+// PERMISSION_DENIED, and a leaf pki-core holds no DER for with
+// FAILED_PRECONDITION; either is retried exactly once signed with x5c, and the
+// registration is dropped so the next call registers again. The refusal cannot
+// tell a stale kid from a missing permission, so a second refusal is final.
+func Invoke(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, method string, req, reply proto.Message) error {
 	s, err := newSigner(auth)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if s == nil {
-		return nil, fmt.Errorf("%s requires an operator certificate; run 'wendy auth login'", method)
+		return fmt.Errorf("%s requires an operator certificate; run 'wendy auth login'", method)
 	}
-	return s.signRequest(method, req)
+	call := func(byKID bool) error {
+		signed, err := s.signRequest(method, req, byKID)
+		if err != nil {
+			return err
+		}
+		return conn.Invoke(ctx, method, signed, reply)
+	}
+	if x5cOnly[method] {
+		return call(false)
+	}
+	if err := s.register(ctx, conn); err != nil {
+		return err
+	}
+	err = call(true)
+	if code := status.Code(err); code != codes.PermissionDenied && code != codes.FailedPrecondition {
+		return err
+	}
+	registeredKIDs.Delete(s.kid)
+	if retryErr := call(false); retryErr != nil {
+		return fmt.Errorf("Cloud refused %s by key id and again with the operator certificate attached: %w", method, retryErr)
+	}
+	return nil
+}
+
+// x5cOnly lists the methods always signed with x5c, never kid: the leaf
+// registration itself, and the two whose JWS Cloud forwards verbatim to
+// devices (PostboxEntry.request_jws), which cannot resolve a kid.
+var x5cOnly = map[string]bool{
+	cloudpbv2.OperatorSessionService_RegisterOperatorLeaf_FullMethodName: true,
+	cloudpbv2.DeploymentService_CreateDeployment_FullMethodName:          true,
+	cloudpbv2.DeploymentService_ControlContainer_FullMethodName:          true,
+}
+
+// registeredKIDs holds the leaves this process has registered.
+// ponytail: per process, not persisted; a CLI run registers once per signed
+// command, which is one call today. Persist in the auth session if that grows.
+var registeredKIDs sync.Map
+
+func (s *Signer) register(ctx context.Context, conn grpc.ClientConnInterface) error {
+	if _, ok := registeredKIDs.Load(s.kid); ok {
+		return nil
+	}
+	method := cloudpbv2.OperatorSessionService_RegisterOperatorLeaf_FullMethodName
+	signed, err := s.signRequest(method, &cloudpbv2.RegisterOperatorLeafRequest{OrganizationId: s.tenantUUID}, false)
+	if err != nil {
+		return err
+	}
+	var resp cloudpbv2.RegisterOperatorLeafResponse
+	if err := conn.Invoke(ctx, method, signed, &resp); err != nil {
+		return fmt.Errorf("registering the operator certificate with Cloud: %w", err)
+	}
+	if resp.GetKid() != s.kid {
+		return fmt.Errorf("Cloud registered operator certificate %q, not this session's %q", resp.GetKid(), s.kid)
+	}
+	registeredKIDs.Store(s.kid, struct{}{})
+	return nil
+}
+
+func leafKID(der []byte) string {
+	sum := sha256.Sum256(der)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func newSigner(auth *config.AuthConfig) (*Signer, error) {
@@ -96,6 +170,7 @@ func newSigner(auth *config.AuthConfig) (*Signer, error) {
 		privateKey: privateKey,
 		tenantUUID: tenantUUID,
 		x5c:        x5c,
+		kid:        leafKID(pair.Certificate[0]),
 		audience:   brokerAudience,
 		now:        time.Now,
 		random:     rand.Reader,
@@ -125,7 +200,7 @@ func operatorTenant(principal string) (string, error) {
 	return id.TenantUUID, nil
 }
 
-func (s *Signer) signRequest(method string, req proto.Message) (*cloudpbv2.SignedRequest, error) {
+func (s *Signer) signRequest(method string, req proto.Message, byKID bool) (*cloudpbv2.SignedRequest, error) {
 	resource, ok := signedResources[method]
 	if !ok {
 		return nil, requestTypeError(method, req)
@@ -139,7 +214,7 @@ func (s *Signer) signRequest(method string, req proto.Message) (*cloudpbv2.Signe
 		return nil, fmt.Errorf("marshaling Cloud request %s: %w", method, err)
 	}
 	sum := sha256.Sum256(payload)
-	jws, err := s.sign(strings.TrimPrefix(method, "/"), target, base64.RawURLEncoding.EncodeToString(sum[:]))
+	jws, err := s.sign(strings.TrimPrefix(method, "/"), target, base64.RawURLEncoding.EncodeToString(sum[:]), byKID)
 	if err != nil {
 		return nil, fmt.Errorf("signing Cloud request %s: %w", method, err)
 	}
@@ -154,6 +229,10 @@ func (s *Signer) signRequest(method string, req proto.Message) (*cloudpbv2.Signe
 // target.resource (cloud RequestSigning.md). The type assertion is what keeps
 // payload_type equal to the method's request message.
 var signedResources = map[string]func(tenant string, req proto.Message) (string, bool){
+	cloudpbv2.OperatorSessionService_RegisterOperatorLeaf_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.RegisterOperatorLeafRequest)
+		return "org/" + in.GetOrganizationId() + "/operator-leaf", ok
+	},
 	cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
 		in, ok := req.(*cloudpbv2.EnrollDeviceRequest)
 		return "org/" + tenant + "/device/" + in.GetDeviceId(), ok
@@ -164,7 +243,7 @@ func requestTypeError(method string, req proto.Message) error {
 	return fmt.Errorf("cannot sign Cloud request %s with message type %T", method, req)
 }
 
-func (s *Signer) sign(operation, resource, bodyDigest string) (string, error) {
+func (s *Signer) sign(operation, resource, bodyDigest string, byKID bool) (string, error) {
 	nonceBytes := make([]byte, 32)
 	if _, err := io.ReadFull(s.random, nonceBytes); err != nil {
 		return "", fmt.Errorf("generating request nonce: %w", err)
@@ -188,9 +267,12 @@ func (s *Signer) sign(operation, resource, bodyDigest string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encoding request descriptor: %w", err)
 	}
-	// The contract's x5c is exactly one entry, the leaf: Cloud validates only
-	// x5c[0] through PKI, which owns the issuer chain.
-	return s.signPayload(payload, s.x5c[:1])
+	// Exactly one leaf reference: its kid, or an x5c of the leaf alone (Cloud
+	// validates only the leaf through PKI, which owns the issuer chain).
+	if byKID {
+		return s.signPayload(payload, map[string]any{"kid": s.kid})
+	}
+	return s.signPayload(payload, map[string]any{"x5c": s.x5c[:1]})
 }
 
 // EnrollmentRequest signs PKI's enrollment authority separately from the Cloud
@@ -213,12 +295,15 @@ func EnrollmentRequest(auth *config.AuthConfig, deviceID string) ([]byte, error)
 	}
 	// This artifact is carried in the protobuf body, not HTTP metadata. Keep
 	// the full chain for PKI's enrollment signature verifier.
-	jws, err := s.signPayload(payload, s.x5c)
+	jws, err := s.signPayload(payload, map[string]any{"x5c": s.x5c})
 	return []byte(jws), err
 }
 
-func (s *Signer) signPayload(payload []byte, chain []string) (string, error) {
-	header, err := canonicalJSON(map[string]any{"alg": "ML-DSA-65", "x5c": chain})
+// signPayload signs payload under a protected header of alg plus ref, the
+// signer's leaf reference (x5c or kid).
+func (s *Signer) signPayload(payload []byte, ref map[string]any) (string, error) {
+	ref["alg"] = "ML-DSA-65"
+	header, err := canonicalJSON(ref)
 	if err != nil {
 		return "", fmt.Errorf("encoding JWS header: %w", err)
 	}

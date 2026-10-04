@@ -48,7 +48,7 @@ const (
 // grant key, and pki-core's verifier would refuse it.
 //
 // TWO SIGNATURES, DELIBERATELY NOT COLLAPSED. The caller signs the REQUEST (the ordinary
-// x-wendy-request-signature envelope, since this is an authorization-gated mutation) and
+// SignedRequest envelope, WDY-3458, since this is an authorization-gated mutation) and
 // separately signs the enrollment request carried in `enrollment_request_jws`. Same operator,
 // same key, two different scopes: reusing one for the other would either widen the request
 // signature into an enrollment authority or narrow the enrollment artifact into a transport
@@ -108,7 +108,7 @@ func (c *deviceEnrollmentServiceClient) EnrollDevice(ctx context.Context, in *Si
 // grant key, and pki-core's verifier would refuse it.
 //
 // TWO SIGNATURES, DELIBERATELY NOT COLLAPSED. The caller signs the REQUEST (the ordinary
-// x-wendy-request-signature envelope, since this is an authorization-gated mutation) and
+// SignedRequest envelope, WDY-3458, since this is an authorization-gated mutation) and
 // separately signs the enrollment request carried in `enrollment_request_jws`. Same operator,
 // same key, two different scopes: reusing one for the other would either widen the request
 // signature into an enrollment authority or narrow the enrollment artifact into a transport

@@ -135,8 +135,8 @@ done
 # rewriting -- DeviceEnrollmentService included, Cloud-owned though it is.
 #
 # Pin (WDY-3458 round): wendycloud/v2/*.proto and wendy/options.proto are
-# service-protos #91 head bab91b10; device_enrollment.proto is cloud #741 head
-# df457686 (cloud-proto/device_enrollment.proto). Re-pin: copy those files from
+# service-protos #91 head d69ef0a2; device_enrollment.proto is cloud #741 head
+# 160dc7d2 (cloud-proto/device_enrollment.proto). Re-pin: copy those files from
 # the new heads with `git show <sha>:<path>`, run `make proto`, and update the
 # SHAs here. wendy/options.proto (the signed_request method option) generates
 # into cloudpbv2 too, so the option and SignedRequest live in one Go package.

@@ -84,11 +84,14 @@ func (s *acmeProvisioningServer) StartACMEProvisioning(_ context.Context, req *a
 
 type oidcEnrollmentServer struct {
 	cloudpbv2.UnimplementedDeviceEnrollmentServiceServer
-	signed   *cloudpbv2.SignedRequest
-	req      *cloudpbv2.EnrollDeviceRequest
-	md       metadata.MD
-	err      error
-	response *cloudpbv2.EnrollDeviceResponse
+	cloudpbv2.UnimplementedOperatorSessionServiceServer
+	registered    int    // RegisterOperatorLeaf calls
+	registeredDER []byte // the x5c leaf the last registration carried
+	signed        *cloudpbv2.SignedRequest
+	req           *cloudpbv2.EnrollDeviceRequest
+	md            metadata.MD
+	err           error
+	response      *cloudpbv2.EnrollDeviceResponse
 }
 
 // EnrollDevice behaves like the WDY-3458 broker gate: a signature carried in a
@@ -108,6 +111,23 @@ func (s *oidcEnrollmentServer) EnrollDevice(ctx context.Context, in *cloudpbv2.S
 	return s.response, s.err
 }
 
+// RegisterOperatorLeaf answers with the kid of the x5c leaf the call carries,
+// as the broker does after pki-core accepts it (WDY-3463).
+func (s *oidcEnrollmentServer) RegisterOperatorLeaf(_ context.Context, in *cloudpbv2.SignedRequest) (*cloudpbv2.RegisterOperatorLeafResponse, error) {
+	s.registered++
+	header, err := base64.RawURLEncoding.DecodeString(strings.Split(string(in.GetSignature()), ".")[0])
+	if err != nil {
+		return nil, status.Error(codes.PermissionDenied, "bad header")
+	}
+	var h struct{ X5C []string }
+	if json.Unmarshal(header, &h) != nil || len(h.X5C) != 1 {
+		return nil, status.Error(codes.PermissionDenied, "registration must carry the x5c leaf")
+	}
+	s.registeredDER, _ = base64.StdEncoding.DecodeString(h.X5C[0])
+	sum := sha256.Sum256(s.registeredDER)
+	return &cloudpbv2.RegisterOperatorLeafResponse{Kid: base64.RawURLEncoding.EncodeToString(sum[:])}, nil
+}
+
 func enrollmentServers(t *testing.T, cloud *oidcEnrollmentServer, agent *acmeProvisioningServer) (*grpcclient.AgentConnection, string) {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -116,6 +136,7 @@ func enrollmentServers(t *testing.T, cloud *oidcEnrollmentServer, agent *acmePro
 	}
 	srv := grpc.NewServer()
 	cloudpbv2.RegisterDeviceEnrollmentServiceServer(srv, cloud)
+	cloudpbv2.RegisterOperatorSessionServiceServer(srv, cloud)
 	agentpbv2.RegisterWendyProvisioningServiceServer(srv, agent)
 	go srv.Serve(lis) //nolint:errcheck
 	t.Cleanup(srv.Stop)
@@ -127,7 +148,9 @@ func enrollmentServers(t *testing.T, cloud *oidcEnrollmentServer, agent *acmePro
 	return &grpcclient.AgentConnection{Conn: client, Host: "sim.local"}, lis.Addr().String()
 }
 
-func verifyEnrollmentJWS(t *testing.T, compact string) map[string]any {
+// verifyEnrollmentJWS verifies a JWS naming its leaf by x5c, or by kid when
+// kidLeaf (the registered leaf DER) is given; exactly one reference is allowed.
+func verifyEnrollmentJWS(t *testing.T, compact string, kidLeaf ...[]byte) map[string]any {
 	t.Helper()
 	parts := strings.Split(compact, ".")
 	if len(parts) != 3 {
@@ -143,16 +166,26 @@ func verifyEnrollmentJWS(t *testing.T, compact string) map[string]any {
 	var header struct {
 		Alg string
 		X5C []string
+		Kid string
 	}
 	if err := json.Unmarshal(decode(parts[0]), &header); err != nil {
 		t.Fatal(err)
 	}
-	if header.Alg != "ML-DSA-65" || len(header.X5C) != 1 {
-		t.Fatal("invalid signing header")
-	}
-	der, err := base64.StdEncoding.DecodeString(header.X5C[0])
-	if err != nil {
-		t.Fatal(err)
+	var der []byte
+	if len(kidLeaf) == 1 {
+		sum := sha256.Sum256(kidLeaf[0])
+		if header.Alg != "ML-DSA-65" || len(header.X5C) != 0 || header.Kid != base64.RawURLEncoding.EncodeToString(sum[:]) {
+			t.Fatalf("want an ML-DSA-65 header naming the registered leaf by kid alone, got %+v", header)
+		}
+		der = kidLeaf[0]
+	} else {
+		if header.Alg != "ML-DSA-65" || len(header.X5C) != 1 || header.Kid != "" {
+			t.Fatal("invalid signing header")
+		}
+		var err error
+		if der, err = base64.StdEncoding.DecodeString(header.X5C[0]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	leaf, err := x509.ParseCertificate(der)
 	if err != nil {
@@ -224,7 +257,11 @@ func TestOIDCEnrollmentAutomaticCloudRelay(t *testing.T) {
 			if exp-iat != 300 || time.Now().Unix()-iat > 5 {
 				t.Fatal("incorrect enrollment validity")
 			}
-			descriptor := verifyEnrollmentJWS(t, string(cloud.signed.GetSignature()))
+			// The leaf is registered once (by x5c), then named by kid.
+			if cloud.registered != 1 {
+				t.Fatalf("RegisterOperatorLeaf called %d times, want 1", cloud.registered)
+			}
+			descriptor := verifyEnrollmentJWS(t, string(cloud.signed.GetSignature()), cloud.registeredDER)
 			target := descriptor["target"].(map[string]any)
 			if descriptor["operation"] != "wendycloud.v2.DeviceEnrollmentService/EnrollDevice" || target["tenant"] != testOperatorTenant || target["resource"] != "org/"+testOperatorTenant+"/device/"+deviceID {
 				t.Fatal("incorrect Cloud request scope")

@@ -16,7 +16,7 @@ import (
 )
 
 // testdata/signed-request-vectors-v1.json is service-protos
-// conformance/reqsig/signed-request-vectors-v1.json at bab91b10 (the WDY-3458
+// conformance/reqsig/signed-request-vectors-v1.json at d69ef0a2 (the WDY-3458
 // pin in scripts/generate-proto.sh); re-copy it when re-pinning.
 //
 // A producer given the vector's inputs must reproduce payload_b64 and

@@ -49,6 +49,10 @@ type NotificationServiceClient interface {
 	// User credentials and provisioned-device credentials are both supported.
 	// notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
 	// including an otherwise identical request, fails with ALREADY_EXISTS.
+	// A provisioned device is authenticated by its devices-mTLS leaf alone. The
+	// x-wendy-device-uri, x-wendy-device-certificate-serial,
+	// x-wendy-device-timestamp and x-wendy-device-signature proof headers are
+	// retired with no body replacement (WDY-3464).
 	CreateNotificationV2(ctx context.Context, in *CreateNotificationV2Request, opts ...grpc.CallOption) (*CreateNotificationV2Response, error)
 	// Legacy server-streamed offset pagination.
 	ListNotifications(ctx context.Context, in *ListNotificationsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ListNotificationsResponse], error)
@@ -258,6 +262,10 @@ type NotificationServiceServer interface {
 	// User credentials and provisioned-device credentials are both supported.
 	// notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
 	// including an otherwise identical request, fails with ALREADY_EXISTS.
+	// A provisioned device is authenticated by its devices-mTLS leaf alone. The
+	// x-wendy-device-uri, x-wendy-device-certificate-serial,
+	// x-wendy-device-timestamp and x-wendy-device-signature proof headers are
+	// retired with no body replacement (WDY-3464).
 	CreateNotificationV2(context.Context, *CreateNotificationV2Request) (*CreateNotificationV2Response, error)
 	// Legacy server-streamed offset pagination.
 	ListNotifications(*ListNotificationsRequest, grpc.ServerStreamingServer[ListNotificationsResponse]) error
