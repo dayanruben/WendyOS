@@ -85,7 +85,8 @@ func (s *acmeProvisioningServer) StartACMEProvisioning(_ context.Context, req *a
 type oidcEnrollmentServer struct {
 	cloudpbv2.UnimplementedDeviceEnrollmentServiceServer
 	cloudpbv2.UnimplementedOperatorSessionServiceServer
-	registered    int    // RegisterOperatorLeaf calls
+	registered    int // RegisterOperatorLeaf calls
+	registration  *cloudpbv2.SignedRequest
 	registeredDER []byte // the x5c leaf the last registration carried
 	signed        *cloudpbv2.SignedRequest
 	req           *cloudpbv2.EnrollDeviceRequest
@@ -115,6 +116,7 @@ func (s *oidcEnrollmentServer) EnrollDevice(ctx context.Context, in *cloudpbv2.S
 // as the broker does after pki-core accepts it (WDY-3463).
 func (s *oidcEnrollmentServer) RegisterOperatorLeaf(_ context.Context, in *cloudpbv2.SignedRequest) (*cloudpbv2.RegisterOperatorLeafResponse, error) {
 	s.registered++
+	s.registration = in
 	header, err := base64.RawURLEncoding.DecodeString(strings.Split(string(in.GetSignature()), ".")[0])
 	if err != nil {
 		return nil, status.Error(codes.PermissionDenied, "bad header")
@@ -260,6 +262,15 @@ func TestOIDCEnrollmentAutomaticCloudRelay(t *testing.T) {
 			// The leaf is registered once (by x5c), then named by kid.
 			if cloud.registered != 1 {
 				t.Fatalf("RegisterOperatorLeaf called %d times, want 1", cloud.registered)
+			}
+			reg := verifyEnrollmentJWS(t, string(cloud.registration.GetSignature()))
+			regTarget := reg["target"].(map[string]any)
+			var regReq cloudpbv2.RegisterOperatorLeafRequest
+			if err := proto.Unmarshal(cloud.registration.GetPayload(), &regReq); err != nil || regReq.GetOrganizationId() != testOperatorTenant ||
+				cloud.registration.GetPayloadType() != "wendycloud.v2.RegisterOperatorLeafRequest" ||
+				reg["operation"] != "wendycloud.v2.OperatorSessionService/RegisterOperatorLeaf" ||
+				regTarget["tenant"] != testOperatorTenant || regTarget["resource"] != "org/"+testOperatorTenant+"/operator-leaf" {
+				t.Fatalf("registration does not match the broker contract: %v %v", reg, &regReq)
 			}
 			descriptor := verifyEnrollmentJWS(t, string(cloud.signed.GetSignature()), cloud.registeredDER)
 			target := descriptor["target"].(map[string]any)
