@@ -869,3 +869,38 @@ func TestNotificationConnectionNormalizesCertificateChain(t *testing.T) {
 	}
 	defer conn.Close()
 }
+
+// WDY-3464: a PKI-enrolled device (org/asset IDs zero, principal set) sends no
+// x-wendy-device-* header — Cloud identifies it by the mTLS leaf — while a
+// legacy urn:wendy enrollment keeps its header proof unchanged.
+func TestNotificationRequestContextHeaderProofOnlyForLegacy(t *testing.T) {
+	key, keyPEM := deviceProofTestKeyPEM(t)
+	certPEM := deviceProofTestCertificatePEM(t, key, deviceProofTestCertificateSerial)
+	request := &cloudpb.CreateNotificationV2Request{NotificationId: "00000000-0000-4000-8000-000000000001"}
+	headers := []string{deviceProofURIHeader, deviceProofCertificateSerialHeader, deviceProofTimestampHeader, deviceProofSignatureHeader}
+
+	ctx, err := notificationRequestContext(context.Background(), request, "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/dev-1", 0, 0, certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("PKI-enrolled device: %v", err)
+	}
+	md, _ := metadata.FromOutgoingContext(ctx)
+	for _, h := range headers {
+		if len(md.Get(h)) != 0 {
+			t.Errorf("PKI-enrolled device sent %s", h)
+		}
+	}
+
+	ctx, err = notificationRequestContext(context.Background(), request, "", 7, 9, certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("legacy device: %v", err)
+	}
+	md, _ = metadata.FromOutgoingContext(ctx)
+	for _, h := range headers {
+		if len(md.Get(h)) != 1 {
+			t.Errorf("legacy device lost %s", h)
+		}
+	}
+	if got := md.Get(deviceProofURIHeader); len(got) == 1 && got[0] != "urn:wendy:org:7:asset:9" {
+		t.Errorf("legacy device URI = %q", got[0])
+	}
+}
