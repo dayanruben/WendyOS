@@ -45,10 +45,11 @@ type dragonwingBoard struct {
 }
 
 // dragonwingDeviceTypePrefix is what the publisher keys the EDL bundle on, so
-// the safety filter matches on it rather than on the registry below: a new
+// the safety filter matches on it, not only on the registry below: a new
 // board is published before wendy learns to flash it.
 const dragonwingDeviceTypePrefix = "dragonwing-"
 
+// Boards kept in their own file append themselves here from an init().
 var dragonwingBoards = []dragonwingBoard{
 	{deviceType: "dragonwing-iq-8275", msmID: 0x002e70e1, storage: qdl.StorageUFS, guide: dipSwitch3Guide,
 		extractedFactor: dragonwingExtractedFactor},

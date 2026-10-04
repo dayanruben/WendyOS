@@ -274,8 +274,12 @@ func installedFromFlashBundle(dev deviceInfo) bool {
 
 // isFlashBundleDeviceType reports whether a device type is flashed from a bundle
 // whatever its manifest says. The publisher does not yet write install_mode for
-// the EDL boards it already ships, so the device type has to carry the rule.
+// the EDL boards it already ships, so the device type has to carry the rule: the
+// prefix, or the registry for a board published under its own name.
 func isFlashBundleDeviceType(deviceType string) bool {
+	if _, ok := dragonwingBoardFor(deviceType); ok {
+		return true
+	}
 	return strings.HasPrefix(deviceType, dragonwingDeviceTypePrefix)
 }
 
