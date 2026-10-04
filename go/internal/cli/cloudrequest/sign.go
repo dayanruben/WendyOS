@@ -52,11 +52,13 @@ type Signer struct {
 //
 // The JWS names the operator leaf by kid (WDY-3463) once the leaf is
 // registered, which happens once per process with RegisterOperatorLeaf, signed
-// with x5c. Cloud refuses an unknown, revoked or expired kid with a generic
-// PERMISSION_DENIED, and a leaf pki-core holds no DER for with
-// FAILED_PRECONDITION; either is retried exactly once signed with x5c, and the
-// registration is dropped so the next call registers again. The refusal cannot
-// tell a stale kid from a missing permission, so a second refusal is final.
+// with x5c. A Cloud without that RPC (Unimplemented) gets x5c instead, since
+// registration is optional by contract. Cloud refuses an unknown, revoked or
+// expired kid with a generic PERMISSION_DENIED, and a leaf pki-core holds no
+// DER for with FAILED_PRECONDITION "leaf not stored"; either is retried exactly
+// once signed with x5c under the same correlation_id, and the registration is
+// dropped so the next call registers again. The refusal cannot tell a stale
+// kid from a missing permission, so a second refusal is final.
 func Invoke(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, method string, req, reply proto.Message) error {
 	s, err := newSigner(auth)
 	if err != nil {
@@ -65,8 +67,10 @@ func Invoke(ctx context.Context, conn grpc.ClientConnInterface, auth *config.Aut
 	if s == nil {
 		return fmt.Errorf("%s requires an operator certificate; run 'wendy auth login'", method)
 	}
+	// One flow, one correlation_id, across registration and any retry.
+	correlationID := uuid.NewString()
 	call := func(byKID bool) error {
-		signed, err := s.signRequest(method, req, byKID)
+		signed, err := s.signRequest(method, req, byKID, correlationID)
 		if err != nil {
 			return err
 		}
@@ -75,11 +79,15 @@ func Invoke(ctx context.Context, conn grpc.ClientConnInterface, auth *config.Aut
 	if x5cOnly[method] {
 		return call(false)
 	}
-	if err := s.register(ctx, conn); err != nil {
+	registered, err := s.register(ctx, conn, correlationID)
+	if err != nil {
 		return err
 	}
+	if !registered {
+		return call(false)
+	}
 	err = call(true)
-	if code := status.Code(err); code != codes.PermissionDenied && code != codes.FailedPrecondition {
+	if !kidRefused(err) {
 		return err
 	}
 	registeredKIDs.Delete(s.kid)
@@ -103,24 +111,43 @@ var x5cOnly = map[string]bool{
 // command, which is one call today. Persist in the auth session if that grows.
 var registeredKIDs sync.Map
 
-func (s *Signer) register(ctx context.Context, conn grpc.ClientConnInterface) error {
+// kidRefused reports the two refusals a kid-signed call may get for its key
+// reference: a generic PERMISSION_DENIED, or the explicit "leaf not stored".
+// Any other FAILED_PRECONDITION comes from the handler and is not retried.
+func kidRefused(err error) bool {
+	st, _ := status.FromError(err)
+	switch st.Code() {
+	case codes.PermissionDenied:
+		return true
+	case codes.FailedPrecondition:
+		return strings.Contains(st.Message(), "leaf not stored")
+	}
+	return false
+}
+
+// register reports whether the leaf is registered and may be named by kid. A
+// Cloud that does not serve RegisterOperatorLeaf yields false, not an error.
+func (s *Signer) register(ctx context.Context, conn grpc.ClientConnInterface, correlationID string) (bool, error) {
 	if _, ok := registeredKIDs.Load(s.kid); ok {
-		return nil
+		return true, nil
 	}
 	method := cloudpbv2.OperatorSessionService_RegisterOperatorLeaf_FullMethodName
-	signed, err := s.signRequest(method, &cloudpbv2.RegisterOperatorLeafRequest{OrganizationId: s.tenantUUID}, false)
+	signed, err := s.signRequest(method, &cloudpbv2.RegisterOperatorLeafRequest{OrganizationId: s.tenantUUID}, false, correlationID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var resp cloudpbv2.RegisterOperatorLeafResponse
 	if err := conn.Invoke(ctx, method, signed, &resp); err != nil {
-		return fmt.Errorf("registering the operator certificate with Cloud: %w", err)
+		if status.Code(err) == codes.Unimplemented {
+			return false, nil
+		}
+		return false, fmt.Errorf("registering the operator certificate with Cloud: %w", err)
 	}
 	if resp.GetKid() != s.kid {
-		return fmt.Errorf("Cloud registered operator certificate %q, not this session's %q", resp.GetKid(), s.kid)
+		return false, fmt.Errorf("Cloud registered operator certificate %q, not this session's %q", resp.GetKid(), s.kid)
 	}
 	registeredKIDs.Store(s.kid, struct{}{})
-	return nil
+	return true, nil
 }
 
 func leafKID(der []byte) string {
@@ -200,7 +227,7 @@ func operatorTenant(principal string) (string, error) {
 	return id.TenantUUID, nil
 }
 
-func (s *Signer) signRequest(method string, req proto.Message, byKID bool) (*cloudpbv2.SignedRequest, error) {
+func (s *Signer) signRequest(method string, req proto.Message, byKID bool, correlationID string) (*cloudpbv2.SignedRequest, error) {
 	resource, ok := signedResources[method]
 	if !ok {
 		return nil, requestTypeError(method, req)
@@ -214,7 +241,7 @@ func (s *Signer) signRequest(method string, req proto.Message, byKID bool) (*clo
 		return nil, fmt.Errorf("marshaling Cloud request %s: %w", method, err)
 	}
 	sum := sha256.Sum256(payload)
-	jws, err := s.sign(strings.TrimPrefix(method, "/"), target, base64.RawURLEncoding.EncodeToString(sum[:]), byKID)
+	jws, err := s.sign(strings.TrimPrefix(method, "/"), target, base64.RawURLEncoding.EncodeToString(sum[:]), byKID, correlationID)
 	if err != nil {
 		return nil, fmt.Errorf("signing Cloud request %s: %w", method, err)
 	}
@@ -243,17 +270,16 @@ func requestTypeError(method string, req proto.Message) error {
 	return fmt.Errorf("cannot sign Cloud request %s with message type %T", method, req)
 }
 
-func (s *Signer) sign(operation, resource, bodyDigest string, byKID bool) (string, error) {
+func (s *Signer) sign(operation, resource, bodyDigest string, byKID bool, correlationID string) (string, error) {
 	nonceBytes := make([]byte, 32)
 	if _, err := io.ReadFull(s.random, nonceBytes); err != nil {
 		return "", fmt.Errorf("generating request nonce: %w", err)
 	}
 	now := s.now().Unix()
 	descriptor := map[string]any{
-		"aud":         s.audience,
-		"body_sha256": bodyDigest,
-		// One id per call: the CLI is the flow's origin, so it mints it.
-		"correlation_id": uuid.NewString(),
+		"aud":            s.audience,
+		"body_sha256":    bodyDigest,
+		"correlation_id": correlationID,
 		"expiry":         now + int64(signatureTTL/time.Second),
 		"iat":            now,
 		"nonce":          base64.RawURLEncoding.EncodeToString(nonceBytes),

@@ -81,7 +81,7 @@ func TestSignRequestProducesContractEnvelope(t *testing.T) {
 	signer.now = func() time.Time { return fixed }
 
 	req := &cloudpbv2.EnrollDeviceRequest{DeviceId: "dev-1", Name: "edge-one", EnrollmentRequestJws: []byte("a.b.c")}
-	signed, err := signer.signRequest(cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName, req, false)
+	signed, err := signer.signRequest(cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName, req, false, uuid.NewString())
 	if err != nil {
 		t.Fatalf("signRequest: %v", err)
 	}
@@ -170,10 +170,10 @@ func TestSignRequestRefusesMismatchedRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	method := cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName
-	if _, err := signer.signRequest(method, &cloudpbv2.GetAssetRequest{}, true); err == nil {
+	if _, err := signer.signRequest(method, &cloudpbv2.GetAssetRequest{}, true, uuid.NewString()); err == nil {
 		t.Fatal("signed a request whose type is not the method's")
 	}
-	if _, err := signer.signRequest(cloudpbv2.AssetService_GetAsset_FullMethodName, &cloudpbv2.GetAssetRequest{}, true); err == nil {
+	if _, err := signer.signRequest(cloudpbv2.AssetService_GetAsset_FullMethodName, &cloudpbv2.GetAssetRequest{}, true, uuid.NewString()); err == nil {
 		t.Fatal("signed a method that is not operator-signed")
 	}
 	auth.Certificates[0].PrincipalURI = ""
@@ -186,10 +186,13 @@ func TestSignRequestRefusesMismatchedRequest(t *testing.T) {
 // fakeCloud records each signed call as (method, leaf reference) and answers
 // RegisterOperatorLeaf with the kid of the x5c leaf, like the broker.
 type fakeCloud struct {
-	t       *testing.T
-	calls   []string
-	refuse  []codes.Code // per main-method call, in order; OK when exhausted
-	wrongID bool
+	t           *testing.T
+	calls       []string
+	refuse      []error // per main-method call, in order; success when exhausted
+	registerErr error
+	wrongID     bool
+	nonces      map[string]bool
+	correlation map[string]bool
 }
 
 func (f *fakeCloud) Invoke(_ context.Context, method string, args, reply any, _ ...grpc.CallOption) error {
@@ -198,10 +201,26 @@ func (f *fakeCloud) Invoke(_ context.Context, method string, args, reply any, _ 
 		X5C []string
 		Kid string
 	}
-	header, _ := base64.RawURLEncoding.DecodeString(strings.Split(string(in.GetSignature()), ".")[0])
+	parts := strings.Split(string(in.GetSignature()), ".")
+	header, _ := base64.RawURLEncoding.DecodeString(parts[0])
 	if err := json.Unmarshal(header, &h); err != nil {
 		f.t.Fatal(err)
 	}
+	var claims struct {
+		Nonce         string `json:"nonce"`
+		CorrelationID string `json:"correlation_id"`
+	}
+	payload, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		f.t.Fatal(err)
+	}
+	if f.nonces == nil {
+		f.nonces, f.correlation = map[string]bool{}, map[string]bool{}
+	}
+	if f.nonces[claims.Nonce] {
+		f.t.Fatalf("%s reused nonce %q", method, claims.Nonce)
+	}
+	f.nonces[claims.Nonce], f.correlation[claims.CorrelationID] = true, true
 	if (len(h.X5C) == 1) == (h.Kid != "") {
 		f.t.Fatalf("%s: header names the leaf by x5c %d and kid %q; want exactly one", method, len(h.X5C), h.Kid)
 	}
@@ -211,6 +230,9 @@ func (f *fakeCloud) Invoke(_ context.Context, method string, args, reply any, _ 
 	}
 	f.calls = append(f.calls, method+" "+ref)
 	if method == cloudpbv2.OperatorSessionService_RegisterOperatorLeaf_FullMethodName {
+		if f.registerErr != nil {
+			return f.registerErr
+		}
 		der, _ := base64.StdEncoding.DecodeString(h.X5C[0])
 		sum := sha256.Sum256(der)
 		kid := base64.RawURLEncoding.EncodeToString(sum[:])
@@ -221,11 +243,9 @@ func (f *fakeCloud) Invoke(_ context.Context, method string, args, reply any, _ 
 		return nil
 	}
 	if len(f.refuse) > 0 {
-		code := f.refuse[0]
+		err := f.refuse[0]
 		f.refuse = f.refuse[1:]
-		if code != codes.OK {
-			return status.Error(code, "refused")
-		}
+		return err
 	}
 	return nil
 }
@@ -242,26 +262,36 @@ func TestInvokeRegistersOnceThenSignsByKID(t *testing.T) {
 		register = cloudpbv2.OperatorSessionService_RegisterOperatorLeaf_FullMethodName
 	)
 	req := &cloudpbv2.EnrollDeviceRequest{DeviceId: "dev-1"}
+	denied := status.Error(codes.PermissionDenied, "the operator request signature was rejected")
+	notStored := status.Error(codes.FailedPrecondition, "leaf not stored; present the certificate")
 	for _, tc := range []struct {
-		name    string
-		refuse  []codes.Code
-		wrongID bool
-		wantErr bool
-		want    []string
+		name        string
+		refuse      []error
+		registerErr error
+		wrongID     bool
+		wantErr     bool
+		want        []string
 	}{
 		{name: "steady state", want: []string{register + " x5c", enroll + " kid", enroll + " kid"}},
-		{name: "kid refused", refuse: []codes.Code{codes.PermissionDenied}, want: []string{register + " x5c", enroll + " kid", enroll + " x5c", register + " x5c", enroll + " kid"}},
-		{name: "leaf not stored", refuse: []codes.Code{codes.FailedPrecondition}, want: []string{register + " x5c", enroll + " kid", enroll + " x5c", register + " x5c", enroll + " kid"}},
-		{name: "refused twice", refuse: []codes.Code{codes.PermissionDenied, codes.PermissionDenied}, wantErr: true, want: []string{register + " x5c", enroll + " kid", enroll + " x5c"}},
-		{name: "other error not retried", refuse: []codes.Code{codes.InvalidArgument}, wantErr: true, want: []string{register + " x5c", enroll + " kid"}},
+		{name: "kid refused", refuse: []error{denied}, want: []string{register + " x5c", enroll + " kid", enroll + " x5c", register + " x5c", enroll + " kid"}},
+		{name: "leaf not stored", refuse: []error{notStored}, want: []string{register + " x5c", enroll + " kid", enroll + " x5c", register + " x5c", enroll + " kid"}},
+		{name: "refused twice", refuse: []error{denied, denied}, wantErr: true, want: []string{register + " x5c", enroll + " kid", enroll + " x5c"}},
+		{name: "handler precondition not retried", refuse: []error{status.Error(codes.FailedPrecondition, "fabric leg not configured")}, wantErr: true, want: []string{register + " x5c", enroll + " kid"}},
+		{name: "other error not retried", refuse: []error{status.Error(codes.InvalidArgument, "bad")}, wantErr: true, want: []string{register + " x5c", enroll + " kid"}},
+		{name: "registration unimplemented signs with x5c", registerErr: status.Error(codes.Unimplemented, ""), want: []string{register + " x5c", enroll + " x5c", register + " x5c", enroll + " x5c"}},
+		{name: "registration refused is loud", registerErr: denied, wantErr: true, want: []string{register + " x5c"}},
 		{name: "registered kid mismatch", wrongID: true, wantErr: true, want: []string{register + " x5c"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			auth, _, _ := testAuth(t)
-			conn := &fakeCloud{t: t, refuse: tc.refuse, wrongID: tc.wrongID}
+			conn := &fakeCloud{t: t, refuse: tc.refuse, registerErr: tc.registerErr, wrongID: tc.wrongID}
 			err := Invoke(context.Background(), conn, auth, enroll, req, &cloudpbv2.EnrollDeviceResponse{})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("Invoke err = %v, wantErr %v", err, tc.wantErr)
+			}
+			// Registration and any retry belong to one flow.
+			if len(conn.correlation) != 1 {
+				t.Fatalf("one Invoke used %d correlation ids", len(conn.correlation))
 			}
 			// A second call in the same process reuses the registration (or
 			// registers again after a refusal dropped it).
@@ -277,8 +307,6 @@ func TestInvokeRegistersOnceThenSignsByKID(t *testing.T) {
 	}
 }
 
-// Devices receive the CreateDeployment and ControlContainer JWS verbatim and
-// cannot resolve a kid, so those are signed with x5c and never register.
 func TestInvokeSignsDeviceForwardedMethodsWithX5C(t *testing.T) {
 	for _, method := range []string{cloudpbv2.DeploymentService_CreateDeployment_FullMethodName, cloudpbv2.DeploymentService_ControlContainer_FullMethodName} {
 		if !x5cOnly[method] {
@@ -304,7 +332,7 @@ func TestKIDIsLeafThumbprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := signer.signRequest(cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName, &cloudpbv2.EnrollDeviceRequest{DeviceId: "dev-1"}, true)
+	signed, err := signer.signRequest(cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName, &cloudpbv2.EnrollDeviceRequest{DeviceId: "dev-1"}, true, uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +504,7 @@ func TestCloudSignatureOmitsLargeIssuerChain(t *testing.T) {
 	}
 	// A representative 43-char base64url SHA-256 digest so the size assertion
 	// reflects a real body_sha256 field.
-	descriptor, err := signer.sign("wendycloud.v2.DeviceEnrollmentService/EnrollDevice", "org/"+testTenant+"/device/sim", "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU", false)
+	descriptor, err := signer.sign("wendycloud.v2.DeviceEnrollmentService/EnrollDevice", "org/"+testTenant+"/device/sim", "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU", false, uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
 	}
