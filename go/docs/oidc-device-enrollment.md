@@ -27,9 +27,10 @@ DNS label; renaming it does not change the certificate identity.
    name and ACME directory before requesting credentials.
 2. Call `wendycloud.v2.DeviceEnrollmentService/EnrollDevice` with the OIDC
    bearer token and two separate operator signatures:
-   - `x-wendy-request-signature`, scoped to the Cloud method and
-     `org/<tenant>/device/<device-id>` resource.
-   - `enrollment_request_jws`, with `tenant`, `device_id`, `device_class: B`,
+   - the `wendycloud.v2.SignedRequest` envelope's `signature`, scoped to the
+     Cloud method and `org/<tenant>/device/<device-id>` resource; its `payload`
+     is the serialized `EnrollDeviceRequest` (WDY-3458).
+   - `enrollment_request_jws` inside that request, with `tenant`, `device_id`, `device_class: B`,
      `iat`, `exp` and a fresh `jti`. This authorization is valid for five minutes;
      that is not an expiration time for the resulting EAB credential.
 3. Cloud checks `device:enroll` permission, reserves the asset name and relays

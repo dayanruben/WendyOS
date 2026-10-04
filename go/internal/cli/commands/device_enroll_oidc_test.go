@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"crypto/mldsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func oidcEnrollmentAuth(t *testing.T) *config.AuthConfig {
@@ -82,15 +84,27 @@ func (s *acmeProvisioningServer) StartACMEProvisioning(_ context.Context, req *a
 
 type oidcEnrollmentServer struct {
 	cloudpbv2.UnimplementedDeviceEnrollmentServiceServer
+	signed   *cloudpbv2.SignedRequest
 	req      *cloudpbv2.EnrollDeviceRequest
 	md       metadata.MD
 	err      error
 	response *cloudpbv2.EnrollDeviceResponse
 }
 
-func (s *oidcEnrollmentServer) EnrollDevice(ctx context.Context, req *cloudpbv2.EnrollDeviceRequest) (*cloudpbv2.EnrollDeviceResponse, error) {
-	s.req = req
+// EnrollDevice behaves like the WDY-3458 broker gate: a signature carried in a
+// header is refused, and the typed request exists only as the decoded payload.
+func (s *oidcEnrollmentServer) EnrollDevice(ctx context.Context, in *cloudpbv2.SignedRequest) (*cloudpbv2.EnrollDeviceResponse, error) {
 	s.md, _ = metadata.FromIncomingContext(ctx)
+	if len(s.md.Get("x-wendy-request-signature")) != 0 {
+		return nil, status.Error(codes.PermissionDenied, "header-carried request signature")
+	}
+	if in.GetPayloadType() != "wendycloud.v2.EnrollDeviceRequest" {
+		return nil, status.Error(codes.PermissionDenied, "payload_type is not the method's request")
+	}
+	s.signed, s.req = in, &cloudpbv2.EnrollDeviceRequest{}
+	if err := proto.Unmarshal(in.GetPayload(), s.req); err != nil {
+		return nil, status.Error(codes.PermissionDenied, "payload does not decode")
+	}
 	return s.response, s.err
 }
 
@@ -210,14 +224,18 @@ func TestOIDCEnrollmentAutomaticCloudRelay(t *testing.T) {
 			if exp-iat != 300 || time.Now().Unix()-iat > 5 {
 				t.Fatal("incorrect enrollment validity")
 			}
-			envelope := cloud.md.Get("x-wendy-request-signature")
-			if len(envelope) != 1 {
-				t.Fatal("missing Cloud request signature")
-			}
-			descriptor := verifyEnrollmentJWS(t, envelope[0])
+			descriptor := verifyEnrollmentJWS(t, string(cloud.signed.GetSignature()))
 			target := descriptor["target"].(map[string]any)
 			if descriptor["operation"] != "wendycloud.v2.DeviceEnrollmentService/EnrollDevice" || target["tenant"] != testOperatorTenant || target["resource"] != "org/"+testOperatorTenant+"/device/"+deviceID {
 				t.Fatal("incorrect Cloud request scope")
+			}
+			// The bytes signed are the bytes the broker received.
+			sum := sha256.Sum256(cloud.signed.GetPayload())
+			if descriptor["body_sha256"] != base64.RawURLEncoding.EncodeToString(sum[:]) {
+				t.Fatal("body_sha256 does not cover the received payload")
+			}
+			if _, err := uuid.Parse(descriptor["correlation_id"].(string)); err != nil {
+				t.Fatal("missing correlation_id claim")
 			}
 			if agent.req.GetDeviceId() != deviceID || agent.req.GetEabKeyId() != "eab-id" || agent.req.GetEabHmacKey() != strings.Repeat("ab", 32) || agent.req.GetCloudHost() != host {
 				t.Fatal("credential handoff mismatch")

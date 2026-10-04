@@ -3,7 +3,6 @@
 package cloudrequest
 
 import (
-	"context"
 	"crypto"
 	"crypto/mldsa"
 	"crypto/rand"
@@ -18,15 +17,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
-	metadataKey    = "x-wendy-request-signature"
 	brokerAudience = "https://cloud.wendy.sh/broker"
 	signatureTTL   = 30 * time.Second
 )
@@ -43,18 +38,20 @@ type Signer struct {
 	random     io.Reader
 }
 
-// DialOption returns a unary interceptor option for a session that has a
-// pki-core operator certificate. Legacy/token-only sessions return nil so
-// read-only RPCs continue to work; Cloud will reject their privileged writes.
-func DialOption(auth *config.AuthConfig) (grpc.DialOption, error) {
-	signer, err := newSigner(auth)
+// SignRequest wraps req in the wendycloud.v2.SignedRequest envelope that the
+// operator-signed method takes (WDY-3458): payload is req serialized once,
+// payload_type its message name, and signature a JWS whose body_sha256 binds
+// exactly those payload bytes. The signature travels in the body; nothing is
+// added to the call's metadata.
+func SignRequest(auth *config.AuthConfig, method string, req proto.Message) (*cloudpbv2.SignedRequest, error) {
+	s, err := newSigner(auth)
 	if err != nil {
 		return nil, err
 	}
-	if signer == nil {
-		return nil, nil
+	if s == nil {
+		return nil, fmt.Errorf("%s requires an operator certificate; run 'wendy auth login'", method)
 	}
-	return grpc.WithChainUnaryInterceptor(signer.unaryClientInterceptor()), nil
+	return s.signRequest(method, req)
 }
 
 func newSigner(auth *config.AuthConfig) (*Signer, error) {
@@ -128,85 +125,42 @@ func operatorTenant(principal string) (string, error) {
 	return id.TenantUUID, nil
 }
 
-func (s *Signer) unaryClientInterceptor() grpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		resource, required, err := signedResource(method, req)
-		if method == cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName {
-			in, ok := req.(*cloudpbv2.EnrollDeviceRequest)
-			if !ok {
-				return requestTypeError(method, req)
-			}
-			resource = "org/" + s.tenantUUID + "/device/" + in.GetDeviceId()
-			required = true
-		}
-		if err != nil {
-			return err
-		}
-		if required {
-			// Sign exactly the bytes that go on the wire. Marshal the request
-			// once here, hash those bytes for body_sha256, then force a codec
-			// that hands the invoker the same bytes verbatim. The broker hashes
-			// the request as received (WDY-3007); letting grpc marshal a second
-			// time could put different bytes on the wire than we signed.
-			msg, ok := req.(proto.Message)
-			if !ok {
-				return requestTypeError(method, req)
-			}
-			raw, err := proto.Marshal(msg)
-			if err != nil {
-				return fmt.Errorf("marshaling Cloud request %s: %w", method, err)
-			}
-			sum := sha256.Sum256(raw)
-			envelope, err := s.sign(strings.TrimPrefix(method, "/"), resource, base64.RawURLEncoding.EncodeToString(sum[:]))
-			if err != nil {
-				return fmt.Errorf("signing Cloud request %s: %w", method, err)
-			}
-			md, ok := metadata.FromOutgoingContext(ctx)
-			if ok {
-				md = md.Copy()
-			} else {
-				md = metadata.MD{}
-			}
-			md.Set(metadataKey, envelope)
-			ctx = metadata.NewOutgoingContext(ctx, md)
-			opts = append(opts, grpc.ForceCodec(wireCodec{raw: raw}))
-		}
-		return invoker(ctx, method, req, reply, cc, opts...)
+func (s *Signer) signRequest(method string, req proto.Message) (*cloudpbv2.SignedRequest, error) {
+	resource, ok := signedResources[method]
+	if !ok {
+		return nil, requestTypeError(method, req)
 	}
+	target, ok := resource(s.tenantUUID, req)
+	if !ok {
+		return nil, requestTypeError(method, req)
+	}
+	payload, err := proto.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling Cloud request %s: %w", method, err)
+	}
+	sum := sha256.Sum256(payload)
+	jws, err := s.sign(strings.TrimPrefix(method, "/"), target, base64.RawURLEncoding.EncodeToString(sum[:]))
+	if err != nil {
+		return nil, fmt.Errorf("signing Cloud request %s: %w", method, err)
+	}
+	return &cloudpbv2.SignedRequest{
+		Payload:     payload,
+		PayloadType: string(req.ProtoReflect().Descriptor().FullName()),
+		Signature:   []byte(jws),
+	}, nil
 }
 
-func signedResource(method string, req any) (string, bool, error) {
-	switch strings.TrimPrefix(method, "/") {
-	case "wendycloud.v1.AssetService/UpdateAsset":
-		in, ok := req.(*cloudpb.UpdateAssetRequest)
-		if !ok {
-			return "", true, requestTypeError(method, req)
-		}
-		return fmt.Sprintf("asset/%d", in.GetId()), true, nil
-	case "wendycloud.v1.AssetService/DeleteAsset":
-		in, ok := req.(*cloudpb.DeleteAssetRequest)
-		if !ok {
-			return "", true, requestTypeError(method, req)
-		}
-		return fmt.Sprintf("asset/%d", in.GetId()), true, nil
-	case "wendycloud.v1.CertificateService/RevokeCertificate":
-		in, ok := req.(*cloudpb.RevokeCertificateRequest)
-		if !ok {
-			return "", true, requestTypeError(method, req)
-		}
-		return fmt.Sprintf("certificate/%d", in.GetCertificateId()), true, nil
-	case "wendycloud.v1.CertificateService/CreateAssetEnrollmentToken":
-		in, ok := req.(*cloudpb.CreateAssetEnrollmentTokenRequest)
-		if !ok {
-			return "", true, requestTypeError(method, req)
-		}
-		return fmt.Sprintf("org/%d/enroll-asset-name/%s", in.GetOrganizationId(), in.GetName()), true, nil
-	default:
-		return "", false, nil
-	}
+// signedResources maps each operator-signed method the CLI calls to its
+// target.resource (cloud RequestSigning.md). The type assertion is what keeps
+// payload_type equal to the method's request message.
+var signedResources = map[string]func(tenant string, req proto.Message) (string, bool){
+	cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.EnrollDeviceRequest)
+		return "org/" + tenant + "/device/" + in.GetDeviceId(), ok
+	},
 }
 
-func requestTypeError(method string, req any) error {
+func requestTypeError(method string, req proto.Message) error {
 	return fmt.Errorf("cannot sign Cloud request %s with message type %T", method, req)
 }
 
@@ -219,10 +173,12 @@ func (s *Signer) sign(operation, resource, bodyDigest string) (string, error) {
 	descriptor := map[string]any{
 		"aud":         s.audience,
 		"body_sha256": bodyDigest,
-		"expiry":      now + int64(signatureTTL/time.Second),
-		"iat":         now,
-		"nonce":       base64.RawURLEncoding.EncodeToString(nonceBytes),
-		"operation":   operation,
+		// One id per call: the CLI is the flow's origin, so it mints it.
+		"correlation_id": uuid.NewString(),
+		"expiry":         now + int64(signatureTTL/time.Second),
+		"iat":            now,
+		"nonce":          base64.RawURLEncoding.EncodeToString(nonceBytes),
+		"operation":      operation,
 		"target": map[string]any{
 			"resource": resource,
 			"tenant":   s.tenantUUID,
@@ -232,9 +188,8 @@ func (s *Signer) sign(operation, resource, bodyDigest string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encoding request descriptor: %w", err)
 	}
-	// Cloud validates only x5c[0] through PKI, which owns the issuer chain.
-	// Sending the ML-DSA intermediates here can exceed the broker's 16 KiB
-	// HTTP/2 header limit once the JWS and OAuth bearer are combined.
+	// The contract's x5c is exactly one entry, the leaf: Cloud validates only
+	// x5c[0] through PKI, which owns the issuer chain.
 	return s.signPayload(payload, s.x5c[:1])
 }
 
@@ -283,24 +238,6 @@ func (s *Signer) signPayload(payload []byte, chain []string) (string, error) {
 		return "", fmt.Errorf("signing descriptor: %w", err)
 	}
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
-}
-
-// wireCodec forwards the exact request bytes the signer already hashed for
-// body_sha256, so grpc puts those bytes — not a fresh, possibly different
-// marshalling — on the wire. Replies decode with the standard proto codec.
-// Name is "proto" so the content-subtype and the server's codec are unchanged.
-type wireCodec struct{ raw []byte }
-
-func (wireCodec) Name() string { return "proto" }
-
-func (c wireCodec) Marshal(any) ([]byte, error) { return c.raw, nil }
-
-func (wireCodec) Unmarshal(data []byte, v any) error {
-	msg, ok := v.(proto.Message)
-	if !ok {
-		return fmt.Errorf("cloud request codec: reply type %T is not a proto message", v)
-	}
-	return proto.Unmarshal(data, msg)
 }
 
 // canonicalJSON is sufficient for the request descriptor's deliberately

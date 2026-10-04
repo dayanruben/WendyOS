@@ -73,10 +73,14 @@ func MintEAB(tokenCtx context.Context, cloudConn *grpc.ClientConn, auth *config.
 	if err != nil {
 		return cfg, "", fmt.Errorf("signing enrollment request: %w", err)
 	}
-	credential, err := cloudpbv2.NewDeviceEnrollmentServiceClient(cloudConn).EnrollDevice(tokenCtx, &cloudpbv2.EnrollDeviceRequest{
+	signed, err := cloudrequest.SignRequest(auth, cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName, &cloudpbv2.EnrollDeviceRequest{
 		DeviceId: cfg.DeviceID, DeviceClass: cloudpbv2.DeviceClass_DEVICE_CLASS_B,
 		EnrollmentRequestJws: artifact, Name: name,
 	})
+	if err != nil {
+		return cfg, "", err
+	}
+	credential, err := cloudpbv2.NewDeviceEnrollmentServiceClient(cloudConn).EnrollDevice(tokenCtx, signed)
 	switch status.Code(err) {
 	case codes.Unimplemented:
 		return cfg, "", fmt.Errorf("this Cloud deployment does not support OIDC device enrollment; it needs DeviceEnrollmentService/EnrollDevice")
