@@ -182,6 +182,14 @@ class RenderingTests(unittest.TestCase):
         self.assertIn("Call `Type.method` with `--flag`; not \\*\\*bold\\*\\*", body)
         self.assertNotIn("@joannis", body)
         self.assertNotIn("[linked](https://bad.example)", body)
+        self.assertIn(r"\`unclosed", review.inline("`safe` and `unclosed"))
+
+    def test_excerpt_uses_a_fence_longer_than_pr_controlled_backticks(self):
+        data = result()
+        data["decisions"][0]["locations"] = [{"path": "README.md", "side": "head", "line": 1, "end_line": 1}]
+        raw = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -0,0 +1,2 @@\n+```\n+[injected](https://bad.example)\n"
+        body = review.render_comment(data, REPO, diff=raw)
+        self.assertIn("  ````markdown\n  ```\n  [injected](https://bad.example)\n  ````", body)
 
     def test_removal_excerpt_is_labeled_before_and_mixed_diff_keeps_markers(self):
         data = result()

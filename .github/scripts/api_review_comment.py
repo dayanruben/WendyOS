@@ -166,6 +166,11 @@ def review_intro(result: dict, repo: str) -> list[str]:
     ]
 
 
+def markdown_fence(text: str) -> str:
+    longest = max((len(match.group()) for match in re.finditer(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
 def decision_lines(decision: dict, result: dict, repo: str, accepted: set[str], diff: str = "") -> list[str]:
     identifier = decision_id(decision)
     checked = "x" if identifier in accepted else " "
@@ -183,9 +188,10 @@ def decision_lines(decision: dict, result: dict, repo: str, accepted: set[str], 
         if excerpt["label"]:
             lines.append(f"  **{excerpt['label']}:**")
             lines.append("")
-        lines.append(f"  ```{excerpt['language']}")
+        fence = markdown_fence(excerpt["text"])
+        lines.append(f"  {fence}{excerpt['language']}")
         lines.extend(f"  {line}" for line in excerpt["text"].splitlines())
-        lines.append("  ```")
+        lines.append(f"  {fence}")
     lines.append("")
     return lines
 
@@ -495,7 +501,6 @@ def main() -> int:
     parser.add_argument("command", choices=["publish"])
     for option in ("result", "repo", "expected-head-sha", "expected-base-sha"):
         parser.add_argument("--" + option, required=True)
-    parser.add_argument("--diff")
     parser.add_argument("--pr-number", required=True, type=int)
     args = parser.parse_args()
     token = os.environ.get("GH_TOKEN")
@@ -503,7 +508,10 @@ def main() -> int:
         raise ValueError("GH_TOKEN is required to publish API review")
     result_path = Path(args.result)
     result = json.loads(result_path.read_text())
-    diff_bytes = Path(args.diff).read_bytes() if args.diff else result_path.with_name("api-review-pr.diff").read_bytes()
+    # Both files are created in RUNNER_TEMP by trusted base-revision automation.
+    # Keep this interface unchanged during rollout, then verify the immutable
+    # diff fingerprint before rendering any PR-controlled source text.
+    diff_bytes = result_path.with_name("api-review-pr.diff").read_bytes()
     return 0 if publish(result, args.repo, args.pr_number, args.expected_head_sha,
                         args.expected_base_sha, diff_bytes, GitHub(token)) else 1
 
