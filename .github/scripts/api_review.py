@@ -348,12 +348,14 @@ EXCERPT_LANGUAGES = {
 
 def illustrative_excerpt(diff: str, decision: dict[str, Any]) -> dict[str, str] | None:
     """Select a small, deterministic source excerpt around the first citation."""
+    # SECURITY: review output reaches here only after resolve_evidence replaces
+    # each model-selected evidence_id with its exact catalog entry. The model
+    # cannot supply a path, side, or line range; matching the fingerprinted diff
+    # again below is intentional defense in depth before source is rendered.
     parsed = parse_diff(diff)
     anchor = None
     anchor_location = None
     for location in decision["locations"]:
-        # SECURITY: resolve_evidence produced this location from an enumerated
-        # evidence_id; the model never supplies a path, side, or line range.
         if location["line"] == 0:
             continue
         for patch_line, evidence in parsed["line_evidence"].items():
