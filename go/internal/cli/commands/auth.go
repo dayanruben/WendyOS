@@ -241,6 +241,8 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", "", "pki-core operator identity CSR endpoint (defaults to the selected Cloud target)")
 	cmd.Flags().BoolVar(&printClaims, "print-claims", false, "Print the decoded access-token claims after login (used with --issuer)")
 	cmd.Flags().StringVar(&serviceAccount, "service-account", "", "Service-account key file for headless login (or set "+serviceAccountKeyEnv+" to its contents)")
+	// HIDDEN: Keep these transitional target controls available for cutover work,
+	// but do not advertise them in CLI help until the Cloud transition is ready.
 	cmd.Flags().BoolVar(&production, "production", false, "Use the production Wendy Cloud (default)")
 	cmd.Flags().BoolVar(&development, "development", false, "Use the development Wendy Cloud")
 	cmd.Flags().BoolVar(&legacy, "legacy", false, "Use the old Wendy Cloud dashboard enrollment flow (cloud.wendy.sh)")
