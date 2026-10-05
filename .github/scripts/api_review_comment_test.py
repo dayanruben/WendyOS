@@ -18,10 +18,12 @@ def result():
         "status": "complete", "head_sha": HEAD, "base_sha": BASE,
         "diff_sha256": "c" * 64, "diff_base_sha": BASE, "changed_files": 1, "diff_bytes": 420,
         "risk": "mid", "decisions": [{
-            "category": "config", "title": "Native launch command",
-            "change": "Add optional run.command and run.cwd to wendy.json.",
-            "compatibility": "Existing manifests keep their launch behavior.",
-            "impact": "additive", "locations": [{
+            "category": "config", "title": "Native `run.command` launch command",
+            "change": "Add optional `run.command` and `run.cwd` to `wendy.json`.",
+            "compatibility": "Existing `wendy.json` manifests keep their launch behavior.",
+            "impact": "additive", "excerpt": {
+                "language": "go", "label": "", "text": "config.Command = value",
+            }, "locations": [{
                 "path": "go/internal/shared/appconfig/appconfig.go",
                 "side": "head", "line": 10, "end_line": 12,
             }],
@@ -111,11 +113,25 @@ class MultipartGitHub(FakeGitHub):
 class RenderingTests(unittest.TestCase):
     def test_grouped_linked_unchecked_decisions_and_explicit_empty_categories(self):
         body = review.render_comment(result(), REPO)
-        self.assertIn("- [ ] Accept **Native launch command** — Additive.", body)
+        self.assertIn("- [ ] Accept **Native `run.command` launch command** — 🟢 **Additive**.", body)
         self.assertIn(f"/blob/{HEAD}/go/internal/shared/appconfig/appconfig.go#L10-L12", body)
         self.assertIn("## Network contracts and constants\n\nNo API decisions changed.", body)
-        self.assertIn("Existing manifests keep their launch behavior.", body)
-        self.assertNotIn("Breaking.", body)
+        self.assertIn("**Change:** Add optional `run.command` and `run.cwd`", body)
+        self.assertIn("**Compatibility:** Existing `wendy.json` manifests keep their launch behavior.", body)
+        self.assertIn("**Code:**", body)
+        self.assertIn("  ```go\n  config.Command = value\n  ```", body)
+        self.assertNotIn("🔴 **Breaking**.", body)
+
+    def test_each_compatibility_class_has_a_text_labeled_color_symbol(self):
+        for impact, rendered in (
+            ("additive", "🟢 **Additive**"),
+            ("behavioral", "🟡 **Behavior change**"),
+            ("breaking", "🔴 **Breaking**"),
+        ):
+            data = result()
+            data["decisions"][0]["impact"] = impact
+            with self.subTest(impact=impact):
+                self.assertIn(rendered, review.render_comment(data, REPO))
 
     def test_acceptance_survives_identical_rerun_but_not_revision_or_decision_changes(self):
         original = result()
@@ -125,6 +141,8 @@ class RenderingTests(unittest.TestCase):
             changed = {**original, field: value}
             self.assertNotIn("- [x]", review.render_comment(changed, REPO, checked))
         changed = copy.deepcopy(original)
+        changed["decisions"][0]["excerpt"]["text"] = "config.Command = updatedValue"
+        self.assertIn("- [x]", review.render_comment(changed, REPO, checked))
         changed["decisions"][0]["compatibility"] = "Old manifests now fail."
         self.assertNotIn("- [x]", review.render_comment(changed, REPO, checked))
 
@@ -157,6 +175,22 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn("@joannis", body)
         self.assertNotIn("<!-- api-decision:fake -->", body)
         self.assertNotIn("[click](https://bad.example)", body)
+
+    def test_balanced_inline_code_is_preserved_without_enabling_other_markdown(self):
+        data = result()
+        data["decisions"][0]["change"] = "Call `Type.method` with `--flag`; not **bold**, @joannis, or [linked](https://bad.example)."
+        body = review.render_comment(data, REPO)
+        self.assertIn("Call `Type.method` with `--flag`; not \\*\\*bold\\*\\*", body)
+        self.assertNotIn("@joannis", body)
+        self.assertNotIn("[linked](https://bad.example)", body)
+
+    def test_removal_excerpt_is_labeled_before_and_mixed_diff_keeps_markers(self):
+        data = result()
+        data["decisions"][0]["excerpt"] = {"language": "go", "label": "Before", "text": "const old = true"}
+        body = review.render_comment(data, REPO)
+        self.assertIn("**Before:**\n\n  ```go\n  const old = true", body)
+        data["decisions"][0]["excerpt"] = {"language": "diff", "label": "", "text": "-old\n+new"}
+        self.assertIn("  ```diff\n  -old\n  +new\n  ```", review.render_comment(data, REPO))
 
     def test_failure_preserves_prior_checklist_and_recovers_without_losing_acceptance(self):
         original = result()
@@ -197,6 +231,11 @@ class RenderingTests(unittest.TestCase):
         data["decisions"][0]["accepted"] = True
         with self.assertRaises(ValueError):
             review.validate_result(data, HEAD, BASE)
+        for excerpt in ({"language": "go", "label": "", "text": "```"}, {"language": "go!", "label": "", "text": "safe"}, {"language": "go", "label": "After", "text": "safe"}):
+            data = result()
+            data["decisions"][0]["excerpt"] = excerpt
+            with self.subTest(excerpt=excerpt), self.assertRaises(ValueError):
+                review.validate_result(data, HEAD, BASE)
         for path in ("../secrets", "/etc/passwd", "foo/../bar", "foo\nbar", "https://bad.example"):
             data = result()
             data["decisions"][0]["locations"][0]["path"] = path

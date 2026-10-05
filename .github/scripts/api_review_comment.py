@@ -30,7 +30,11 @@ CATEGORIES = {
     "cli": "CLI layout and behavior",
     "other": "Other durable contracts",
 }
-IMPACTS = {"additive": "Additive", "breaking": "Breaking", "behavioral": "Behavior change"}
+IMPACTS = {
+    "additive": ("🟢", "Additive"),
+    "breaking": ("🔴", "Breaking"),
+    "behavioral": ("🟡", "Behavior change"),
+}
 API_LABEL = {
     "name": "api-review",
     "color": "B60205",
@@ -44,9 +48,22 @@ RISK_LABELS = {
 
 
 def inline(value: str) -> str:
-    """Model prose is plain text; only this renderer supplies Markdown/links."""
-    value = html.escape(" ".join(value.split()), quote=False).replace("@", "&#64;")
-    return re.sub(r"([\\`*_\[\]{}()#!|~])", r"\\\1", value)
+    """Render only balanced model-supplied inline-code spans as Markdown."""
+    value = " ".join(value.split())
+
+    def plain(text: str) -> str:
+        text = html.escape(text, quote=False).replace("@", "&#64;")
+        return re.sub(r"([\\`*_\[\]{}()#!|~])", r"\\\1", text)
+
+    rendered: list[str] = []
+    position = 0
+    for match in re.finditer(r"`([^`]+)`", value):
+        rendered.append(plain(value[position:match.start()]))
+        code = html.escape(match.group(1), quote=False).replace("@", "&#64;")
+        rendered.append(f"`{code}`")
+        position = match.end()
+    rendered.append(plain(value[position:]))
+    return "".join(rendered)
 
 
 def validate_result(result: dict, head_sha: str, base_sha: str) -> None:
@@ -70,7 +87,7 @@ def validate_result(result: dict, head_sha: str, base_sha: str) -> None:
         raise ValueError("API review result has invalid decisions or testing risk")
     for decision in result["decisions"]:
         if not isinstance(decision, dict) or set(decision) != {
-            "category", "title", "change", "compatibility", "impact", "locations",
+            "category", "title", "change", "compatibility", "impact", "locations", "excerpt",
         }:
             raise ValueError("API decision has unexpected fields")
         if decision["category"] not in CATEGORIES or decision["impact"] not in IMPACTS:
@@ -80,6 +97,17 @@ def validate_result(result: dict, head_sha: str, base_sha: str) -> None:
                 raise ValueError(f"API decision has invalid {field}")
         if not isinstance(decision["locations"], list) or not decision["locations"]:
             raise ValueError("API decision must link to code")
+        excerpt = decision["excerpt"]
+        if excerpt is not None:
+            if (not isinstance(excerpt, dict) or set(excerpt) != {"language", "label", "text"}
+                    or not isinstance(excerpt["language"], str)
+                    or not re.fullmatch(r"[a-z]+", excerpt["language"])
+                    or excerpt["label"] not in {"", "Before"}
+                    or not isinstance(excerpt["text"], str) or not excerpt["text"].strip()
+                    or len(excerpt["text"].encode()) > 8_000
+                    or "```" in excerpt["text"]
+                    or any(ord(char) < 9 or 13 < ord(char) < 32 or ord(char) == 127 for char in excerpt["text"])):
+                raise ValueError("API decision has an invalid illustrative excerpt")
         for location in decision["locations"]:
             if not isinstance(location, dict) or set(location) != {"path", "side", "line", "end_line"}:
                 raise ValueError("API location has unexpected fields")
@@ -103,7 +131,9 @@ def revision_marker(result: dict) -> str:
 
 
 def decision_id(decision: dict) -> str:
-    return hashlib.sha256(json.dumps(decision, sort_keys=True).encode()).hexdigest()
+    # Presentation-only source excerpts do not change the accepted decision.
+    accepted_fields = {key: value for key, value in decision.items() if key != "excerpt"}
+    return hashlib.sha256(json.dumps(accepted_fields, sort_keys=True).encode()).hexdigest()
 
 
 def code_link(repo: str, result: dict, location: dict) -> str:
@@ -150,14 +180,25 @@ def review_intro(result: dict, repo: str) -> list[str]:
 def decision_lines(decision: dict, result: dict, repo: str, accepted: set[str]) -> list[str]:
     identifier = decision_id(decision)
     checked = "x" if identifier in accepted else " "
-    return [
+    impact_symbol, impact_title = IMPACTS[decision["impact"]]
+    lines = [
         f"- [{checked}] Accept **{inline(decision['title'])}** — "
-        f"{IMPACTS[decision['impact']]}. <!-- api-decision:{identifier} -->",
-        f"  - Change: {inline(decision['change'])}",
-        f"  - Compatibility: {inline(decision['compatibility'])}",
-        "  - Code: " + ", ".join(code_link(repo, result, loc) for loc in decision["locations"]),
-        "",
+        f"{impact_symbol} **{impact_title}**. <!-- api-decision:{identifier} -->",
+        f"  - **Change:** {inline(decision['change'])}",
+        f"  - **Compatibility:** {inline(decision['compatibility'])}",
+        "  - **Code:** " + ", ".join(code_link(repo, result, loc) for loc in decision["locations"]),
     ]
+    excerpt = decision["excerpt"]
+    if excerpt is not None:
+        lines.append("")
+        if excerpt["label"]:
+            lines.append(f"  **{excerpt['label']}:**")
+            lines.append("")
+        lines.append(f"  ```{excerpt['language']}")
+        lines.extend(f"  {line}" for line in excerpt["text"].splitlines())
+        lines.append("  ```")
+    lines.append("")
+    return lines
 
 
 def render_comment(result: dict, repo: str, previous: str = "") -> str:
