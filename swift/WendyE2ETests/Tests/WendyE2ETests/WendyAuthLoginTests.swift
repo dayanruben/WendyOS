@@ -36,8 +36,8 @@ struct `'wendy auth login'` {
      Production and development Cloud login stop before opening a browser or
      contacting an auth service when neither the temporarily required email nor
      an explicit issuer is present. The error names the selected environment and
-     explains every supported recovery path. The `cloud login` alias shares the
-     same command behavior.
+     explains both inputs accepted by the Cloud OIDC flow. The `cloud login`
+     alias shares the same command behavior.
      */
     @Test
     func `requires an email or issuer for the selected Cloud target`() async throws {
