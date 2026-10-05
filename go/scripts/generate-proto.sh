@@ -135,7 +135,7 @@ done
 # rewriting -- DeviceEnrollmentService included, Cloud-owned though it is.
 #
 # Pin (WDY-3458 round): wendycloud/v2/*.proto and wendy/options.proto are
-# service-protos #91 head d69ef0a2; device_enrollment.proto is cloud #741 head
+# service-protos master 09097e83 (merged #91); device_enrollment.proto is cloud #741 head
 # 9039775c (cloud-proto/device_enrollment.proto). Re-pin: copy those files from
 # the new heads with `git show <sha>:<path>`, run `make proto`, and update the
 # SHAs here. wendy/options.proto (the signed_request method option) generates
