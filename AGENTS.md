@@ -78,11 +78,13 @@ to trace failures across the CLI, firmware, OS, and app.
 
 ## Authentication
 
-Log in to Wendy Cloud:
+Log in to the production Wendy Cloud (the email is temporarily required by the current Cloud flow):
 
 ```sh
-wendy auth login
+wendy auth login --email you@example.com
 ```
+
+Use `--development` for the development Cloud or `--legacy` for the previous Cloud.
 
 Discover cloud-enrolled devices:
 
