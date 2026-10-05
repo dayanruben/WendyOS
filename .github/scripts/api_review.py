@@ -352,6 +352,8 @@ def illustrative_excerpt(diff: str, decision: dict[str, Any]) -> dict[str, str] 
     anchor = None
     anchor_location = None
     for location in decision["locations"]:
+        # SECURITY: resolve_evidence produced this location from an enumerated
+        # evidence_id; the model never supplies a path, side, or line range.
         if location["line"] == 0:
             continue
         for patch_line, evidence in parsed["line_evidence"].items():

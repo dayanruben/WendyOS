@@ -508,9 +508,10 @@ def main() -> int:
         raise ValueError("GH_TOKEN is required to publish API review")
     result_path = Path(args.result)
     result = json.loads(result_path.read_text())
-    # Both files are created in RUNNER_TEMP by trusted base-revision automation.
-    # Keep this interface unchanged during rollout, then verify the immutable
-    # diff fingerprint before rendering any PR-controlled source text.
+    # SECURITY: Both fixed-name files are created in RUNNER_TEMP by trusted
+    # base-revision automation, with no PR-controlled steps. Keep this interface
+    # unchanged during rollout, then verify the immutable diff fingerprint
+    # before rendering any PR-controlled source text.
     diff_bytes = result_path.with_name("api-review-pr.diff").read_bytes()
     return 0 if publish(result, args.repo, args.pr_number, args.expected_head_sha,
                         args.expected_base_sha, diff_bytes, GitHub(token)) else 1
