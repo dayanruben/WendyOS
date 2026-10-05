@@ -18,7 +18,7 @@ struct `'wendy auth login'` {
             try await cli.sh("wendy auth login --help") { result in
                 let stdout = result.stdout
                 #expect(result.status.isSuccess)
-                #expect(stdout.contains("Signs in to the production Wendy Cloud"))
+                #expect(stdout.contains("dashboard flow by default"))
                 #expect(stdout.contains("wendy auth login [flags]"))
                 #expect(stdout.contains("--api-key"))
                 #expect(stdout.contains("--cloud"))
@@ -42,7 +42,7 @@ struct `'wendy auth login'` {
     @Test
     func `requires an email or issuer for the selected Cloud target`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
-            for command in ["wendy auth login", "wendy auth login --production"] {
+            for command in ["wendy auth login --production", "wendy cloud login --production"] {
                 try await cli.sh(command) { result in
                     #expect(result.status.isFailure)
                     #expect(result.stdout == "")

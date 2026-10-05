@@ -5,24 +5,24 @@ Authenticates the CLI with Wendy Cloud. This is the primary login entry point.
 ## Usage
 
 ```sh
+wendy cloud login
 wendy cloud login --email you@example.com
-wendy cloud login --issuer https://auth.wendy.dev/realms/<realm>
+wendy cloud login --issuer https://auth.dev.wendy.sh/realms/<realm>
 wendy cloud login --service-account ./wendy-service-account.json
 ```
 
 ## Description
 
 `wendy cloud login` is identical to [`wendy auth login`](../auth/login.md) — it
-reuses the same implementation and targets the production Cloud. The CLI
+reuses the same implementation. For now, it defaults to the legacy dashboard
+flow at `cloud.wendy.sh`. With `--email` or `--issuer`, it runs the OIDC flow: it
 discovers your realm from `--email` (or takes `--issuer` directly), completes
 authorization code + PKCE through a loopback callback, obtains an operator
 certificate from pki-core, and stores it with a refreshable Cloud API session.
 Subsequent commands use the certificate automatically.
 
-The current Cloud flow temporarily requires `--email` unless `--issuer` is
-provided, so a bare `wendy cloud login` exits with an instruction to provide
-one. `--api-key` continues to select local authentication. `--service-account`
-signs in headlessly as a wendy-auth service account (see
+`--api-key` selects local authentication. `--service-account` signs in
+headlessly as a wendy-auth service account (see
 [`wendy auth login`](../auth/login.md#service-account-login)).
 
 `wendy auth login` remains functional for backward compatibility but is no

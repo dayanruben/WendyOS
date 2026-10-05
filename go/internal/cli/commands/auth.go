@@ -113,7 +113,7 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Wendy Cloud or a local pki-core instance",
-		Long: "Signs in to the production Wendy Cloud. The current OIDC flow temporarily requires --email to discover your realm (or --issuer to name it), then uses authorization code + PKCE, obtains an operator certificate directly from pki-core, and saves a refreshable Cloud API session.\n" +
+		Long: "Signs in to Wendy Cloud using the dashboard flow by default. For the OIDC flow, pass --email to discover your realm (or --issuer to name it), then sign in with authorization code + PKCE, obtain an operator certificate directly from pki-core, and save a refreshable Cloud API session.\n" +
 			"With --api-key: issues a certificate from a self-hosted pki-core instance using a Bearer API key.\n" +
 			"With --service-account <key-file> (or " + serviceAccountKeyEnv + "): signs in headlessly as a wendy-auth service account; no browser or terminal is needed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -137,9 +137,9 @@ func newAuthLoginCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			target := productionCloudLoginTarget
-			if development {
-				target = developmentCloudLoginTarget
+			target := developmentCloudLoginTarget
+			if production {
+				target = productionCloudLoginTarget
 			}
 			if saKey != nil && !otherMode {
 				if cloudDashboard == "" {
@@ -157,6 +157,11 @@ func newAuthLoginCmd() *cobra.Command {
 					CloudGRPC: cloudGRPC,
 					Resource:  resource,
 				})
+			}
+			// Keep the dashboard flow implicit while the new Cloud transition is
+			// underway. Explicit OIDC, local, and target options bypass it.
+			if !cmd.Flags().Changed("legacy") && !production && !development && email == "" && issuer == "" && apiKey == "" {
+				legacy = true
 			}
 			if legacy {
 				if apiKey != "" || issuer != "" || email != "" {
@@ -243,7 +248,7 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serviceAccount, "service-account", "", "Service-account key file for headless login (or set "+serviceAccountKeyEnv+" to its contents)")
 	// HIDDEN: Keep these transitional target controls available for cutover work,
 	// but do not advertise them in CLI help until the Cloud transition is ready.
-	cmd.Flags().BoolVar(&production, "production", false, "Use the production Wendy Cloud (default)")
+	cmd.Flags().BoolVar(&production, "production", false, "Use the production Wendy Cloud")
 	cmd.Flags().BoolVar(&development, "development", false, "Use the development Wendy Cloud")
 	cmd.Flags().BoolVar(&legacy, "legacy", false, "Use the old Wendy Cloud dashboard enrollment flow (cloud.wendy.sh)")
 	for _, name := range []string{"production", "development", "legacy"} {

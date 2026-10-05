@@ -18,7 +18,7 @@ func TestAuthLoginModeSelection(t *testing.T) {
 	}{
 		{
 			name:    "production temporarily requires an OIDC realm",
-			args:    nil,
+			args:    []string{"--production"},
 			wantErr: "production Cloud login currently requires --email <address>",
 		},
 		{
@@ -82,6 +82,7 @@ func TestAuthLoginMissingRealmError(t *testing.T) {
 	t.Setenv(serviceAccountKeyEnv, "")
 	cmd := newAuthLoginCmd()
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetArgs([]string{"--production"})
 	err := cmd.Execute()
 	want := "production Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly"
 	if err == nil || err.Error() != want {
@@ -117,7 +118,7 @@ func TestAuthLoginCloudTargetDefaults(t *testing.T) {
 		args   []string
 		target cloudLoginTarget
 	}{
-		{name: "production by default", target: productionCloudLoginTarget},
+		{name: "existing OIDC path defaults to development", target: developmentCloudLoginTarget},
 		{name: "production explicitly", args: []string{"--production"}, target: productionCloudLoginTarget},
 		{name: "development explicitly", args: []string{"--development"}, target: developmentCloudLoginTarget},
 	} {
@@ -149,7 +150,7 @@ func TestAuthLoginCloudTargetDefaults(t *testing.T) {
 	}
 }
 
-func TestAuthLoginCustomOIDCEndpointsOverrideProductionDefaults(t *testing.T) {
+func TestAuthLoginCustomOIDCEndpointsOverrideTargetDefaults(t *testing.T) {
 	t.Setenv(serviceAccountKeyEnv, "")
 	original := performOIDCLoginFn
 	t.Cleanup(func() { performOIDCLoginFn = original })
@@ -179,7 +180,7 @@ func TestAuthLoginCustomOIDCEndpointsOverrideProductionDefaults(t *testing.T) {
 	}
 }
 
-func TestAuthLoginLegacyRequiresExplicitFlag(t *testing.T) {
+func TestAuthLoginDefaultsToLegacy(t *testing.T) {
 	t.Setenv(serviceAccountKeyEnv, "")
 	original := performLoginFn
 	t.Cleanup(func() { performLoginFn = original })
@@ -189,14 +190,25 @@ func TestAuthLoginLegacyRequiresExplicitFlag(t *testing.T) {
 		return nil
 	}
 
-	cmd := newAuthLoginCmd()
-	cmd.SilenceUsage, cmd.SilenceErrors = true, true
-	cmd.SetArgs([]string{"--legacy"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if dashboard != defaultCloudDashboard || grpc != defaultCloudGRPC {
-		t.Fatalf("legacy target = %q %q, want %q %q", dashboard, grpc, defaultCloudDashboard, defaultCloudGRPC)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "implicit"},
+		{name: "explicit", args: []string{"--legacy"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dashboard, grpc = "", ""
+			cmd := newAuthLoginCmd()
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			cmd.SetArgs(tc.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if dashboard != defaultCloudDashboard || grpc != defaultCloudGRPC {
+				t.Fatalf("legacy target = %q %q, want %q %q", dashboard, grpc, defaultCloudDashboard, defaultCloudGRPC)
+			}
+		})
 	}
 }
 
@@ -225,7 +237,7 @@ func TestAuthLoginTargetFlagsStayHidden(t *testing.T) {
 			t.Errorf("user-facing help exposes transitional flag %s", hidden)
 		}
 	}
-	for _, want := range []string{"production Wendy Cloud", "temporarily requires --email"} {
+	for _, want := range []string{"dashboard flow by default", "For the OIDC flow, pass --email"} {
 		if !strings.Contains(cmd.Long, want) {
 			t.Errorf("long help does not mention %q: %s", want, cmd.Long)
 		}
