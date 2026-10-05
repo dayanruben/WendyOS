@@ -192,7 +192,7 @@ func newAuthLoginCmd() *cobra.Command {
 			}
 
 			// OIDC login requires an email address or an explicit realm issuer.
-			if authBase == "" {
+			if !cmd.Flags().Changed("auth") {
 				authBase = target.authBase
 			}
 			if issuer == "" {
@@ -217,7 +217,7 @@ func newAuthLoginCmd() *cobra.Command {
 			if identityResource == "" {
 				identityResource = defaultPKIIdentityResource
 			}
-			if identityEndpoint == "" {
+			if !cmd.Flags().Changed("pki-identity-endpoint") {
 				identityEndpoint = target.identityEndpoint
 			}
 			return performOIDCLoginFn(cmd.Context(), oidcLoginOptions{
@@ -239,11 +239,11 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().Int32Var(&orgID, "org", 1, "Organization ID for --api-key local login. For Wendy Cloud, each login is stored as an auth context; switch with 'wendy auth use <context>'.")
 	cmd.Flags().StringVar(&issuer, "issuer", "", "wendy-auth realm issuer URL, e.g. https://auth.wendy.sh/realms/acme (enables OIDC login)")
 	cmd.Flags().StringVar(&email, "email", "", "Email address temporarily required to discover your organization and sign in with wendy-auth")
-	cmd.Flags().StringVar(&authBase, "auth", "", "wendy-auth base URL used with --email (defaults to the selected Cloud target)")
+	cmd.Flags().StringVar(&authBase, "auth", defaultDevAuthBase, "wendy-auth base URL used with --email")
 	cmd.Flags().StringVar(&clientID, "client-id", "wendy-cli", "public DPoP OAuth client ID registered in wendy-auth")
 	cmd.Flags().StringVar(&resource, "resource", "", "RFC 8707 API resource indicator (used with OIDC login)")
 	cmd.Flags().StringVar(&identityResource, "pki-resource", defaultPKIIdentityResource, "RFC 8707 pki-core identity resource (used with OIDC login)")
-	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", "", "pki-core operator identity CSR endpoint (defaults to the selected Cloud target)")
+	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", defaultDevPKIIdentityEndpoint, "pki-core operator identity CSR endpoint")
 	cmd.Flags().BoolVar(&printClaims, "print-claims", false, "Print the decoded access-token claims after login (used with --issuer)")
 	cmd.Flags().StringVar(&serviceAccount, "service-account", "", "Service-account key file for headless login (or set "+serviceAccountKeyEnv+" to its contents)")
 	// HIDDEN: Keep these transitional target controls available for cutover work,

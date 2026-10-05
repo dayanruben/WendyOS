@@ -226,6 +226,14 @@ func TestAuthLoginTargetFlagsStayHidden(t *testing.T) {
 			t.Fatalf("--%s must stay hidden during the Cloud transition", name)
 		}
 	}
+	for name, want := range map[string]string{
+		"auth":                  defaultDevAuthBase,
+		"pki-identity-endpoint": defaultDevPKIIdentityEndpoint,
+	} {
+		if got := cmd.Flags().Lookup(name).DefValue; got != want {
+			t.Errorf("--%s default = %q, want existing development default %q", name, got, want)
+		}
+	}
 
 	var help bytes.Buffer
 	cmd.SetOut(&help)
