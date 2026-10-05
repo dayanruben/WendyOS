@@ -7,6 +7,9 @@ import { trackDocsAnalyticsEvent, type DocsAnalyticsTrackingProps } from '@/lib/
 export const cliCurlCommand = 'curl -fsSL https://install.wendy.dev/cli.sh | bash';
 export const cliWingetCommand = 'winget install WendyLabs.Wendy --source winget';
 export const agentCurlCommand = 'curl -fsSL https://install.wendy.dev/agent.sh | bash';
+export const agentMacBrewCommand = `brew tap wendylabsinc/tap
+brew trust wendylabsinc/tap
+brew install --cask wendy-agent`;
 
 type CopyButtonProps = DocsAnalyticsTrackingProps & {
   text: string;
