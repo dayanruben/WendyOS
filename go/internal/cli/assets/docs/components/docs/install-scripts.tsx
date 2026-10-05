@@ -88,6 +88,17 @@ export function InstallScripts() {
               <InstallCommand
                 analyticsEventName="cli_install_copy"
                 analyticsEventParams={{
+                  install_target: 'agent-linux',
+                  install_variant: 'wendy-agent for Linux',
+                  install_label: 'wendy-agent for Linux',
+                  location: 'docs_install_scripts_dialog',
+                }}
+                label="Linux"
+                command={agentCurlCommand}
+              />
+              <InstallCommand
+                analyticsEventName="cli_install_copy"
+                analyticsEventParams={{
                   install_target: 'agent-macos',
                   install_variant: 'wendy-agent for Mac',
                   install_label: 'wendy-agent for Mac',
@@ -102,17 +113,6 @@ export function InstallScripts() {
               >
                 Read the Mac installation guide
               </a>
-              <InstallCommand
-                analyticsEventName="cli_install_copy"
-                analyticsEventParams={{
-                  install_target: 'agent-linux',
-                  install_variant: 'wendy-agent for Linux',
-                  install_label: 'wendy-agent for Linux',
-                  location: 'docs_install_scripts_dialog',
-                }}
-                label="Linux"
-                command={agentCurlCommand}
-              />
             </section>
           </div>
         </div>
