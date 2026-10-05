@@ -11,17 +11,15 @@ Signing in targets the production Wendy Cloud by default. The current Cloud OIDC
 wendy cloud login --email you@example.com
 ```
 
-Use `--production` to select production explicitly, `--development` for the development Cloud, or `--legacy` for the previous Cloud. Until Cloud supports universal login, omitting both `--email` and `--issuer` on the production or development path exits with an instruction to provide one; it never falls back to legacy. `--service-account` selects headless service-account login, and `--api-key` selects local authentication.
+Until Cloud supports universal login, omitting both `--email` and `--issuer` exits with an instruction to provide one. `--service-account` selects headless service-account login, and `--api-key` selects local authentication.
 
-For production, the CLI asks `auth.wendy.dev` for the email's home realm, uses `cloud.wendy.dev` and `api.wendy.dev:443`, sends the operator CSR to `https://identity.pki.wendy.dev/v1/identity/certificate`, and requests the `https://cloud.wendy.dev/api` Cloud audience. `--development` selects the corresponding `*.dev.wendy.sh` auth, Cloud, gRPC, identity-certificate, and Cloud-audience endpoints. Both targets intentionally request the same PKI identity audience, `https://pki.wendy.sh/identity`. The CLI opens the discovered realm's authorization page, completes authorization code + PKCE through a loopback callback, and stores the resulting mTLS certificate alongside the Cloud access token, rotating refresh token, and DPoP key using the platform credential store. Cloud is not involved in certificate issuance.
+The CLI asks `auth.wendy.dev` for the email's home realm, uses `cloud.wendy.dev` and `api.wendy.dev:443`, sends the operator CSR to `https://identity.pki.wendy.dev/v1/identity/certificate`, and requests the `https://cloud.wendy.dev/api` Cloud audience. The PKI identity audience intentionally remains `https://pki.wendy.sh/identity`. The CLI opens the discovered realm's authorization page, completes authorization code + PKCE through a loopback callback, and stores the resulting mTLS certificate alongside the Cloud access token, rotating refresh token, and DPoP key using the platform credential store. Cloud is not involved in certificate issuance.
 
 The OAuth client is managed through the wendy-auth dashboard like any other interactive client; the auth service has no CLI-specific client configuration. Register a public, DPoP-bound client (the default client ID is `wendy-cli`) and allow the CLI's loopback redirect URIs. Use `--client-id` when the registered client has another ID.
 
 Use `--auth`, `--cloud`, `--cloud-grpc`, and `--resource` to override the selected target for a custom environment. `--pki-identity-endpoint` and `--pki-resource` override pki-core's exact public CSR endpoint and audience. `--issuer` accepts a complete realm issuer and skips email-based realm discovery.
 
 The stored operator certificate also signs privileged Cloud mutations. For each such RPC, the CLI creates a fresh JCS request descriptor, signs it with the CSR key, and sends the resulting ML-DSA-65 JWS in `x-wendy-request-signature`; the private key never leaves the machine. The certificate also authorizes broker and direct-device operations.
-
-Pass `--legacy` to use the old Wendy Cloud dashboard enrollment callback (`cloud.wendy.sh`) instead of the OIDC flow. `--production`, `--development`, and `--legacy` are mutually exclusive, and `--legacy` cannot be combined with `--api-key`, `--issuer`, or `--email`. This path is kept only for the previous cloud and will be removed once the v1 cutover lands.
 
 Every login ends with a `Session key:` line naming the key algorithm it minted and the login path, e.g. `Session key: ML-DSA-65 (OIDC login).` or `Session key: ECDSA P-256 (legacy login).` The legacy and `--local` paths mint classical ECDSA P-256 sessions, which cannot sign privileged Cloud mutations. `wendy auth status` shows the same per context as `Key:`.
 
@@ -47,9 +45,9 @@ Scripts and CI pipelines sign in as a wendy-auth **service account** instead of 
    wendy auth login --service-account wendy-service-account.json
    ```
 
-   In CI, put the key file's contents in `WENDY_SERVICE_ACCOUNT_KEY` and run `wendy auth login` for production or add `--development` for development. An explicit `--email`, `--issuer`, `--api-key`, or `--legacy` takes precedence over the variable.
+   In CI, put the key file's contents in `WENDY_SERVICE_ACCOUNT_KEY` and run `wendy auth login`. An explicit `--email`, `--issuer`, or `--api-key` takes precedence over the variable.
 
-The CLI signs a short-lived assertion with the key, exchanges it for an access token that is DPoP-bound to the key, and stores the session as a context like any other login. Every API call carries a fresh DPoP proof. There is no refresh token: when the token expires, the CLI mints a new one from the stored key. No operator certificate is issued for a service account. The production/development target and `--cloud`, `--cloud-grpc`, and `--resource` overrides apply as for OIDC login.
+The CLI signs a short-lived assertion with the key, exchanges it for an access token that is DPoP-bound to the key, and stores the session as a context like any other login. Every API call carries a fresh DPoP proof. There is no refresh token: when the token expires, the CLI mints a new one from the stored key. No operator certificate is issued for a service account. `--cloud`, `--cloud-grpc`, and `--resource` override its Cloud endpoints as for OIDC login.
 
 Disabling or deleting the service account in wendy-auth stops new tokens immediately; a token already issued lasts until it expires (one hour by default).
 

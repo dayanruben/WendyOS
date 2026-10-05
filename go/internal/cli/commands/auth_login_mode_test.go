@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"strings"
@@ -82,7 +83,7 @@ func TestAuthLoginMissingRealmError(t *testing.T) {
 	cmd := newAuthLoginCmd()
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	err := cmd.Execute()
-	want := "production Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly; use --legacy for the previous Cloud"
+	want := "production Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %q, want %q", err, want)
 	}
@@ -199,7 +200,7 @@ func TestAuthLoginLegacyRequiresExplicitFlag(t *testing.T) {
 	}
 }
 
-func TestAuthLoginTargetFlagsAndHelp(t *testing.T) {
+func TestAuthLoginTargetFlagsStayHidden(t *testing.T) {
 	cmd := newAuthLoginCmd()
 	for _, name := range []string{"production", "development", "legacy"} {
 		flag := cmd.Flags().Lookup(name)
@@ -209,8 +210,22 @@ func TestAuthLoginTargetFlagsAndHelp(t *testing.T) {
 		if flag.DefValue != "false" {
 			t.Fatalf("--%s default = %q, want false", name, flag.DefValue)
 		}
+		if !flag.Hidden {
+			t.Fatalf("--%s must stay hidden during the Cloud transition", name)
+		}
 	}
-	for _, want := range []string{"production Wendy Cloud by default", "--development", "--legacy", "temporarily require --email"} {
+
+	var help bytes.Buffer
+	cmd.SetOut(&help)
+	if err := cmd.Help(); err != nil {
+		t.Fatal(err)
+	}
+	for _, hidden := range []string{"--production", "--development", "--legacy"} {
+		if strings.Contains(help.String(), hidden) || strings.Contains(cmd.Long, hidden) {
+			t.Errorf("user-facing help exposes transitional flag %s", hidden)
+		}
+	}
+	for _, want := range []string{"production Wendy Cloud", "temporarily requires --email"} {
 		if !strings.Contains(cmd.Long, want) {
 			t.Errorf("long help does not mention %q: %s", want, cmd.Long)
 		}

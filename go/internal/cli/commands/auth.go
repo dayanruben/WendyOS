@@ -113,10 +113,9 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Wendy Cloud or a local pki-core instance",
-		Long: "Signs in to the production Wendy Cloud by default. Pass --development for the development Cloud or --legacy for the previous Cloud. The production and development OIDC flows temporarily require --email to discover your realm (or --issuer to name it), then use authorization code + PKCE, obtain an operator certificate directly from pki-core, and save a refreshable Cloud API session.\n" +
+		Long: "Signs in to the production Wendy Cloud. The current OIDC flow temporarily requires --email to discover your realm (or --issuer to name it), then uses authorization code + PKCE, obtains an operator certificate directly from pki-core, and saves a refreshable Cloud API session.\n" +
 			"With --api-key: issues a certificate from a self-hosted pki-core instance using a Bearer API key.\n" +
-			"With --service-account <key-file> (or " + serviceAccountKeyEnv + "): signs in headlessly as a wendy-auth service account; no browser or terminal is needed.\n" +
-			"With --legacy: uses the old Wendy Cloud dashboard enrollment callback (cloud.wendy.sh). Kept for the previous cloud only.",
+			"With --service-account <key-file> (or " + serviceAccountKeyEnv + "): signs in headlessly as a wendy-auth service account; no browser or terminal is needed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targetCount := 0
 			for _, selected := range []bool{production, development, legacy} {
@@ -193,7 +192,7 @@ func newAuthLoginCmd() *cobra.Command {
 			}
 			if issuer == "" {
 				if email == "" {
-					return fmt.Errorf("%s Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly; use --legacy for the previous Cloud", target.name)
+					return fmt.Errorf("%s Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly", target.name)
 				}
 				var err error
 				issuer, err = discoverOIDCIssuerFn(cmd.Context(), authBase, email)
@@ -245,6 +244,11 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&production, "production", false, "Use the production Wendy Cloud (default)")
 	cmd.Flags().BoolVar(&development, "development", false, "Use the development Wendy Cloud")
 	cmd.Flags().BoolVar(&legacy, "legacy", false, "Use the old Wendy Cloud dashboard enrollment flow (cloud.wendy.sh)")
+	for _, name := range []string{"production", "development", "legacy"} {
+		if err := cmd.Flags().MarkHidden(name); err != nil {
+			panic(err)
+		}
+	}
 	return cmd
 }
 

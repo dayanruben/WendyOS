@@ -84,8 +84,6 @@ Log in to the production Wendy Cloud (the email is temporarily required by the c
 wendy auth login --email you@example.com
 ```
 
-Use `--development` for the development Cloud or `--legacy` for the previous Cloud.
-
 Discover cloud-enrolled devices:
 
 ```sh

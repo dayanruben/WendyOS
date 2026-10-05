@@ -18,17 +18,15 @@ struct `'wendy auth login'` {
             try await cli.sh("wendy auth login --help") { result in
                 let stdout = result.stdout
                 #expect(result.status.isSuccess)
-                #expect(stdout.contains("Signs in to the production Wendy Cloud by default"))
+                #expect(stdout.contains("Signs in to the production Wendy Cloud"))
                 #expect(stdout.contains("wendy auth login [flags]"))
                 #expect(stdout.contains("--api-key"))
                 #expect(stdout.contains("--cloud"))
                 #expect(stdout.contains("--cloud-grpc"))
                 #expect(stdout.contains("--org"))
-                #expect(stdout.contains("--production"))
-                #expect(stdout.contains("Use the production Wendy Cloud (default)"))
-                #expect(stdout.contains("--development"))
-                #expect(stdout.contains("Use the development Wendy Cloud"))
-                #expect(stdout.contains("--legacy"))
+                #expect(!stdout.contains("--production"))
+                #expect(!stdout.contains("--development"))
+                #expect(!stdout.contains("--legacy"))
                 #expect(result.stderr == "")
             }
         }
@@ -50,7 +48,7 @@ struct `'wendy auth login'` {
                     #expect(result.stdout == "")
                     #expect(
                         result.stderr.contains(
-                            "production Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly; use --legacy for the previous Cloud"
+                            "production Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly"
                         )
                     )
                 }
@@ -61,7 +59,7 @@ struct `'wendy auth login'` {
                 #expect(result.stdout == "")
                 #expect(
                     result.stderr.contains(
-                        "development Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly; use --legacy for the previous Cloud"
+                        "development Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly"
                     )
                 )
             }
