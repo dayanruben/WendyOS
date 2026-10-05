@@ -45,6 +45,7 @@ const defaultPKIIdentityResource = "https://pki.wendy.sh/identity"
 const defaultDevPKIIdentityEndpoint = "https://identity.dev.pki.wendy.sh/v1/identity/certificate"
 
 type cloudLoginTarget struct {
+	name             string
 	authBase         string
 	cloudDashboard   string
 	cloudGRPC        string
@@ -53,6 +54,7 @@ type cloudLoginTarget struct {
 }
 
 var productionCloudLoginTarget = cloudLoginTarget{
+	name:             "production",
 	authBase:         defaultProdAuthBase,
 	cloudDashboard:   defaultProdCloudDashboard,
 	cloudGRPC:        defaultProdCloudGRPC,
@@ -61,6 +63,7 @@ var productionCloudLoginTarget = cloudLoginTarget{
 }
 
 var developmentCloudLoginTarget = cloudLoginTarget{
+	name:             "development",
 	authBase:         defaultDevAuthBase,
 	cloudDashboard:   defaultDevCloudDashboard,
 	cloudGRPC:        defaultDevCloudGRPC,
@@ -190,7 +193,7 @@ func newAuthLoginCmd() *cobra.Command {
 			}
 			if issuer == "" {
 				if email == "" {
-					return fmt.Errorf("provide --email to discover your realm (temporarily required), or --issuer to name it; use --legacy for the old cloud-dashboard login")
+					return fmt.Errorf("%s Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly; use --legacy for the previous Cloud", target.name)
 				}
 				var err error
 				issuer, err = discoverOIDCIssuerFn(cmd.Context(), authBase, email)

@@ -18,7 +18,12 @@ func TestAuthLoginModeSelection(t *testing.T) {
 		{
 			name:    "production temporarily requires an OIDC realm",
 			args:    nil,
-			wantErr: "provide --email",
+			wantErr: "production Cloud login currently requires --email <address>",
+		},
+		{
+			name:    "development temporarily requires an OIDC realm",
+			args:    []string{"--development"},
+			wantErr: "development Cloud login currently requires --email <address>",
 		},
 		{
 			name:    "target flags are mutually exclusive",
@@ -69,6 +74,17 @@ func TestAuthLoginModeSelection(t *testing.T) {
 				t.Fatalf("args %v: got err %v, want containing %q", tc.args, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestAuthLoginMissingRealmError(t *testing.T) {
+	t.Setenv(serviceAccountKeyEnv, "")
+	cmd := newAuthLoginCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	want := "production Cloud login currently requires --email <address> to discover your organization, or --issuer <url> to select its OIDC realm directly; use --legacy for the previous Cloud"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
 	}
 }
 
