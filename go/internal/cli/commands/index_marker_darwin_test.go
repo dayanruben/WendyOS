@@ -23,9 +23,12 @@ func TestMarkFATVolumes_DiskImage(t *testing.T) {
 
 	t.Run("after flash", func(t *testing.T) {
 		img, disk := newCardImage(t)
-		if err := markFATVolumesUnindexed(drive{DevicePath: disk}); err != nil {
-			t.Fatalf("markFATVolumesUnindexed: %v", err)
-		}
+		t.Run("system tools ignore PATH", func(t *testing.T) {
+			t.Setenv("PATH", t.TempDir())
+			if err := markFATVolumesUnindexed(drive{DevicePath: disk}); err != nil {
+				t.Fatalf("markFATVolumesUnindexed: %v", err)
+			}
+		})
 		assertMarked(t, waitFATMounts(t, disk))
 
 		detachImage(t, disk)

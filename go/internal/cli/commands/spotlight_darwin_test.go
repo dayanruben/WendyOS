@@ -34,8 +34,8 @@ func TestStopTargetIndexing(t *testing.T) {
 			})
 			want := [][]string{
 				{"/sbin/mount"},
-				{"sudo", "-n", "/usr/bin/mdutil", "-i", "off", "/Volumes/boot"},
-				{"sudo", "-n", "/usr/bin/mdutil", "-i", "off", "/Volumes/config with spaces"},
+				{"/usr/bin/sudo", "-n", "/usr/bin/mdutil", "-i", "off", "/Volumes/boot"},
+				{"/usr/bin/sudo", "-n", "/usr/bin/mdutil", "-i", "off", "/Volumes/config with spaces"},
 			}
 			if !reflect.DeepEqual(calls, want) {
 				t.Fatalf("calls = %v, want %v", calls, want)
@@ -62,11 +62,11 @@ func TestUnmountDarwinDisk(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			err := unmountDarwinDisk("/dev/disk4", func(timeout time.Duration, name string, args ...string) ([]byte, error) {
-				want := []string{"-n", "diskutil", "unmountDisk", "/dev/disk4"}
+				want := []string{"-n", "/usr/sbin/diskutil", "unmountDisk", "/dev/disk4"}
 				if calls == 1 {
-					want = []string{"-n", "diskutil", "unmountDisk", "force", "/dev/disk4"}
+					want = []string{"-n", "/usr/sbin/diskutil", "unmountDisk", "force", "/dev/disk4"}
 				}
-				if timeout != unmountTimeout || name != "sudo" || !reflect.DeepEqual(args, want) {
+				if timeout != unmountTimeout || name != "/usr/bin/sudo" || !reflect.DeepEqual(args, want) {
 					t.Fatalf("unexpected command: %s %v (%s)", name, args, timeout)
 				}
 				err := tc.errs[calls]

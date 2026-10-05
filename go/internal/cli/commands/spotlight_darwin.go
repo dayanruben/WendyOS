@@ -22,7 +22,7 @@ func stopTargetIndexing(disk string, run preparationCommand) error {
 	}
 	var errs []error
 	for _, mp := range parseMountedFAT(string(out), disk) {
-		out, err := run(markerTimeout, "sudo", "-n", "/usr/bin/mdutil", "-i", "off", mp)
+		out, err := run(markerTimeout, "/usr/bin/sudo", "-n", "/usr/bin/mdutil", "-i", "off", mp)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w (%s)", mp, err, strings.TrimSpace(string(out))))
 		}

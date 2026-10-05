@@ -200,11 +200,11 @@ func unmountDisk(devPath string) error {
 }
 
 func unmountDarwinDisk(devPath string, run preparationCommand) error {
-	out, err := run(unmountTimeout, "sudo", "-n", "diskutil", "unmountDisk", devPath)
+	out, err := run(unmountTimeout, "/usr/bin/sudo", "-n", "/usr/sbin/diskutil", "unmountDisk", devPath)
 	if err == nil {
 		return nil
 	}
-	forceOut, forceErr := run(unmountTimeout, "sudo", "-n", "diskutil", "unmountDisk", "force", devPath)
+	forceOut, forceErr := run(unmountTimeout, "/usr/bin/sudo", "-n", "/usr/sbin/diskutil", "unmountDisk", "force", devPath)
 	if forceErr == nil {
 		return nil
 	}
