@@ -208,6 +208,7 @@ func newDeprecatedDeviceVersionCmd() *cobra.Command {
 func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 	var checkUpdates bool
 	var prerelease bool
+	var readOnly bool
 
 	cmd := &cobra.Command{
 		Use:    use,
@@ -223,7 +224,15 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				}
 			}
 
-			target, err := resolveTarget(ctx, IncludeBluetooth())
+			var target *SelectedDevice
+			var err error
+			if readOnly {
+				var conn *grpcclient.AgentConnection
+				conn, err = connectToAgent(ctx, ReadOnlyMonitoring())
+				target = &SelectedDevice{Agent: conn}
+			} else {
+				target, err = resolveTarget(ctx, IncludeBluetooth())
+			}
 			if err != nil {
 				return err
 			}
@@ -530,6 +539,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 	cmd.Flags().BoolVar(&checkUpdates, "check-updates", false, "Check for available agent updates on GitHub")
 	cmd.Flags().BoolVar(&prerelease, "prerelease", false, "Include prerelease (nightly) builds when checking for updates")
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Observe an existing agent without starting VMs or managing updates")
 
 	return cmd
 }
@@ -548,11 +558,18 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 		Short:  "Set a local, cloud or simulator device as the default",
 		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var device string
+			device := ""
 			if len(args) > 0 {
-				device = args[0]
-			} else {
-				sel, err := pickDeviceForDefault(cmd.Context())
+				device = strings.TrimSpace(args[0])
+			}
+			if device == "" {
+				// The picker needs a terminal. Without one it fails with "could
+				// not open a new TTY"; say what to run instead. A blank argument
+				// lands here too rather than silently clearing the default.
+				if jsonOutput || !isInteractiveTerminal() {
+					return setDefaultNeedsDeviceError()
+				}
+				sel, err := pickDeviceForDefaultFn(cmd.Context())
 				if err != nil {
 					return err
 				}
@@ -562,15 +579,14 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			if selectorErr != nil {
 				return selectorErr
 			}
-
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
+			if !isCloud {
+				if err := rejectNumericDeviceName(device); err != nil {
+					return err
+				}
 			}
 
-			cfg.DefaultDevice = device
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving config: %w", err)
+			if err := saveDefaultDevice(device); err != nil {
+				return err
 			}
 
 			fmt.Printf("Default device set to: %s\n", tui.Device(device))
@@ -586,20 +602,27 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			// identity changed a way back (otherwise this connect would hit the
 			// same refusal and never re-pin).
 			//
-			// pinKeyForAddr, not the raw argument: `set-default my-mac.local:50051`
-			// is a legal default, and enforcement keys that host under
-			// "my-mac.local". Clearing "my-mac.local:50051" would drop nothing,
-			// leaving a host:port default with no way out of a refusal at all.
-			clearDevicePinForRepin(pinKeyForAddr(device))
+			// dialPinKeyForDevice, not the raw argument: `set-default
+			// my-mac.local:50051` is a legal default, and enforcement keys that
+			// host under "my-mac.local"; `set-default 127.0.0.1` is dialled as
+			// 127.0.0.1:50051, which is checked under vm:<name> while a running VM
+			// forwards that port. Clearing any other key would leave the refusal
+			// with no way out.
+			clearDevicePinForRepin(dialPinKeyForDevice(device))
 
 			// WDY-1149: pin the device's (organisation, cloud host, asset)
 			// identity now if it is reachable, so later connections detect a
 			// swapped device or MITM. Best-effort and non-interactive: an offline
 			// device is pinned instead on its first successful connection. The pin
 			// itself is established inside connectToAgent's default-device path.
-			if conn, connErr := connectToAgent(cmd.Context(), SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive()); connErr == nil {
-				_ = conn.Close()
-			}
+			//
+			// Without --device and WENDY_DEVICE: this confirms the device just
+			// saved, which an override in effect would otherwise replace.
+			withoutDeviceOverride(func() {
+				if conn, connErr := connectToAgent(cmd.Context(), SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive()); connErr == nil {
+					_ = conn.Close()
+				}
+			})
 			return nil
 		},
 	}
@@ -688,14 +711,8 @@ func newDeviceUnsetDefaultCmd() *cobra.Command {
 		Use:   "unset-default",
 		Short: "Clear the default device",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-
-			cfg.DefaultDevice = ""
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving config: %w", err)
+			if err := saveDefaultDevice(""); err != nil {
+				return err
 			}
 
 			fmt.Println("Default device cleared.")
@@ -735,7 +752,7 @@ func newDeviceSetupCmd() *cobra.Command {
 				if loadCLICert() == nil {
 					fmt.Println("You are not logged in to Wendy Cloud.")
 					if confirmFn("Log in now?") {
-						if loginErr := performLogin(ctx, defaultCloudDashboard, defaultCloudGRPC); loginErr != nil {
+						if loginErr := relogin(ctx, firstAuthEntryForRelogin()); loginErr != nil {
 							return fmt.Errorf("login failed: %w", loginErr)
 						}
 					}
@@ -1340,10 +1357,12 @@ func formatKernelLogRecord(rec *agentpb.KernelLogRecord) string {
 
 func newDeviceLogsCmd() *cobra.Command {
 	var appName string
+	var readOnly bool
 	var serviceName string
 	var minSeverity int32
 	var level string
 	var tail int32
+	var noFollow bool
 
 	cmd := &cobra.Command{
 		Use:   "logs [app]",
@@ -1352,6 +1371,8 @@ func newDeviceLogsCmd() *cobra.Command {
 			"Pass an app name (positionally or with --app) to see only that app's\n" +
 			"logs. Without a filter, logs from every container and the agent itself\n" +
 			"are streamed, which can include agent lifecycle messages.\n\n" +
+			"Pass --no-follow (usually with --tail N) to print the recent logs the\n" +
+			"device replays and exit instead of following new output.\n\n" +
 			"To inspect the device kernel ring buffer (dmesg), use `wendy device os-logs`.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1368,8 +1389,11 @@ func newDeviceLogsCmd() *cobra.Command {
 				appName = args[0]
 			}
 
-			conn, err := connectToAgent(ctx)
+			conn, err := connectToAgent(ctx, monitoringOptions(readOnly)...)
 			if err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil
+				}
 				return err
 			}
 			defer conn.Close()
@@ -1383,7 +1407,7 @@ func newDeviceLogsCmd() *cobra.Command {
 				}
 			}
 
-			req := &agentpb.StreamLogsRequest{}
+			req := &agentpb.StreamLogsRequest{NoFollow: noFollow}
 			if appName != "" {
 				req.AppName = &appName
 			}
@@ -1401,8 +1425,15 @@ func newDeviceLogsCmd() *cobra.Command {
 			if tail > 0 {
 				req.LastN = &tail
 			}
-			stream, err := conn.TelemetryService.StreamLogs(ctx, req)
+			// Cancelled when RunE returns so a --no-follow exit also stops the
+			// background receive (see consumeLogStream).
+			streamCtx, cancelStream := context.WithCancel(ctx)
+			defer cancelStream()
+			stream, err := conn.TelemetryService.StreamLogs(streamCtx, req)
 			if err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil
+				}
 				return fmt.Errorf("starting log stream: %w", err)
 			}
 
@@ -1419,28 +1450,24 @@ func newDeviceLogsCmd() *cobra.Command {
 				case serviceName != "":
 					target = serviceName
 				}
-				if tail > 0 {
+				if noFollow && tail > 0 {
+					cliLogln("Showing up to %d recent log batches from %s.", tail, target)
+				} else if noFollow {
+					cliLogln("Showing recent logs from %s.", target)
+				} else if tail > 0 {
 					cliLogln("Streaming logs from %s — replaying up to %d recent, then live. Press Ctrl-C to stop.", target, tail)
 				} else {
 					cliLogln("Streaming logs from %s. Waiting for new logs — press Ctrl-C to stop.", target)
 				}
 			}
 
-			liveSeparatorPrinted := tail == 0
+			liveSeparatorPrinted := tail == 0 || noFollow
 			seenHistory := false
 
-			for {
-				resp, err := stream.Recv()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					return fmt.Errorf("receiving logs: %w", err)
-				}
-
+			res, err := consumeLogStream(streamCtx, stream, !noFollow, func(resp *agentpb.StreamLogsResponse) {
 				logs := resp.GetLogs()
 				if logs == nil {
-					continue
+					return
 				}
 
 				// Track whether any history was received.
@@ -1468,8 +1495,16 @@ func newDeviceLogsCmd() *cobra.Command {
 						}
 					}
 				}
+			})
+			if err != nil {
+				return err
 			}
-
+			if noFollow {
+				// On stderr in every mode: stdout stays pure log lines.
+				if hint := noFollowHint(res, tail); hint != "" {
+					cliLogln("%s", hint)
+				}
+			}
 			return nil
 		},
 	}
@@ -1478,7 +1513,9 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serviceName, "service", "", "Filter by service name")
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
-	cmd.Flags().Int32Var(&tail, "tail", 0, "Request the last N stored log batches matching the filters before following new output (default 0)")
+	cmd.Flags().Int32Var(&tail, "tail", 0, "Request the last N stored log batches matching the filters (default 0); continue live unless --no-follow")
+	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Print the logs the device replays (see --tail) and exit instead of following new output; device agents released before 2026-08-19 replay history only with --tail")
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Observe an existing device without starting VMs or managing updates")
 
 	return cmd
 }
