@@ -159,7 +159,6 @@ jobs:
           fi
           python3 review-automation/.github/scripts/api_review_comment.py publish \
             --result "$result_file" \
-            --diff "$RUNNER_TEMP/api-review-pr.diff" \
             --repo "$REPO" \
             --pr-number "$PR_NUMBER" \
             --expected-head-sha "$EXPECTED_HEAD_SHA" \

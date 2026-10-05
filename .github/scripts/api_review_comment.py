@@ -493,15 +493,17 @@ def publish(result: dict, repo: str, pr_number: int, head_sha: str, base_sha: st
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["publish"])
-    for option in ("result", "diff", "repo", "expected-head-sha", "expected-base-sha"):
+    for option in ("result", "repo", "expected-head-sha", "expected-base-sha"):
         parser.add_argument("--" + option, required=True)
+    parser.add_argument("--diff")
     parser.add_argument("--pr-number", required=True, type=int)
     args = parser.parse_args()
     token = os.environ.get("GH_TOKEN")
     if not token:
         raise ValueError("GH_TOKEN is required to publish API review")
-    result = json.loads(Path(args.result).read_text())
-    diff_bytes = Path(args.diff).read_bytes()
+    result_path = Path(args.result)
+    result = json.loads(result_path.read_text())
+    diff_bytes = Path(args.diff).read_bytes() if args.diff else result_path.with_name("api-review-pr.diff").read_bytes()
     return 0 if publish(result, args.repo, args.pr_number, args.expected_head_sha,
                         args.expected_base_sha, diff_bytes, GitHub(token)) else 1
 
