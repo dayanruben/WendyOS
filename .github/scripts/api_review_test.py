@@ -516,7 +516,6 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(result["diff_bytes"], len(diff()))
         self.assertEqual(len(result["diff_sha256"]), 64)
         self.assertEqual(result["review_batches"], 1)
-        self.assertEqual(result["decisions"][0]["excerpt"]["language"], "diff")
 
     def test_large_diff_reviews_every_file_and_combines_highest_risk(self):
         patches = [diff(path=f"go/file{i}.go") for i in range(3)]
@@ -575,8 +574,7 @@ class CommandTests(unittest.TestCase):
     def test_duplicate_decisions_are_retained_only_once(self):
         code, result, _ = self.run_review(payload={"risk": "high", "decisions": [decision(), decision()]})
         self.assertEqual(code, 0)
-        self.assertEqual(len(result["decisions"]), 1)
-        self.assertEqual(result["decisions"][0]["title"], decision()["title"])
+        self.assertEqual(result["decisions"], [decision()])
 
     def test_input_failure_writes_incomplete_result_without_model_call(self):
         code, result, model = self.run_review(meta=metadata(additions=2))

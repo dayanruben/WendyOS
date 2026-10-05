@@ -631,8 +631,6 @@ def command_review(args: argparse.Namespace) -> int:
         batches = split_diff(diff, MAX_DIFF_BYTES)
         result["review_batches"] = len(batches)
         payload = review_batches(metadata, batches, args.repo, args.model)
-        for decision in payload["decisions"]:
-            decision["excerpt"] = illustrative_excerpt(diff, decision)
         result.update(payload)
         result["status"] = "complete"
     except (ReviewError, DiffBatchError) as error:

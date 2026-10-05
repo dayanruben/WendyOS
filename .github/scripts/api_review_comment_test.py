@@ -2,6 +2,7 @@
 """State and publication regressions for the API acceptance checklist."""
 
 import copy
+import hashlib
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -11,19 +12,19 @@ import api_review_comment as review
 HEAD = "a" * 40
 BASE = "b" * 40
 REPO = "wendylabsinc/WendyOS"
+REVIEW_DIFF = b"diff --git a/go/internal/shared/appconfig/appconfig.go b/go/internal/shared/appconfig/appconfig.go\n--- a/go/internal/shared/appconfig/appconfig.go\n+++ b/go/internal/shared/appconfig/appconfig.go\n@@ -9,0 +10,3 @@\n+config.Command = value\n+config.Cwd = cwd\n+config.Enabled = true\n"
 
 
 def result():
     return {
         "status": "complete", "head_sha": HEAD, "base_sha": BASE,
-        "diff_sha256": "c" * 64, "diff_base_sha": BASE, "changed_files": 1, "diff_bytes": 420,
+        "diff_sha256": hashlib.sha256(REVIEW_DIFF).hexdigest(), "diff_base_sha": BASE,
+        "changed_files": 1, "diff_bytes": len(REVIEW_DIFF),
         "risk": "mid", "decisions": [{
             "category": "config", "title": "Native `run.command` launch command",
             "change": "Add optional `run.command` and `run.cwd` to `wendy.json`.",
             "compatibility": "Existing `wendy.json` manifests keep their launch behavior.",
-            "impact": "additive", "excerpt": {
-                "language": "go", "label": "", "text": "config.Command = value",
-            }, "locations": [{
+            "impact": "additive", "locations": [{
                 "path": "go/internal/shared/appconfig/appconfig.go",
                 "side": "head", "line": 10, "end_line": 12,
             }],
@@ -34,7 +35,7 @@ def result():
 def large_result():
     data = result()
     prototype = data["decisions"][0]
-    data.update(review_batches=11, changed_files=181, diff_bytes=900_000, risk="high", decisions=[])
+    data.update(review_batches=11, changed_files=181, risk="high", decisions=[])
     for index in range(93):
         item = copy.deepcopy(prototype)
         item["title"] = f"Contract {index:03}: native launch command"
@@ -112,14 +113,14 @@ class MultipartGitHub(FakeGitHub):
 
 class RenderingTests(unittest.TestCase):
     def test_grouped_linked_unchecked_decisions_and_explicit_empty_categories(self):
-        body = review.render_comment(result(), REPO)
+        body = review.render_comment(result(), REPO, diff=REVIEW_DIFF.decode())
         self.assertIn("- [ ] Accept **Native `run.command` launch command** — 🟢 **Additive**.", body)
         self.assertIn(f"/blob/{HEAD}/go/internal/shared/appconfig/appconfig.go#L10-L12", body)
         self.assertIn("## Network contracts and constants\n\nNo API decisions changed.", body)
         self.assertIn("**Change:** Add optional `run.command` and `run.cwd`", body)
         self.assertIn("**Compatibility:** Existing `wendy.json` manifests keep their launch behavior.", body)
         self.assertIn("**Code:**", body)
-        self.assertIn("  ```go\n  config.Command = value\n  ```", body)
+        self.assertIn("  ```go\n  config.Command = value", body)
         self.assertNotIn("🔴 **Breaking**.", body)
 
     def test_each_compatibility_class_has_a_text_labeled_color_symbol(self):
@@ -141,8 +142,6 @@ class RenderingTests(unittest.TestCase):
             changed = {**original, field: value}
             self.assertNotIn("- [x]", review.render_comment(changed, REPO, checked))
         changed = copy.deepcopy(original)
-        changed["decisions"][0]["excerpt"]["text"] = "config.Command = updatedValue"
-        self.assertIn("- [x]", review.render_comment(changed, REPO, checked))
         changed["decisions"][0]["compatibility"] = "Old manifests now fail."
         self.assertNotIn("- [x]", review.render_comment(changed, REPO, checked))
 
@@ -186,11 +185,13 @@ class RenderingTests(unittest.TestCase):
 
     def test_removal_excerpt_is_labeled_before_and_mixed_diff_keeps_markers(self):
         data = result()
-        data["decisions"][0]["excerpt"] = {"language": "go", "label": "Before", "text": "const old = true"}
-        body = review.render_comment(data, REPO)
+        data["decisions"][0]["locations"] = [{"path": "old.go", "side": "base", "line": 1, "end_line": 1}]
+        removed = "diff --git a/old.go b/old.go\n--- a/old.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-const old = true\n"
+        body = review.render_comment(data, REPO, diff=removed)
         self.assertIn("**Before:**\n\n  ```go\n  const old = true", body)
-        data["decisions"][0]["excerpt"] = {"language": "diff", "label": "", "text": "-old\n+new"}
-        self.assertIn("  ```diff\n  -old\n  +new\n  ```", review.render_comment(data, REPO))
+        data["decisions"][0]["locations"] = [{"path": "change.go", "side": "head", "line": 1, "end_line": 1}]
+        mixed = "diff --git a/change.go b/change.go\n--- a/change.go\n+++ b/change.go\n@@ -1 +1 @@\n-old\n+new\n"
+        self.assertIn("  ```diff\n  -old\n  +new\n  ```", review.render_comment(data, REPO, diff=mixed))
 
     def test_failure_preserves_prior_checklist_and_recovers_without_losing_acceptance(self):
         original = result()
@@ -231,11 +232,6 @@ class RenderingTests(unittest.TestCase):
         data["decisions"][0]["accepted"] = True
         with self.assertRaises(ValueError):
             review.validate_result(data, HEAD, BASE)
-        for excerpt in ({"language": "go", "label": "", "text": "```"}, {"language": "go!", "label": "", "text": "safe"}, {"language": "go", "label": "After", "text": "safe"}):
-            data = result()
-            data["decisions"][0]["excerpt"] = excerpt
-            with self.subTest(excerpt=excerpt), self.assertRaises(ValueError):
-                review.validate_result(data, HEAD, BASE)
         for path in ("../secrets", "/etc/passwd", "foo/../bar", "foo\nbar", "https://bad.example"):
             data = result()
             data["decisions"][0]["locations"][0]["path"] = path
@@ -245,7 +241,13 @@ class RenderingTests(unittest.TestCase):
 
 class PublicationTests(unittest.TestCase):
     def publish(self, data, github):
-        return review.publish(data, REPO, 1911, HEAD, BASE, github)
+        return review.publish(data, REPO, 1911, HEAD, BASE, REVIEW_DIFF, github)
+
+    def test_complete_result_rejects_a_mismatched_diff_before_github_reads(self):
+        github = FakeGitHub()
+        with self.assertRaisesRegex(ValueError, "diff does not match"):
+            review.publish(result(), REPO, 1911, HEAD, BASE, b"different", github)
+        self.assertEqual(github.calls, [])
 
     def test_bot_comment_updated_and_human_spoof_ignored(self):
         checked = review.render_comment(result(), REPO).replace("- [ ]", "- [x]")
@@ -321,7 +323,7 @@ class PublicationTests(unittest.TestCase):
 
 class MultipartTests(unittest.TestCase):
     def publish(self, data, github):
-        return review.publish(data, REPO, 1911, HEAD, BASE, github)
+        return review.publish(data, REPO, 1911, HEAD, BASE, REVIEW_DIFF, github)
 
     def previous_comments(self, data):
         pages = review.render_continuations(data, REPO)

@@ -16,6 +16,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from api_review import illustrative_excerpt
+
 COMMENT_MARKER = "<!-- ai-api-review:v1 -->"
 PART_MARKER_RE = re.compile(r"<!-- ai-api-review:part=(\d+)/(\d+) -->")
 WARNING_START = "<!-- ai-api-review:incomplete -->"
@@ -87,7 +89,7 @@ def validate_result(result: dict, head_sha: str, base_sha: str) -> None:
         raise ValueError("API review result has invalid decisions or testing risk")
     for decision in result["decisions"]:
         if not isinstance(decision, dict) or set(decision) != {
-            "category", "title", "change", "compatibility", "impact", "locations", "excerpt",
+            "category", "title", "change", "compatibility", "impact", "locations",
         }:
             raise ValueError("API decision has unexpected fields")
         if decision["category"] not in CATEGORIES or decision["impact"] not in IMPACTS:
@@ -97,17 +99,6 @@ def validate_result(result: dict, head_sha: str, base_sha: str) -> None:
                 raise ValueError(f"API decision has invalid {field}")
         if not isinstance(decision["locations"], list) or not decision["locations"]:
             raise ValueError("API decision must link to code")
-        excerpt = decision["excerpt"]
-        if excerpt is not None:
-            if (not isinstance(excerpt, dict) or set(excerpt) != {"language", "label", "text"}
-                    or not isinstance(excerpt["language"], str)
-                    or not re.fullmatch(r"[a-z]+", excerpt["language"])
-                    or excerpt["label"] not in {"", "Before"}
-                    or not isinstance(excerpt["text"], str) or not excerpt["text"].strip()
-                    or len(excerpt["text"].encode()) > 8_000
-                    or "```" in excerpt["text"]
-                    or any(ord(char) < 9 or 13 < ord(char) < 32 or ord(char) == 127 for char in excerpt["text"])):
-                raise ValueError("API decision has an invalid illustrative excerpt")
         for location in decision["locations"]:
             if not isinstance(location, dict) or set(location) != {"path", "side", "line", "end_line"}:
                 raise ValueError("API location has unexpected fields")
@@ -131,9 +122,7 @@ def revision_marker(result: dict) -> str:
 
 
 def decision_id(decision: dict) -> str:
-    # Presentation-only source excerpts do not change the accepted decision.
-    accepted_fields = {key: value for key, value in decision.items() if key != "excerpt"}
-    return hashlib.sha256(json.dumps(accepted_fields, sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(decision, sort_keys=True).encode()).hexdigest()
 
 
 def code_link(repo: str, result: dict, location: dict) -> str:
@@ -177,7 +166,7 @@ def review_intro(result: dict, repo: str) -> list[str]:
     ]
 
 
-def decision_lines(decision: dict, result: dict, repo: str, accepted: set[str]) -> list[str]:
+def decision_lines(decision: dict, result: dict, repo: str, accepted: set[str], diff: str = "") -> list[str]:
     identifier = decision_id(decision)
     checked = "x" if identifier in accepted else " "
     impact_symbol, impact_title = IMPACTS[decision["impact"]]
@@ -188,7 +177,7 @@ def decision_lines(decision: dict, result: dict, repo: str, accepted: set[str]) 
         f"  - **Compatibility:** {inline(decision['compatibility'])}",
         "  - **Code:** " + ", ".join(code_link(repo, result, loc) for loc in decision["locations"]),
     ]
-    excerpt = decision["excerpt"]
+    excerpt = illustrative_excerpt(diff, decision) if diff else None
     if excerpt is not None:
         lines.append("")
         if excerpt["label"]:
@@ -201,7 +190,7 @@ def decision_lines(decision: dict, result: dict, repo: str, accepted: set[str]) 
     return lines
 
 
-def render_comment(result: dict, repo: str, previous: str = "") -> str:
+def render_comment(result: dict, repo: str, previous: str = "", diff: str = "") -> str:
     accepted = accepted_decisions(result, previous)
     lines = review_intro(result, repo)
     if not result["decisions"]:
@@ -213,7 +202,7 @@ def render_comment(result: dict, repo: str, previous: str = "") -> str:
             lines += ["No API decisions changed.", ""]
             continue
         for decision in sorted(decisions, key=lambda item: (item["title"], decision_id(item))):
-            lines += decision_lines(decision, result, repo, accepted)
+            lines += decision_lines(decision, result, repo, accepted, diff)
     lines += [revision_marker(result), COMMENT_MARKER, ""]
     body = "\n".join(lines)
     if len(body.encode()) > MAX_COMMENT_BYTES - WARNING_RESERVE_BYTES:
@@ -233,7 +222,7 @@ def part_index(body: str) -> int:
     return index
 
 
-def render_continuations(result: dict, repo: str, previous: str = "") -> list[str]:
+def render_continuations(result: dict, repo: str, previous: str = "", diff: str = "") -> list[str]:
     """Pack whole decision blocks; never truncate prose, evidence, or checkboxes."""
     accepted = accepted_decisions(result, previous)
     limit = MAX_COMMENT_BYTES - WARNING_RESERVE_BYTES
@@ -256,7 +245,7 @@ def render_continuations(result: dict, repo: str, previous: str = "") -> list[st
         decisions = sorted((item for item in result["decisions"] if item["category"] == category),
                            key=lambda item: (item["title"], decision_id(item)))
         for decision in decisions:
-            block = decision_lines(decision, result, repo, accepted)
+            block = decision_lines(decision, result, repo, accepted, diff)
             heading = [f"## {title}", ""]
             candidate = current + ([] if current_category == category else heading) + block
             # Reserve the maximum possible page-number width before any write.
@@ -345,10 +334,18 @@ class GitHub:
             time.sleep(2**attempt)
 
 
-def publish(result: dict, repo: str, pr_number: int, head_sha: str, base_sha: str, github) -> bool:
+def publish(result: dict, repo: str, pr_number: int, head_sha: str, base_sha: str, diff_bytes: bytes, github) -> bool:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or pr_number <= 0:
         raise ValueError("Invalid repository or PR number")
     validate_result(result, head_sha, base_sha)
+    diff = ""
+    if result["status"] == "complete":
+        if len(diff_bytes) != result["diff_bytes"] or hashlib.sha256(diff_bytes).hexdigest() != result["diff_sha256"]:
+            raise ValueError("API review diff does not match the complete result")
+        try:
+            diff = diff_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("API review diff is not valid UTF-8") from error
     root = f"/repos/{repo}"
     issue = f"{root}/issues/{pr_number}"
     pull_path = f"{root}/pulls/{pr_number}"
@@ -386,9 +383,9 @@ def publish(result: dict, repo: str, pr_number: int, head_sha: str, base_sha: st
             accepted_previous = "\n\n".join(comment["body"] for comment in existing
                                                if revision_marker(result) in comment["body"])
             try:
-                body = render_comment(result, repo, accepted_previous)
+                body = render_comment(result, repo, accepted_previous, diff)
             except ValueError:
-                continuations = render_continuations(result, repo, accepted_previous)
+                continuations = render_continuations(result, repo, accepted_previous, diff)
                 # GitHub comment IDs are bounded integers. Validate the complete
                 # primary with worst-case link lengths before creating any part.
                 body = render_primary(result, repo, pr_number, [10**20 - 1] * len(continuations))
@@ -496,7 +493,7 @@ def publish(result: dict, repo: str, pr_number: int, head_sha: str, base_sha: st
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["publish"])
-    for option in ("result", "repo", "expected-head-sha", "expected-base-sha"):
+    for option in ("result", "diff", "repo", "expected-head-sha", "expected-base-sha"):
         parser.add_argument("--" + option, required=True)
     parser.add_argument("--pr-number", required=True, type=int)
     args = parser.parse_args()
@@ -504,8 +501,9 @@ def main() -> int:
     if not token:
         raise ValueError("GH_TOKEN is required to publish API review")
     result = json.loads(Path(args.result).read_text())
+    diff_bytes = Path(args.diff).read_bytes()
     return 0 if publish(result, args.repo, args.pr_number, args.expected_head_sha,
-                        args.expected_base_sha, GitHub(token)) else 1
+                        args.expected_base_sha, diff_bytes, GitHub(token)) else 1
 
 
 if __name__ == "__main__":
