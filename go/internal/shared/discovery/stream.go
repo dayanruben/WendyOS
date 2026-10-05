@@ -50,6 +50,9 @@ type LANEvent struct {
 // LANProber verifies a device by talking to its agent. On success the
 // returned device carries refreshed AgentVersion/DeviceType/OS/OSVersion/
 // CPUArchitecture and IsMTLS reflecting the actual connection.
+// It must bound its connection attempts and return when ctx is cancelled.
+// The stream supplies the session context without an additional timeout:
+// the budget needed for each address and credential belongs to the prober.
 type LANProber func(ctx context.Context, dev models.LANDevice) (models.LANDevice, error)
 
 // StreamOptions configures a streaming LAN discovery scan.
@@ -99,15 +102,14 @@ type LANFilter interface {
 // before closing its event channel — and it may return a non-nil error at any
 // time to have the session restart it (see runBackend).
 var (
-	lanBackendFn      = mdnsStreamBackend       // per-platform mDNS stream
-	cacheLoadFn       = discoverycache.Load     // recently-seen device cache
-	offlineGrace      = 4 * time.Second         // cached & silent → Offline
-	offlineRetryDelay = 30 * time.Second        // one re-probe after Offline
-	probeTimeout      = 1500 * time.Millisecond // per-probe ctx budget
-	probeWorkers      = 4                       // concurrent probes/resolves
-	cacheFlushDelay   = time.Second             // debounce for cache writes
-	backendRetryDelay = 2 * time.Second         // backend died mid-session
-	backendRetries    = 3                       // ...restart attempts before giving up
+	lanBackendFn      = mdnsStreamBackend   // per-platform mDNS stream
+	cacheLoadFn       = discoverycache.Load // recently-seen device cache
+	offlineGrace      = 4 * time.Second     // cached & silent → Offline
+	offlineRetryDelay = 30 * time.Second    // one re-probe after Offline
+	probeWorkers      = 4                   // concurrent probes/resolves
+	cacheFlushDelay   = time.Second         // debounce for cache writes
+	backendRetryDelay = 2 * time.Second     // backend died mid-session
+	backendRetries    = 3                   // ...restart attempts before giving up
 	// backendListenedAfter is how long one backend attempt must browse before
 	// it counts as having listened (see StreamOptions.OnBackendError). A
 	// browse that can't start (sandbox, no Local Network permission, no
@@ -834,9 +836,11 @@ func (s *lanStream) scheduleProbe(key string, st *lanDeviceState) {
 		// Marked so the prober's dial path cannot fall back to another mDNS
 		// browse, which would start a fresh discovery session and probe from
 		// there — see WithinProbe.
-		probeCtx, cancel := context.WithTimeout(WithinProbe(s.ctx), probeTimeout)
-		defer cancel()
-		probed, err := prober(probeCtx, dev)
+		// The prober bounds its individual attempts. A fixed outer deadline
+		// here used to cut off slow mTLS handshakes and later addresses or org
+		// credentials before their own budgets elapsed. Session cancellation
+		// (including CollectLAN's overall scan limit) still stops the work.
+		probed, err := prober(WithinProbe(s.ctx), dev)
 
 		select {
 		case s.results <- lanProbeResult{key: key, gen: gen, dev: probed, err: err}:
