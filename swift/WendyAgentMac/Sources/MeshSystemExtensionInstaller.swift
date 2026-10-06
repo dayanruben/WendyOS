@@ -38,7 +38,7 @@ nonisolated func compareSystemExtensionVersions(
 final class MeshSystemExtensionInstaller: NSObject {
     static let shared = MeshSystemExtensionInstaller()
 
-    static let extensionID = "sh.wendy.WendyAgentMac.WendyNet"
+    static let extensionID = "sh.wendy.WendyAgentMac.NetProxy"
 
     static var isBundled: Bool {
         let extensionURL = Bundle.main.bundleURL
