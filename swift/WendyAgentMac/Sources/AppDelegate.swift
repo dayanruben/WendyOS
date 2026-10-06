@@ -14,7 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private let wendyAgent = WendyAgent(configuration: .default)
     private let localBuildService = WendyRuntimeVM()
     private let meshVPN = MeshVPNController.shared
-    private let meshVPNIsAvailable = MeshSystemExtensionInstaller.isBundled
+    // DISABLED: Wendy Mesh is hidden until its sign-in and account experience is ready.
+    private let meshVPNIsEnabled = false
+    private var meshVPNIsAvailable: Bool {
+        self.meshVPNIsEnabled && MeshSystemExtensionInstaller.isBundled
+    }
     private let welcomeAndPermissions = WelcomeAndPermissions()
     private var statusMenuController: StatusMenuController?
     private var welcomeAndPermissionsWindow: NSWindow?
@@ -40,6 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
             if self.meshVPNIsAvailable {
                 await self.meshVPN.connectAutomatically()
+            } else {
+                // DISABLED: Clear prior opt-ins and stop existing tunnels so hidden Mesh cannot
+                // remain active or reconnect in the background.
+                await self.meshVPN.disable()
             }
 
             // Registered before start() so the services the agent builds at
