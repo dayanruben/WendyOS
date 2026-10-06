@@ -68,6 +68,31 @@ func TestEffectiveLoginIssuerRealmLess(t *testing.T) {
 	}
 }
 
+func TestCanonicalAuthorizationBase(t *testing.T) {
+	for _, tc := range []struct {
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{"https://auth.wendy.dev/", "https://auth.wendy.dev", false},
+		{"http://127.0.0.1:8080/", "http://127.0.0.1:8080", false},
+		{"http://auth.wendy.dev", "", true},
+		{"https://auth.wendy.dev/realms/acme", "", true},
+		{"https://user@auth.wendy.dev", "", true},
+	} {
+		got, err := canonicalAuthorizationBase(tc.raw)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("canonicalAuthorizationBase(%q) = %q, want error", tc.raw, got)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("canonicalAuthorizationBase(%q) = %q, %v; want %q", tc.raw, got, err, tc.want)
+		}
+	}
+}
+
 func TestSameIssuerOrigin(t *testing.T) {
 	if !sameIssuerOrigin("https://auth.wendy.sh/realms/a", "https://auth.wendy.sh/realms/b") {
 		t.Fatal("same host+scheme, different path should match")

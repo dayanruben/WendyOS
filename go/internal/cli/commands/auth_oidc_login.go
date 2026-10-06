@@ -84,16 +84,20 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	// until the callback identifies the selected realm.
 	var meta *oidcProviderMetadata
 	if opts.Issuer != "" {
+		opts.Issuer, err = validateRealmIssuer(opts.Issuer, opts.Issuer)
+		if err != nil {
+			return err
+		}
 		meta, err = discoverOIDC(ctx, opts.Issuer)
 		if err != nil {
 			return err
 		}
 	} else {
-		base, baseErr := canonicalAuthorizationBase(opts.AuthorizationBase)
-		if baseErr != nil {
-			return baseErr
+		opts.AuthorizationBase, err = canonicalAuthorizationBase(opts.AuthorizationBase)
+		if err != nil {
+			return err
 		}
-		meta = &oidcProviderMetadata{AuthorizationEndpoint: base + "/authorize"}
+		meta = &oidcProviderMetadata{AuthorizationEndpoint: opts.AuthorizationBase + "/authorize"}
 	}
 
 	// Step 3: loopback listener for the redirect.
