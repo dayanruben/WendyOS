@@ -120,7 +120,7 @@ class RenderingTests(unittest.TestCase):
         self.assertIn("**Change:** Add optional `run.command` and `run.cwd`", body)
         self.assertIn("**Compatibility:** Existing `wendy.json` manifests keep their launch behavior.", body)
         self.assertIn("**Code:**", body)
-        self.assertIn("  ```go\n  config.Command = value", body)
+        self.assertIn("  ```diff\n  +config.Command = value", body)
         self.assertNotIn("🔴 **Breaking**.", body)
 
     def test_each_compatibility_class_has_a_text_labeled_color_symbol(self):
@@ -189,14 +189,15 @@ class RenderingTests(unittest.TestCase):
         data["decisions"][0]["locations"] = [{"path": "README.md", "side": "head", "line": 1, "end_line": 1}]
         raw = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -0,0 +1,2 @@\n+```\n+[injected](https://bad.example)\n"
         body = review.render_comment(data, REPO, diff=raw)
-        self.assertIn("  ````markdown\n  ```\n  [injected](https://bad.example)\n  ````", body)
+        self.assertIn("  ````diff\n  +```\n  +[injected](https://bad.example)\n  ````", body)
 
-    def test_removal_excerpt_is_labeled_before_and_mixed_diff_keeps_markers(self):
+    def test_removal_and_mixed_excerpts_keep_diff_markers(self):
         data = result()
         data["decisions"][0]["locations"] = [{"path": "old.go", "side": "base", "line": 1, "end_line": 1}]
         removed = "diff --git a/old.go b/old.go\n--- a/old.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-const old = true\n"
         body = review.render_comment(data, REPO, diff=removed)
-        self.assertIn("**Before:**\n\n  ```go\n  const old = true", body)
+        self.assertIn("  ```diff\n  -const old = true\n  ```", body)
+        self.assertNotIn("**Before:**", body)
         data["decisions"][0]["locations"] = [{"path": "change.go", "side": "head", "line": 1, "end_line": 1}]
         mixed = "diff --git a/change.go b/change.go\n--- a/change.go\n+++ b/change.go\n@@ -1 +1 @@\n-old\n+new\n"
         self.assertIn("  ```diff\n  -old\n  +new\n  ```", review.render_comment(data, REPO, diff=mixed))

@@ -260,18 +260,18 @@ class IllustrativeExcerptTests(unittest.TestCase):
         self.assertIn("-const AgentPort = 50051", excerpt["text"])
         self.assertIn("+const AgentPort = 50052", excerpt["text"])
 
-    def test_addition_uses_source_language_without_prefix(self):
+    def test_addition_keeps_unified_diff_marker(self):
         raw = "diff --git a/new.proto b/new.proto\nnew file mode 100644\n--- /dev/null\n+++ b/new.proto\n@@ -0,0 +1 @@\n+message New {}\n"
         item = decision(locations=[{"path": "new.proto", "side": "head", "line": 1, "end_line": 1}])
         self.assertEqual(api_review.illustrative_excerpt(raw, item), {
-            "language": "proto", "label": "", "text": "message New {}",
+            "language": "diff", "label": "", "text": "+message New {}",
         })
 
-    def test_removal_is_labeled_before_without_prefix(self):
+    def test_removal_keeps_unified_diff_marker(self):
         raw = "diff --git a/old.go b/old.go\ndeleted file mode 100644\n--- a/old.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-const old = true\n"
         item = decision(locations=[{"path": "old.go", "side": "base", "line": 1, "end_line": 1}])
         self.assertEqual(api_review.illustrative_excerpt(raw, item), {
-            "language": "go", "label": "Before", "text": "const old = true",
+            "language": "diff", "label": "", "text": "-const old = true",
         })
 
 

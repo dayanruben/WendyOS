@@ -339,13 +339,6 @@ def numbered_diff(diff: str) -> str:
     return "".join(output)
 
 
-EXCERPT_LANGUAGES = {
-    ".go": "go", ".proto": "proto", ".swift": "swift", ".py": "python",
-    ".sh": "bash", ".json": "json", ".yaml": "yaml", ".yml": "yaml",
-    ".toml": "toml", ".md": "markdown",
-}
-
-
 def illustrative_excerpt(diff: str, decision: dict[str, Any]) -> dict[str, str] | None:
     """Select a small, deterministic source excerpt around the first citation."""
     # SECURITY: review output reaches here only after resolve_evidence replaces
@@ -382,20 +375,9 @@ def illustrative_excerpt(diff: str, decision: dict[str, Any]) -> dict[str, str] 
     start = max(hunk_start + 1, anchor - 2)
     end = min(hunk_end, anchor + 3)
     excerpt = [line for line in lines[start:end] if line != "\\ No newline at end of file"]
-    additions = any(line.startswith("+") for line in excerpt)
-    removals = any(line.startswith("-") for line in excerpt)
-    language = EXCERPT_LANGUAGES.get(pathlib.PurePosixPath(anchor_location["path"]).suffix.lower(), "text")
-    label = ""
-    if additions and removals:
-        language = "diff"
-    elif additions:
-        excerpt = [line[1:] if line.startswith(("+", " ")) else line for line in excerpt]
-    elif removals:
-        label = "Before"
-        excerpt = [line[1:] if line.startswith(("-", " ")) else line for line in excerpt]
-    else:
+    if not any(line.startswith(("+", "-")) for line in excerpt):
         return None
-    return {"language": language, "label": label, "text": "\n".join(excerpt)}
+    return {"language": "diff", "label": "", "text": "\n".join(excerpt)}
 
 
 def model_schema(evidence: dict[int, dict[str, Any]]) -> dict[str, Any]:
