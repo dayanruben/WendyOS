@@ -60,10 +60,9 @@ codesign --display --entitlements :- "$NET_PROXY_PATH" > "$TEMP_DIR/net-proxy-en
   --kind net-proxy
 
 for code_path in "$APP_PATH" "$NET_PROXY_PATH"; do
-  certificate_prefix="$TEMP_DIR/certificate-$(basename "$code_path")"
-  codesign --display --extract-certificates "$certificate_prefix" "$code_path" 2>/dev/null
-  actual_identity=$(shasum -a 1 "${certificate_prefix}0" | awk '{ print toupper($1) }')
-  if [[ "$actual_identity" != "$EXPECTED_SIGNING_IDENTITY" ]]; then
+  if ! codesign --verify --strict \
+    --test-requirement "=certificate leaf = H\"$EXPECTED_SIGNING_IDENTITY\"" \
+    "$code_path"; then
     echo "Code signature does not use the expected Developer ID certificate: $code_path" >&2
     exit 1
   fi
