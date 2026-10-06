@@ -278,8 +278,12 @@ func installedFromFlashBundle(dev deviceInfo) bool {
 
 // isFlashBundleDeviceType reports whether a device type is flashed from a bundle
 // whatever its manifest says. The publisher does not yet write install_mode for
-// the EDL boards it already ships, so the device type has to carry the rule.
+// the EDL boards it already ships, so the device type has to carry the rule: the
+// prefix, or the registry for a board published under its own name.
 func isFlashBundleDeviceType(deviceType string) bool {
+	if _, ok := dragonwingBoardFor(deviceType); ok {
+		return true
+	}
 	return strings.HasPrefix(deviceType, dragonwingDeviceTypePrefix)
 }
 
@@ -346,6 +350,12 @@ func pickWendyLiteBoard(target string, nightly bool) (string, error) {
 }
 
 func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
+	// --device-type is only supported for Linux devices, not ESP32/Wendy Lite.
+	// Rejected before any manifest fetch: the answer never depends on it.
+	switch flagDeviceType {
+	case "esp32-c5", "esp32-c6", "esp32-c61", "esp32-p4", "esp32-s3":
+		return fmt.Errorf("--device-type does not support ESP32 targets; use the interactive picker for Wendy Lite devices")
+	}
 	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" && storageOverride != "emmc" {
 		return fmt.Errorf("invalid --storage %q: must be \"nvme\", \"sd\", or \"emmc\" (jetson-agx-orin only)", storageOverride)
 	}
@@ -498,11 +508,6 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// Resolve device — use flag or interactive picker.
 	var selected string
 	if flagDeviceType != "" {
-		// --device-type is only supported for Linux devices, not ESP32/Wendy Lite.
-		switch flagDeviceType {
-		case "esp32-c5", "esp32-c6", "esp32-c61", "esp32-p4", "esp32-s3":
-			return fmt.Errorf("--device-type does not support ESP32 targets; use the interactive picker for Wendy Lite devices")
-		}
 		if _, ok := deviceMap[flagDeviceType]; !ok {
 			var available []string
 			for k, d := range deviceMap {

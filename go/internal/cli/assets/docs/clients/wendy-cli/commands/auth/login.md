@@ -25,7 +25,7 @@ The OAuth client is managed through the wendy-auth dashboard like any other inte
 
 Use `--auth`, `--cloud`, `--cloud-grpc`, and `--resource` to target another environment. `--pki-identity-endpoint` and `--pki-resource` override pki-core's exact public CSR endpoint and audience. `--issuer` accepts a complete realm issuer and skips email-based realm discovery.
 
-The stored operator certificate also signs privileged Cloud mutations. For each such RPC, the CLI creates a fresh JCS request descriptor, signs it with the CSR key, and sends the resulting ML-DSA-65 JWS in `x-wendy-request-signature`; the private key never leaves the machine. The certificate also authorizes broker and direct-device operations.
+The stored operator certificate also signs privileged Cloud mutations. For each such RPC, the CLI creates a fresh JCS request descriptor, signs it with the CSR key, and sends the resulting ML-DSA-65 JWS in the request body, inside the `wendycloud.v2.SignedRequest` envelope beside the exact request bytes it signs; the private key never leaves the machine. The certificate also authorizes broker and direct-device operations.
 
 Every login ends with a `Session key:` line naming the key algorithm it minted and the login path, e.g. `Session key: ML-DSA-65 (OIDC login).` or `Session key: ECDSA P-256 (legacy login).` The legacy and `--local` paths mint classical ECDSA P-256 sessions, which cannot sign privileged Cloud mutations. `wendy auth status` shows the same per context as `Key:`.
 
