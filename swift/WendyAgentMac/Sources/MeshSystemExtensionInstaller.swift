@@ -40,6 +40,13 @@ final class MeshSystemExtensionInstaller: NSObject {
 
     static let extensionID = "sh.wendy.WendyAgentMac.WendyNet"
 
+    static var isBundled: Bool {
+        let extensionURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Library/SystemExtensions", isDirectory: true)
+            .appendingPathComponent("\(Self.extensionID).systemextension", isDirectory: true)
+        return FileManager.default.fileExists(atPath: extensionURL.path)
+    }
+
     private var operation: Task<SystemExtensionInstallationResult, any Error>?
     private var propertiesContinuation: CheckedContinuation<[InstalledSystemExtension], any Error>?
     private var activationContinuation: CheckedContinuation<Void, any Error>?

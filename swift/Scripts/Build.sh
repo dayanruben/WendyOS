@@ -47,8 +47,10 @@ NOTARY_ZIP="${TEMP_DIR}/WendyAgentMac-notary.zip"
 ARTIFACT_NAME="wendy-agent-macos-arm64-${VERSION}.zip"
 ARTIFACT_PATH="${OUTPUT_DIR}/${ARTIFACT_NAME}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-wendy-notary-profile}"
-ENTITLEMENTS_PATH="$SWIFT_DIR/WendyAgentMac/Support/WendyAgentMac.entitlements"
+FULL_ENTITLEMENTS_PATH="$SWIFT_DIR/WendyAgentMac/Support/WendyAgentMac.entitlements"
+CORE_ENTITLEMENTS_PATH="$SWIFT_DIR/WendyAgentMac/Support/WendyAgentMacCore.entitlements"
 SYSTEM_EXTENSION_ENTITLEMENTS_PATH="$SWIFT_DIR/WendyAgentMac/WendyNet/WendyNet.entitlements"
+CORE_ONLY_VALIDATOR_PATH="$SCRIPT_DIR/ValidateMacCoreOnlyRelease.sh"
 RUNTIME_RESOURCES_PATH="$SWIFT_DIR/WendyAgentMac/Resources/runtime"
 RUNTIME_KERNEL_PATH="$RUNTIME_RESOURCES_PATH/vmlinuz-arm64"
 RUNTIME_INITRAMFS_PATH="$RUNTIME_RESOURCES_PATH/initramfs-arm64.img"
@@ -84,12 +86,20 @@ if [ -z "${SIGNING_IDENTITY:-}" ]; then
   exit 1
 fi
 
-if [ ! -f "$ENTITLEMENTS_PATH" ]; then
-  echo "Missing entitlements file: $ENTITLEMENTS_PATH" >&2
-  exit 1
+if [[ "$DEV_BUILD" -eq 1 ]]; then
+  ENTITLEMENTS_PATH="$FULL_ENTITLEMENTS_PATH"
+else
+  ENTITLEMENTS_PATH="$CORE_ENTITLEMENTS_PATH"
 fi
-if [ ! -f "$SYSTEM_EXTENSION_ENTITLEMENTS_PATH" ]; then
-  echo "Missing entitlements file: $SYSTEM_EXTENSION_ENTITLEMENTS_PATH" >&2
+
+for required_file in "$ENTITLEMENTS_PATH" "$SYSTEM_EXTENSION_ENTITLEMENTS_PATH"; do
+  if [ ! -f "$required_file" ]; then
+    echo "Missing entitlements file: $required_file" >&2
+    exit 1
+  fi
+done
+if [[ "$DEV_BUILD" -ne 1 && ! -x "$CORE_ONLY_VALIDATOR_PATH" ]]; then
+  echo "Missing executable core-only release validator: $CORE_ONLY_VALIDATOR_PATH" >&2
   exit 1
 fi
 for runtime_artifact in "$RUNTIME_KERNEL_PATH" "$RUNTIME_INITRAMFS_PATH"; do
@@ -171,16 +181,26 @@ ditto "$BUILT_APP_PATH" "$APP_PATH"
 
 SYSTEM_EXTENSION_PATH="$APP_PATH/Contents/Library/SystemExtensions/sh.wendy.WendyAgentMac.WendyNet.systemextension"
 
+if [[ "$DEV_BUILD" -ne 1 ]]; then
+  rm -rf "$SYSTEM_EXTENSION_PATH"
+  rmdir "$APP_PATH/Contents/Library/SystemExtensions" 2>/dev/null || true
+fi
+
 while IFS= read -r nested_code; do
   sign_path "$nested_code"
 done < <(find "$APP_PATH/Contents" \
   \( -name "*.app" -o -name "*.framework" -o -name "*.xpc" -o -name "*.appex" -o -name "*.dylib" \) \
   -print | sort -r)
 
-sign_path "$SYSTEM_EXTENSION_PATH" "$SYSTEM_EXTENSION_ENTITLEMENTS_PATH"
+if [[ "$DEV_BUILD" -eq 1 ]]; then
+  sign_path "$SYSTEM_EXTENSION_PATH" "$SYSTEM_EXTENSION_ENTITLEMENTS_PATH"
+fi
 sign_path "$APP_PATH" "$ENTITLEMENTS_PATH"
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+if [[ "$DEV_BUILD" -ne 1 ]]; then
+  "$CORE_ONLY_VALIDATOR_PATH" "$APP_PATH"
+fi
 
 if [[ "$DEV_BUILD" -ne 1 ]]; then
   ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$NOTARY_ZIP"
@@ -198,6 +218,15 @@ fi
 ditto -c -k --sequesterRsrc --keepParent \
   "$APP_PATH" \
   "$ARTIFACT_PATH"
+
+if [[ "$DEV_BUILD" -ne 1 ]]; then
+  ARTIFACT_VALIDATION_DIR=$(mktemp -d)
+  trap 'rm -rf "$ARTIFACT_VALIDATION_DIR"' EXIT
+  ditto -x -k "$ARTIFACT_PATH" "$ARTIFACT_VALIDATION_DIR"
+  "$CORE_ONLY_VALIDATOR_PATH" "$ARTIFACT_VALIDATION_DIR/$APP_NAME"
+  rm -rf "$ARTIFACT_VALIDATION_DIR"
+  trap - EXIT
+fi
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {

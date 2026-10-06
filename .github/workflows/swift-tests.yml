@@ -125,6 +125,11 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             -skipMacroValidation
 
+      - name: Test core-only release validation
+        working-directory: swift
+        shell: bash
+        run: bash ./Scripts/ValidateMacCoreOnlyRelease_test.sh
+
   lint:
     name: Lint Swift Sources
     runs-on: ubuntu-latest
