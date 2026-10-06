@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     )
     private let wendyAgent = WendyAgent(configuration: .default)
     private let localBuildService = WendyRuntimeVM()
+    // DISABLED: Local Build Service is hidden while the BuildKit experience remains unfinished.
+    private let localBuildServiceIsEnabled = false
     private let meshVPN = MeshVPNController.shared
     // DISABLED: Wendy Mesh is hidden until its sign-in and account experience is ready.
     private let meshVPNIsEnabled = false
@@ -37,10 +39,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             self.statusMenuController = await StatusMenuController(
                 wendyAgent: self.wendyAgent,
                 localBuildService: self.localBuildService,
+                localBuildServiceIsAvailable: self.localBuildServiceIsEnabled,
                 meshVPN: self.meshVPN,
                 meshVPNIsAvailable: self.meshVPNIsAvailable,
                 delegate: self
             )
+
+            if !self.localBuildServiceIsEnabled {
+                // DISABLED: Stop any process-local BuildKit runtime so the hidden service cannot
+                // remain active without visible controls.
+                await self.localBuildService.stop()
+            }
 
             if self.meshVPNIsAvailable {
                 await self.meshVPN.connectAutomatically()
@@ -88,6 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         _ controller: StatusMenuController,
         didSetLocalBuildServiceEnabled enabled: Bool
     ) {
+        guard self.localBuildServiceIsEnabled else { return }
+
         Task {
             if enabled {
                 await self.localBuildService.start()
