@@ -788,8 +788,9 @@ def main() -> int:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
     review = commands.add_parser("review")
-    for name in ("metadata", "diff", "previous", "repo", "expected-head-sha", "expected-base-sha", "output", "model"):
+    for name in ("metadata", "diff", "repo", "expected-head-sha", "expected-base-sha", "output", "model"):
         review.add_argument(f"--{name}", required=True)
+    review.add_argument("--previous")
     review.add_argument("--pr-number", type=int, required=True)
     args = root.parse_args()
     return command_review(args)

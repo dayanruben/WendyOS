@@ -365,8 +365,8 @@ def review_intro(result: dict, repo: str) -> list[str]:
         f"Input coverage: {result['changed_files']} changed files, {result['diff_bytes']:,} diff bytes "
         f"across {result.get('review_batches', 1)} complete batch(es); no truncation.",
         "",
-        "Check a box to accept a pending or changed decision. Acceptance follows materially unchanged decisions across commits; "
-        "these checkboxes do not block merging automatically.",
+        ("Check a box to accept a pending or changed decision. Acceptance follows materially unchanged decisions across commits; "
+         + "these checkboxes do not block merging automatically."),
         "",
         f"**Testing risk:** {result['risk']}. Compatibility impact is listed separately for each decision.",
         "",
