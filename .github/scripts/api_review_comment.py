@@ -588,6 +588,32 @@ class GitHub:
             time.sleep(2**attempt)
 
 
+class DryRunGitHub:
+    """Read live state, but intercept every mutation before reaching GitHub."""
+
+    def __init__(self, github):
+        self.github = github
+        self.mutations = 0
+        self.bodies: list[str] = []
+
+    def request(self, method: str, path: str, payload=None):
+        if method == "GET":
+            return self.github.request(method, path, payload)
+        if method not in {"POST", "PATCH", "DELETE"}:
+            raise ValueError("Unsupported dry-run GitHub method")
+        self.mutations += 1
+        if payload and "body" in payload:
+            self.bodies.append(payload["body"])
+        # Synthetic bounded IDs allow multipart rendering without real POSTs.
+        return {"id": 10**19 + self.mutations}
+
+    def summary(self) -> str:
+        records = parse_comment_state(self.bodies)
+        counts = {state: sum(record["state"] == state for record in records)
+                  for state in ("accepted", "pending", "needs_re_review", "withdrawn")}
+        return "Dry-run publication: " + json.dumps({"intercepted_mutations": self.mutations, **counts}, sort_keys=True)
+
+
 def authoritative_records(comments: list[dict]) -> list[dict]:
     comments = sorted(comments, key=lambda comment: comment["id"])
     primary = next((comment for comment in comments if part_index(comment["body"]) == 0), None)
@@ -781,6 +807,7 @@ def main() -> int:
     for option in ("result", "repo", "expected-head-sha", "expected-base-sha"):
         publish_parser.add_argument("--" + option, required=True)
     publish_parser.add_argument("--pr-number", required=True, type=int)
+    publish_parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     token = os.environ.get("GH_TOKEN")
     if not token:
@@ -796,8 +823,13 @@ def main() -> int:
     # unchanged during rollout, then verify the immutable diff fingerprint
     # before rendering any PR-controlled source text.
     diff_bytes = result_path.with_name("api-review-pr.diff").read_bytes()
-    return 0 if publish(result, args.repo, args.pr_number, args.expected_head_sha,
-                        args.expected_base_sha, diff_bytes, github) else 1
+    if args.dry_run:
+        github = DryRunGitHub(github)
+    complete = publish(result, args.repo, args.pr_number, args.expected_head_sha,
+                       args.expected_base_sha, diff_bytes, github)
+    if args.dry_run:
+        print(github.summary())
+    return 0 if complete else 1
 
 
 if __name__ == "__main__":

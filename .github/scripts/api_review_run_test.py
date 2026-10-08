@@ -35,9 +35,10 @@ class FullRunTests(unittest.TestCase):
         return body.replace("- [ ] Accept", "- [x] Accept")
 
     def run_flow(self, *, relationship="unchanged", failure=None, late_checkbox=False,
-                 stale=False, changed_state=False, legacy=False, impact_change=False):
+                 stale=False, changed_state=False, legacy=False, impact_change=False, dry_run=False):
         previous = self.previous(legacy=legacy)
-        github = MultipartGitHub([bot_comment(previous)])
+        source = MultipartGitHub([bot_comment(previous)])
+        github = comments.DryRunGitHub(source) if dry_run else source
         requests = []
         stderr = io.StringIO()
         records = comments.parse_comment_state([previous])
@@ -117,7 +118,10 @@ class FullRunTests(unittest.TestCase):
                 self.assertEqual(github.mutations(), [])
                 return
             published = comments.publish(output, REPO, 1911, HEAD_SHA, BASE_SHA, diff(), github)
-            body = github.posted_body()
+            body = github.bodies[-1] if dry_run else github.posted_body()
+            if dry_run:
+                self.assertEqual(source.mutations(), [])
+                self.assertIn('"accepted": 11', github.summary())
             self.assertEqual(len(requests), 1 if failure == "initialization" else 2)
             if failure:
                 self.assertEqual(code, 1)
@@ -174,6 +178,9 @@ class FullRunTests(unittest.TestCase):
 
     def test_complete_run_preserves_eleven_accepted_decisions(self):
         self.run_flow()
+
+    def test_complete_run_dry_publication_makes_no_github_mutations(self):
+        self.run_flow(dry_run=True)
 
     def test_complete_run_migrates_eleven_legacy_acceptances(self):
         self.run_flow(legacy=True)

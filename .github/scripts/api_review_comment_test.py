@@ -248,6 +248,32 @@ class RenderingTests(unittest.TestCase):
                 review.validate_result(data, HEAD, BASE)
 
 
+class DryRunPublicationTests(unittest.TestCase):
+    def test_dry_run_intercepts_all_publication_mutations(self):
+        source = FakeGitHub()
+        github = review.DryRunGitHub(source)
+        self.assertTrue(review.publish(result(), REPO, 1911, HEAD, BASE, REVIEW_DIFF, github))
+        self.assertEqual(source.mutations(), [])
+        self.assertGreater(github.mutations, 0)
+        self.assertIn('"pending": 1', github.summary())
+        self.assertNotIn("Native", github.summary())
+        for method in ("POST", "PATCH", "DELETE"):
+            self.assertIsInstance(github.request(method, "/unreachable", {"secret": "not-forwarded"})["id"], int)
+        self.assertEqual(source.mutations(), [])
+        with self.assertRaisesRegex(ValueError, "Unsupported"):
+            github.request("PUT", "/unreachable")
+
+    def test_dry_run_incomplete_is_still_failure_and_preserves_acceptance(self):
+        body = review.render_comment(result(), REPO).replace("- [ ] Accept", "- [x] Accept", 1)
+        source = FakeGitHub([bot_comment(body)])
+        github = review.DryRunGitHub(source)
+        failed = {**result(), "status": "incomplete", "error": "Safe failure"}
+        self.assertFalse(review.publish(failed, REPO, 1911, HEAD, BASE, REVIEW_DIFF, github))
+        self.assertEqual(source.mutations(), [])
+        self.assertIn('"accepted": 1', github.summary())
+        self.assertIn(review.WARNING_START, github.bodies[0])
+
+
 class StatefulRenderingTests(unittest.TestCase):
     def accepted_records(self):
         body = review.render_comment(result(), REPO).replace("- [ ] Accept", "- [x] Accept", 1)
