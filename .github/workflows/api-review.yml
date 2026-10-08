@@ -211,9 +211,38 @@ jobs:
             --expected-head-sha "$EXPECTED_HEAD_SHA" \
             --expected-base-sha "$EXPECTED_BASE_SHA"
 
+  validate-candidate-tests:
+    name: Test candidate API review without credentials
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: runs-on,runner=2cpu-linux-x64
+    permissions:
+      contents: read
+    steps:
+      # SECURITY: Only dispatch reviewed commits. Candidate tests execute in a
+      # separate job with no provider key, before credentialed validation.
+      - name: Check out dispatched candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned SDK and run all offline regressions
+        run: |
+          set -euo pipefail
+          pip install --quiet anthropic==0.97.0
+          python3 .github/scripts/api_review_test.py
+          python3 .github/scripts/api_review_comment_test.py
+          python3 .github/scripts/review_diff_test.py
+          python3 .github/scripts/api_review_run_test.py
+
   validate-candidate:
     name: Validate candidate API review without publication
     if: github.event_name == 'workflow_dispatch'
+    needs: validate-candidate-tests
     runs-on: runs-on,runner=2cpu-linux-x64
     permissions:
       contents: read
@@ -240,14 +269,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install pinned SDK and run all offline regressions
-        run: |
-          set -euo pipefail
-          pip install --quiet anthropic==0.97.0
-          python3 .github/scripts/api_review_test.py
-          python3 .github/scripts/api_review_comment_test.py
-          python3 .github/scripts/review_diff_test.py
-          python3 .github/scripts/api_review_run_test.py
+      - name: Install pinned SDK
+        run: pip install --quiet anthropic==0.97.0
 
       - name: Read immutable PR evidence and prior state
         env:
