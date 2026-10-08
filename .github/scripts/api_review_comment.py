@@ -158,8 +158,8 @@ def review_intro(result: dict, repo: str) -> list[str]:
         f"Input coverage: {result['changed_files']} changed files, {result['diff_bytes']:,} diff bytes "
         f"across {result.get('review_batches', 1)} complete batch(es); no truncation.",
         "",
-        "Check a box to accept that decision for this revision. New commits reset acceptance. "
-        "These checkboxes track API review and do not block merging automatically.",
+        ("Check a box to accept that decision for this revision. New commits reset acceptance. "
+         + "These checkboxes track API review and do not block merging automatically."),
         "",
         f"**Testing risk:** {result['risk']}. Compatibility impact is listed separately for each decision.",
         "",
