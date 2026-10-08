@@ -513,16 +513,21 @@ class ReconciliationTests(unittest.TestCase):
                 prompts.append(prompt)
         self.assertTrue(all(prompt == prompts[0] for prompt in prompts))
         schema = create.call_args.kwargs["output_config"]["format"]["schema"]
-        fields = schema["properties"]["matches"]["items"]["properties"]
-        self.assertNotIn("accepted", fields)
-        self.assertNotIn("state", fields)
+        for shape in schema["properties"]["matches"]["items"]["anyOf"]:
+            fields = shape["properties"]
+            self.assertNotIn("accepted", fields)
+            self.assertNotIn("state", fields)
 
     def test_provider_schema_uses_supported_constraints_only(self):
         schema = api_review.reconciliation_schema(11, ["f" * 64])
         matches = schema["properties"]["matches"]
         self.assertNotIn("minItems", matches)
         self.assertNotIn("maxItems", matches)
-        self.assertNotIn("uniqueItems", matches["items"]["properties"]["prior_ids"])
+        shapes = matches["items"]["anyOf"]
+        self.assertEqual(shapes[0]["properties"]["reason"]["enum"], [""])
+        self.assertEqual(shapes[0]["properties"]["relationship"]["enum"], ["new", "unchanged"])
+        for shape in shapes:
+            self.assertNotIn("uniqueItems", shape["properties"]["prior_ids"])
 
     def test_safe_failure_diagnostics_cover_initialization_and_request(self):
         class APIError(Exception):
