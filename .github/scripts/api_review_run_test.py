@@ -36,7 +36,7 @@ class FullRunTests(unittest.TestCase):
 
     def run_flow(self, *, relationship="unchanged", failure=None, late_checkbox=False,
                  stale=False, changed_state=False, legacy=False, impact_change=False, dry_run=False,
-                 withdraw_prior=False):
+                 withdraw_prior=False, competing_claims=False):
         previous = self.previous(legacy=legacy)
         source = MultipartGitHub([bot_comment(previous)])
         github = comments.DryRunGitHub(source) if dry_run else source
@@ -73,6 +73,8 @@ class FullRunTests(unittest.TestCase):
                                         "relationship": relationship,
                                         "reason": "Material contract change" if relationship != "unchanged" else ""}
                                        for index in range(11)]}
+                if competing_claims:
+                    response["matches"][1]["prior_ids"] = response["matches"][0]["prior_ids"][:]
                 if withdraw_prior:
                     response["matches"][-1].update(prior_ids=[], relationship="new", reason="")
                 if failure == "invalid":
@@ -124,7 +126,8 @@ class FullRunTests(unittest.TestCase):
             body = github.bodies[-1] if dry_run else github.posted_body()
             if dry_run:
                 self.assertEqual(source.mutations(), [])
-                self.assertIn(f'"accepted": {10 if withdraw_prior else 11}', github.summary())
+                expected_accepted = 9 if competing_claims else 10 if withdraw_prior else 11
+                self.assertIn(f'"accepted": {expected_accepted}', github.summary())
             self.assertEqual(len(requests), 1 if failure == "initialization" else 2)
             if failure:
                 self.assertEqual(code, 1)
@@ -163,7 +166,20 @@ class FullRunTests(unittest.TestCase):
                 self.assertNotIn(comments.WARNING_START, body)
                 current = [r for r in comments.parse_comment_state([body]) if r["state"] != "withdrawn"]
                 self.assertEqual(len(current), 11)
-                if withdraw_prior:
+                if competing_claims:
+                    self.assertEqual(body.count("- [x]"), 9)
+                    reopened = [r for r in current if r["state"] == "needs_re_review"]
+                    self.assertEqual(len(reopened), 2)
+                    self.assertTrue(all(r["accepted_version"] is None for r in reopened))
+                    self.assertTrue(all(r["id"] not in ids for r in reopened))
+                    self.assertIn("Multiple current decisions", body)
+                    preserved = [r for r in current if r["state"] == "accepted"]
+                    self.assertEqual(len(preserved), 9)
+                    self.assertTrue(all(r["id"] == ids_by_title[r["decision"]["title"]] for r in preserved))
+                    historical = [r for r in comments.parse_comment_state([body]) if r["state"] == "withdrawn"]
+                    self.assertEqual(len(historical), 2)
+                    self.assertTrue(all(r["accepted_version"] is not None for r in historical))
+                elif withdraw_prior:
                     self.assertEqual(body.count("- [x]"), 10)
                     withdrawn = [r for r in comments.parse_comment_state([body]) if r["state"] == "withdrawn"]
                     self.assertEqual(len(withdrawn), 1)
@@ -192,6 +208,9 @@ class FullRunTests(unittest.TestCase):
 
     def test_complete_run_migrates_eleven_legacy_acceptances(self):
         self.run_flow(legacy=True)
+
+    def test_complete_run_competing_claims_reopen_without_losing_other_acceptances(self):
+        self.run_flow(competing_claims=True, legacy=True, dry_run=True)
 
     def test_complete_run_withdraws_legacy_decision_without_corrupting_history(self):
         self.run_flow(legacy=True, dry_run=True, withdraw_prior=True)

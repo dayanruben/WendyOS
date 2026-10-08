@@ -566,7 +566,7 @@ class ReconciliationTests(unittest.TestCase):
             error.status_code = status
             self.assertNotIn("HTTP", api_review.reconciliation_failure(error, sdk, "request"))
 
-    def test_invalid_or_reused_matches_fail_closed(self):
+    def test_invalid_matches_still_fail_closed(self):
         valid = {"current_index": 0, "prior_ids": ["f" * 64],
                  "relationship": "unchanged", "reason": ""}
         invalid = [
@@ -581,9 +581,29 @@ class ReconciliationTests(unittest.TestCase):
                 api_review.validate_reconciliation({"matches": [match]}, 1, {"f" * 64})
         with self.assertRaisesRegex(api_review.ReviewError, "every current decision"):
             api_review.validate_reconciliation({"matches": []}, 1, {"f" * 64})
-        duplicate = {"matches": [valid, {**valid, "current_index": 1}]}
-        with self.assertRaisesRegex(api_review.ReviewError, "more than once"):
-            api_review.validate_reconciliation(duplicate, 2, {"f" * 64})
+        with self.assertRaisesRegex(api_review.ReviewError, "current index"):
+            api_review.validate_reconciliation({"matches": [valid, valid]}, 2, {"f" * 64})
+
+    def test_competing_claims_all_reopen_without_disturbing_unrelated_matches(self):
+        first, second, unrelated = "f" * 64, "e" * 64, "d" * 64
+        rows = [
+            {"current_index": 0, "prior_ids": [first], "relationship": "unchanged", "reason": ""},
+            {"current_index": 1, "prior_ids": [first, second], "relationship": "ambiguous", "reason": "Uncertain"},
+            {"current_index": 2, "prior_ids": [second], "relationship": "changed", "reason": "Material change"},
+            {"current_index": 3, "prior_ids": [unrelated], "relationship": "unchanged", "reason": ""},
+        ]
+        matches = api_review.validate_reconciliation({"matches": rows[::-1]}, 4, {first, second, unrelated})
+        self.assertEqual([row["relationship"] for row in matches], ["ambiguous"] * 3 + ["unchanged"])
+        self.assertEqual([row["prior_ids"] for row in matches], [row["prior_ids"] for row in rows])
+        self.assertTrue(all("requires re-review" in row["reason"] for row in matches[:3]))
+        self.assertEqual(matches[3], rows[3])
+        self.assertEqual(rows[0]["relationship"], "unchanged")
+
+    def test_competing_claims_do_not_hide_invalid_output(self):
+        rows = [{"current_index": 0, "prior_ids": ["f" * 64], "relationship": "unchanged", "reason": ""},
+                {"current_index": 1, "prior_ids": ["f" * 64], "relationship": "changed", "reason": ""}]
+        with self.assertRaisesRegex(api_review.ReviewError, "does not match"):
+            api_review.validate_reconciliation({"matches": rows}, 2, {"f" * 64})
 
     def test_no_prior_state_needs_no_second_model_call(self):
         prior = {"version": api_review.PRIOR_STATE_VERSION, "decisions": []}

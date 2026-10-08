@@ -669,7 +669,7 @@ def validate_reconciliation(payload: Any, current_count: int, prior_ids: set[str
         raise ReviewError("API decision reconciliation did not cover every current decision")
     expected_keys = {"current_index", "prior_ids", "relationship", "reason"}
     seen_current: set[int] = set()
-    seen_prior: set[str] = set()
+    prior_claims: dict[str, int] = {}
     for match in matches:
         if not isinstance(match, dict) or set(match) != expected_keys:
             raise ReviewError("API decision reconciliation has unexpected fields")
@@ -679,12 +679,12 @@ def validate_reconciliation(payload: Any, current_count: int, prior_ids: set[str
             raise ReviewError("API decision reconciliation has an invalid current index")
         seen_current.add(index)
         if (not isinstance(candidates, list) or len(candidates) > 8
+                or any(not isinstance(candidate, str) for candidate in candidates)
                 or len(set(candidates)) != len(candidates)
                 or any(candidate not in prior_ids for candidate in candidates)):
             raise ReviewError("API decision reconciliation has invalid prior identities")
-        if any(candidate in seen_prior for candidate in candidates):
-            raise ReviewError("A prior API decision was matched more than once")
-        seen_prior.update(candidates)
+        for candidate in candidates:
+            prior_claims[candidate] = prior_claims.get(candidate, 0) + 1
         if relationship not in RELATIONSHIPS or not isinstance(reason, str) or len(reason) > 500:
             raise ReviewError("API decision reconciliation has an invalid relationship")
         reason = reason.strip()
@@ -700,7 +700,16 @@ def validate_reconciliation(payload: Any, current_count: int, prior_ids: set[str
                 f"(relationship={relationship}, prior_count={len(candidates)}, reason_present={bool(reason)})"
             )
         match["reason"] = reason
-    return sorted(matches, key=lambda item: item["current_index"])
+    # Shared predecessors can mean a split or an uncertain model match. Never
+    # choose a winner or carry approval to any competing current decision.
+    # Preserve every candidate and force explicit human re-review instead.
+    normalized = []
+    for match in matches:
+        if any(prior_claims[candidate] > 1 for candidate in match["prior_ids"]):
+            match = {**match, "relationship": "ambiguous",
+                     "reason": "Multiple current decisions reference the same prior decision; identity requires re-review."}
+        normalized.append(match)
+    return sorted(normalized, key=lambda item: item["current_index"])
 
 
 def reconciliation_failure(error: Exception, sdk: Any, stage: str) -> str:
