@@ -95,7 +95,7 @@ def validate_result(result: dict, head_sha: str, base_sha: str) -> None:
             raise ValueError(f"API review result has invalid {field}")
     if result.get("risk") not in RISK_LABELS or not isinstance(result.get("decisions"), list):
         raise ValueError("API review result has invalid decisions or testing risk")
-    matched_prior_ids: set[str] = set()
+    matched_prior_ids: dict[str, bool] = {}
     for decision in result["decisions"]:
         if not isinstance(decision, dict) or set(decision) != {
             *DECISION_FIELDS, "prior_ids", "relationship", "reason",
@@ -108,10 +108,14 @@ def validate_result(result: dict, head_sha: str, base_sha: str) -> None:
                 or not isinstance(candidates, list) or len(candidates) > 8
                 or len(set(candidates)) != len(candidates)
                 or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item) for item in candidates)
-                or any(item in matched_prior_ids for item in candidates)
+                or any(item in matched_prior_ids and (
+                    relationship != "ambiguous" or not matched_prior_ids[item]
+                ) for item in candidates)
                 or not isinstance(reason, str) or len(reason) > 500):
             raise ValueError("API decision has invalid reconciliation state")
-        matched_prior_ids.update(candidates)
+        # Competing claims are permitted only when EVERY claimant is ambiguous:
+        # the renderer gives each a fresh ID and carries no human acceptance.
+        matched_prior_ids.update({item: relationship == "ambiguous" for item in candidates})
         valid_reconciliation = (
             (relationship == "new" and not candidates and not reason)
             or (relationship == "unchanged" and len(candidates) == 1 and not reason)

@@ -296,6 +296,32 @@ class StatefulRenderingTests(unittest.TestCase):
         self.assertEqual(current[0]["id"], prior[0]["id"])
         self.assertEqual(current[0]["accepted_version"], prior[0]["version"])
 
+    def test_competing_ambiguous_claims_never_inherit_human_acceptance(self):
+        prior = self.accepted_records()
+        data = result()
+        data["decisions"] = [dict(copy.deepcopy(data["decisions"][0]), title=title,
+                                  prior_ids=[prior[0]["id"]], relationship="ambiguous",
+                                  reason="Competing predecessor claims require re-review.")
+                             for title in ("Split A", "Split B")]
+        review.validate_result(data, HEAD, BASE)
+        body = review.render_comment(data, REPO, prior)
+        records = review.parse_comment_state([body])
+        current = [record for record in records if record["state"] != "withdrawn"]
+        self.assertEqual(len(current), 2)
+        self.assertTrue(all(record["state"] == "needs_re_review" for record in current))
+        self.assertTrue(all(record["accepted_version"] is None for record in current))
+        self.assertEqual(len({record["id"] for record in records}), 3)
+        self.assertNotIn("- [x]", body)
+        historical = next(record for record in records if record["state"] == "withdrawn")
+        self.assertEqual(historical["id"], prior[0]["id"])
+        self.assertEqual(historical["accepted_version"], prior[0]["accepted_version"])
+        for relationships in (("unchanged", "unchanged"), ("unchanged", "ambiguous"), ("ambiguous", "unchanged")):
+            bad = copy.deepcopy(data)
+            for item, relationship in zip(bad["decisions"], relationships):
+                item.update(relationship=relationship, reason="Uncertain" if relationship == "ambiguous" else "")
+            with self.subTest(relationships=relationships), self.assertRaisesRegex(ValueError, "invalid reconciliation"):
+                review.validate_result(bad, HEAD, BASE)
+
     def test_impact_change_reopens_even_if_model_says_unchanged(self):
         prior = self.accepted_records()
         data = result()
