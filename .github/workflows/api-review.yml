@@ -137,6 +137,9 @@ jobs:
           set -euo pipefail
           run_test="review-automation/.github/scripts/api_review_run_test.py"
           if [[ -f "$run_test" ]]; then
+            # SECURITY: This file comes only from the immutable base-SHA
+            # checkout above, never the PR-head bootstrap file list. Forks are
+            # rejected at job entry; this step receives no GH_TOKEN/model key.
             # Offline SDK transport and GitHub fixtures; no keys or model calls.
             python3 "$run_test"
           else

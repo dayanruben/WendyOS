@@ -266,9 +266,21 @@ class StatefulRenderingTests(unittest.TestCase):
         item.update(prior_ids=[prior[0]["id"]], relationship="unchanged", reason="")
         body = review.render_comment(data, REPO, prior)
         current = review.parse_comment_state([body])
-        self.assertIn("- [x] Accepted", body)
+        self.assertIn("- [x] Accepted (carried forward)", body)
         self.assertEqual(current[0]["id"], prior[0]["id"])
         self.assertEqual(current[0]["accepted_version"], prior[0]["version"])
+
+    def test_impact_change_reopens_even_if_model_says_unchanged(self):
+        prior = self.accepted_records()
+        data = result()
+        data["decisions"][0].update(impact="breaking", prior_ids=[prior[0]["id"]],
+                                    relationship="unchanged", reason="")
+        body = review.render_comment(data, REPO, prior)
+        current = review.parse_comment_state([body])
+        self.assertIn("Compatibility impact changed", body)
+        self.assertIn("- [ ] Re-review", body)
+        self.assertEqual(current[0]["state"], "needs_re_review")
+        self.assertIsNone(current[0]["accepted_version"])
 
     def test_material_change_reopens_and_human_can_accept_new_version(self):
         prior = self.accepted_records()

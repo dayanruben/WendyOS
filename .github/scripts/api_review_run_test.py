@@ -35,7 +35,7 @@ class FullRunTests(unittest.TestCase):
         return body.replace("- [ ] Accept", "- [x] Accept")
 
     def run_flow(self, *, relationship="unchanged", failure=None, late_checkbox=False,
-                 stale=False, changed_state=False, legacy=False):
+                 stale=False, changed_state=False, legacy=False, impact_change=False):
         previous = self.previous(legacy=legacy)
         github = MultipartGitHub([bot_comment(previous)])
         requests = []
@@ -54,7 +54,8 @@ class FullRunTests(unittest.TestCase):
             self.assertEqual(schema, transform_schema(copy.deepcopy(schema)))
             if len(requests) == 1:
                 response = {"risk": "mid", "decisions": [
-                    model_decision(title=f"Contract {index}") for index in range(11)]}
+                    model_decision(title=f"Contract {index}", impact="additive" if impact_change else "breaking")
+                    for index in range(11)]}
             else:
                 prompt = json.loads(payload["messages"][0]["content"])
                 self.assertTrue(all("state" not in item for item in prompt["prior_decisions"]))
@@ -155,7 +156,7 @@ class FullRunTests(unittest.TestCase):
                 self.assertNotIn(comments.WARNING_START, body)
                 current = [r for r in comments.parse_comment_state([body]) if r["state"] != "withdrawn"]
                 self.assertEqual(len(current), 11)
-                if relationship == "unchanged":
+                if relationship == "unchanged" and not impact_change:
                     self.assertEqual(body.count("- [x]"), 10 if late_checkbox else 11)
                     self.assertEqual({r["id"] for r in current}, set(ids))
                     self.assertEqual({r["decision"]["title"]: r["id"] for r in current}, ids_by_title)
@@ -181,6 +182,9 @@ class FullRunTests(unittest.TestCase):
         for relationship in ("changed", "ambiguous"):
             with self.subTest(relationship=relationship):
                 self.run_flow(relationship=relationship)
+
+    def test_complete_run_impact_change_overrides_model_unchanged(self):
+        self.run_flow(impact_change=True)
 
     def test_complete_run_honors_late_human_uncheck(self):
         self.run_flow(late_checkbox=True)

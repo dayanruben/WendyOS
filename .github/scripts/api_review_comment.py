@@ -326,6 +326,11 @@ def reconcile_records(result: dict, previous: list[dict] | str) -> tuple[list[di
             if len(exact) == 1:
                 candidates, relationship = exact, "unchanged"
         prior = by_id.get(candidates[0]) if len(candidates) == 1 and relationship != "ambiguous" else None
+        reason = decision["reason"]
+        if (prior is not None and relationship == "unchanged"
+                and prior["decision"]["impact"] != semantic["impact"]):
+            relationship = "changed"
+            reason = "Compatibility impact changed; fresh human review is required."
         if prior is None:
             identifier = _fresh_id(semantic, used)
             used.add(identifier)
@@ -347,7 +352,7 @@ def reconcile_records(result: dict, previous: list[dict] | str) -> tuple[list[di
         current.append({
             "id": identifier, "version": version, "state": state,
             "accepted_version": accepted_version, "decision": semantic,
-            "reason": decision["reason"],
+            "reason": reason,
         })
     withdrawn = []
     for record in previous:
@@ -382,6 +387,8 @@ def decision_lines(record: dict, result: dict, repo: str, diff: str = "") -> lis
     decision = record["decision"]
     checked = record["state"] == "accepted"
     verb = "Accepted" if checked else "Re-review" if record["state"] == "needs_re_review" else "Accept"
+    if checked and record["accepted_version"] != record["version"]:
+        verb += " (carried forward)"
     impact_symbol, impact_title = IMPACTS[decision["impact"]]
     marker = state_marker({
         "id": record["id"], "version": record["version"],
