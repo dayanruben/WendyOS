@@ -475,6 +475,65 @@ class ModelTests(unittest.TestCase):
         create.assert_called_once()
 
 
+class ReconciliationTests(unittest.TestCase):
+    def prior(self):
+        return {
+            "version": api_review.PRIOR_STATE_VERSION,
+            "decisions": [{
+                "id": "f" * 64, "version": "e" * 64, "state": "pending",
+                "category": "network", "title": "Agent listening port",
+                "change": "The agent port is `50052`.",
+                "compatibility": "Clients use the configured port.",
+                "impact": "behavioral", "paths": ["go/network.go"],
+            }],
+        }
+
+    def test_reconciliation_matches_identity_without_receiving_acceptance(self):
+        response = {"matches": [{
+            "current_index": 0, "prior_ids": ["f" * 64],
+            "relationship": "unchanged", "reason": "",
+        }]}
+        message = types.SimpleNamespace(
+            stop_reason="end_turn",
+            content=[types.SimpleNamespace(type="text", text=json.dumps(response))],
+        )
+        create = unittest.mock.Mock(return_value=message)
+        module = types.SimpleNamespace(Anthropic=lambda: types.SimpleNamespace(
+            messages=types.SimpleNamespace(create=create)))
+        with patch.dict(sys.modules, {"anthropic": module}):
+            reconciled = api_review.reconcile_decisions([decision()], self.prior(), "test-model")
+        self.assertEqual(reconciled[0]["relationship"], "unchanged")
+        prompt = json.loads(create.call_args.kwargs["messages"][0]["content"])
+        self.assertEqual(prompt["prior_decisions"][0]["state"], "pending")
+        self.assertNotIn("accepted", json.dumps(prompt).lower())
+        schema = create.call_args.kwargs["output_config"]["format"]["schema"]
+        fields = schema["properties"]["matches"]["items"]["properties"]
+        self.assertNotIn("accepted", fields)
+        self.assertNotIn("state", fields)
+
+    def test_invalid_or_reused_matches_fail_closed(self):
+        valid = {"current_index": 0, "prior_ids": ["f" * 64],
+                 "relationship": "unchanged", "reason": ""}
+        invalid = [
+            {**valid, "accepted": True},
+            {**valid, "relationship": "changed", "reason": ""},
+            {**valid, "relationship": "new"},
+        ]
+        for match in invalid:
+            with self.subTest(match=match), self.assertRaises(api_review.ReviewError):
+                api_review.validate_reconciliation({"matches": [match]}, 1, {"f" * 64})
+        duplicate = {"matches": [valid, {**valid, "current_index": 1}]}
+        with self.assertRaisesRegex(api_review.ReviewError, "more than once"):
+            api_review.validate_reconciliation(duplicate, 2, {"f" * 64})
+
+    def test_no_prior_state_needs_no_second_model_call(self):
+        prior = {"version": api_review.PRIOR_STATE_VERSION, "decisions": []}
+        self.assertEqual(
+            api_review.reconcile_decisions([decision()], prior, "test-model")[0]["relationship"],
+            "new",
+        )
+
+
 class CommandTests(unittest.TestCase):
     def run_review(self, raw=None, meta=None, payload=None, error=None):
         with tempfile.TemporaryDirectory() as temporary:
@@ -574,7 +633,7 @@ class CommandTests(unittest.TestCase):
     def test_duplicate_decisions_are_retained_only_once(self):
         code, result, _ = self.run_review(payload={"risk": "high", "decisions": [decision(), decision()]})
         self.assertEqual(code, 0)
-        self.assertEqual(result["decisions"], [decision()])
+        self.assertEqual(result["decisions"], [dict(decision(), prior_ids=[], relationship="new", reason="")])
 
     def test_input_failure_writes_incomplete_result_without_model_call(self):
         code, result, model = self.run_review(meta=metadata(additions=2))
