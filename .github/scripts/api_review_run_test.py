@@ -35,7 +35,8 @@ class FullRunTests(unittest.TestCase):
         return body.replace("- [ ] Accept", "- [x] Accept")
 
     def run_flow(self, *, relationship="unchanged", failure=None, late_checkbox=False,
-                 stale=False, changed_state=False, legacy=False, impact_change=False, dry_run=False):
+                 stale=False, changed_state=False, legacy=False, impact_change=False, dry_run=False,
+                 withdraw_prior=False):
         previous = self.previous(legacy=legacy)
         source = MultipartGitHub([bot_comment(previous)])
         github = comments.DryRunGitHub(source) if dry_run else source
@@ -72,6 +73,8 @@ class FullRunTests(unittest.TestCase):
                                         "relationship": relationship,
                                         "reason": "Material contract change" if relationship != "unchanged" else ""}
                                        for index in range(11)]}
+                if withdraw_prior:
+                    response["matches"][-1].update(prior_ids=[], relationship="new", reason="")
                 if failure == "invalid":
                     response["matches"].pop()
                 if failure == "incomplete":
@@ -121,7 +124,7 @@ class FullRunTests(unittest.TestCase):
             body = github.bodies[-1] if dry_run else github.posted_body()
             if dry_run:
                 self.assertEqual(source.mutations(), [])
-                self.assertIn('"accepted": 11', github.summary())
+                self.assertIn(f'"accepted": {10 if withdraw_prior else 11}', github.summary())
             self.assertEqual(len(requests), 1 if failure == "initialization" else 2)
             if failure:
                 self.assertEqual(code, 1)
@@ -160,7 +163,12 @@ class FullRunTests(unittest.TestCase):
                 self.assertNotIn(comments.WARNING_START, body)
                 current = [r for r in comments.parse_comment_state([body]) if r["state"] != "withdrawn"]
                 self.assertEqual(len(current), 11)
-                if relationship == "unchanged" and not impact_change:
+                if withdraw_prior:
+                    self.assertEqual(body.count("- [x]"), 10)
+                    withdrawn = [r for r in comments.parse_comment_state([body]) if r["state"] == "withdrawn"]
+                    self.assertEqual(len(withdrawn), 1)
+                    self.assertIsNotNone(withdrawn[0]["accepted_version"])
+                elif relationship == "unchanged" and not impact_change:
                     self.assertEqual(body.count("- [x]"), 10 if late_checkbox else 11)
                     self.assertEqual({r["id"] for r in current}, set(ids))
                     self.assertEqual({r["decision"]["title"]: r["id"] for r in current}, ids_by_title)
@@ -184,6 +192,9 @@ class FullRunTests(unittest.TestCase):
 
     def test_complete_run_migrates_eleven_legacy_acceptances(self):
         self.run_flow(legacy=True)
+
+    def test_complete_run_withdraws_legacy_decision_without_corrupting_history(self):
+        self.run_flow(legacy=True, dry_run=True, withdraw_prior=True)
 
     def test_complete_run_reopens_changed_and_ambiguous_decisions(self):
         for relationship in ("changed", "ambiguous"):

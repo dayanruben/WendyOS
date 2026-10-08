@@ -272,11 +272,16 @@ def parse_comment_state(bodies: list[str]) -> list[dict]:
                              or [{"path": "legacy-state", "side": "head", "line": 0, "end_line": 0}],
             }
             identifier = legacy.group(1)
+            # Legacy hashes seed stable identity, not the canonical v2 version:
+            # legacy parsing reconstructs locations and prose differently. Use
+            # the reconstructed decision's fingerprint so withdrawn history
+            # also round-trips through strict v2 marker validation.
+            version = decision_id(decision)
             seen.add(identifier)
             records.append({
-                "id": identifier, "version": identifier,
+                "id": identifier, "version": version,
                 "state": "accepted" if checkbox.group(1).lower() == "x" else "pending",
-                "accepted_version": identifier if checkbox.group(1).lower() == "x" else None,
+                "accepted_version": version if checkbox.group(1).lower() == "x" else None,
                 "decision": decision,
             })
     return records

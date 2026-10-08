@@ -380,6 +380,12 @@ class StatefulRenderingTests(unittest.TestCase):
         self.assertEqual(records[0]["state"], "accepted")
         self.assertEqual(records[0]["decision"]["category"], "config")
         self.assertEqual(review.model_prior_state(records)["decisions"][0]["state"], "pending")
+        self.assertEqual(records[0]["version"], review.decision_id(records[0]["decision"]))
+        withdrawn_body = review.render_comment({**result(), "decisions": []}, REPO, records)
+        withdrawn = review.parse_comment_state([withdrawn_body])
+        self.assertEqual(withdrawn[0]["id"], identifier)
+        self.assertEqual(withdrawn[0]["state"], "withdrawn")
+        self.assertEqual(withdrawn[0]["accepted_version"], records[0]["version"])
 
 
 class PublicationTests(unittest.TestCase):
