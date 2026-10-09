@@ -356,11 +356,12 @@ public actor WendyAgent {
             TelemetryService(broadcaster: broadcaster),
             FileSyncService(appsBase: appsBase),
         ]
-        if certs != nil {
+        let videoService = certs == nil ? nil : VideoService()
+        if let videoService {
             // SECURITY: camera enumeration and live video are registered only on
             // the mTLS server, whose ClientCertAuthorizer validates the caller's
             // certificate chain and organization before dispatching any RPC.
-            services.append(VideoService())
+            services.append(videoService)
         }
 
         let (server, isMTLS) = try self.makeMainServer(services: services, certs: certs)
@@ -390,6 +391,9 @@ public actor WendyAgent {
             if isMTLS, let certs {
                 self.startTunnelBroker(info: info, certs: certs)
             }
+            // Management is already listening. USB restoration must not delay
+            // bringing up the authenticated management/tunnel endpoints.
+            if let videoService { await videoService.restoreCameraControls() }
         } catch {
             server.beginGracefulShutdown()
             throw await Self.startupError(
