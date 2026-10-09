@@ -1375,7 +1375,8 @@ func serveLocalArtifact(localPath, localIP string) (string, func(), error) {
 }
 
 // downloadArtifactToTemp downloads a remote artifact URL to a temporary file,
-// showing a progress bar. The caller is responsible for removing the file.
+// showing a progress bar only on an interactive terminal outside JSON mode.
+// The caller is responsible for removing the file.
 func downloadArtifactToTemp(artifactURL string) (string, error) {
 	client := &http.Client{Timeout: 30 * time.Minute}
 	resp, err := client.Get(artifactURL) //nolint:noctx
@@ -1398,6 +1399,22 @@ func downloadArtifactToTemp(artifactURL string) (string, error) {
 	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*"+artifactSuffix(artifactURL))
 	if err != nil {
 		return "", fmt.Errorf("creating temp file: %w", err)
+	}
+
+	// CI and JSON callers must not require /dev/tty. Stream synchronously so
+	// transfer errors are returned directly and no background writer outlives
+	// cleanup of a failed download.
+	if jsonOutput || !isInteractiveTerminal() {
+		if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpFile.Name())
+			return "", fmt.Errorf("downloading: %w", err)
+		}
+		if err := tmpFile.Close(); err != nil {
+			os.Remove(tmpFile.Name())
+			return "", fmt.Errorf("closing artifact: %w", err)
+		}
+		return tmpFile.Name(), nil
 	}
 
 	total := resp.ContentLength
