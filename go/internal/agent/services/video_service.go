@@ -213,8 +213,8 @@ func bestDefaultFrameSize(fd int, pixfmt uint32) (uint32, uint32) {
 // names the formats the tap handles, Y16 among them, so the two lists were
 // describing the same capability and disagreeing about it.
 //
-// YUYV stays first via rawPixelFormats' own ordering, so the webcam path that
-// every other camera takes is unchanged.
+// A camera offering YUYV or MJPEG still takes its default size from those (see
+// bestDefaultFrameSizeAcrossFormats), so the webcam path is unchanged.
 func frameSizeProbeFormats() []uint32 {
 	formats := make([]uint32, 0, len(rawPixelFormats)+1)
 	for _, f := range rawPixelFormats {
@@ -224,8 +224,9 @@ func frameSizeProbeFormats() []uint32 {
 }
 
 // bestDefaultFrameSizeForDevice opens path just long enough to ask what the
-// camera can do, and returns the largest discrete size across the pixel formats
-// the GStreamer path can negotiate. (0,0) when the device cannot be opened or
+// camera can do, and returns the largest discrete size in the pixel formats the
+// GStreamer path can negotiate (bestDefaultFrameSizeAcrossFormats says which
+// formats count). (0,0) when the device cannot be opened or
 // advertises nothing discrete, in which case the caller leaves caps unset and
 // gets the old behaviour.
 //
@@ -242,14 +243,33 @@ var bestDefaultFrameSizeForDevice = func(path string) (uint32, uint32) {
 	}
 	defer unix.Close(fd) //nolint:errcheck
 
-	var bestW, bestH uint32
-	for _, pixfmt := range frameSizeProbeFormats() {
-		w, h := bestDefaultFrameSize(fd, pixfmt)
-		if uint64(w)*uint64(h) > uint64(bestW)*uint64(bestH) {
-			bestW, bestH = w, h
+	return bestDefaultFrameSizeAcrossFormats(func(pixfmt uint32) (uint32, uint32) {
+		return bestDefaultFrameSize(fd, pixfmt)
+	})
+}
+
+// bestDefaultFrameSizeAcrossFormats picks the default size from sizeFor, which
+// answers bestDefaultFrameSize for one pixel format. Split from the device open
+// so tests can describe a camera's formats without a V4L2 node.
+//
+// YUYV and MJPEG are asked first, and the wider frameSizeProbeFormats only when
+// neither offers anything. Taking the largest across every format at once would
+// move cameras that already had a default: one offering a bigger mode only in
+// GREY would switch to it, and the raw tap would then pin GRAY8.
+func bestDefaultFrameSizeAcrossFormats(sizeFor func(pixfmt uint32) (uint32, uint32)) (uint32, uint32) {
+	for _, formats := range [][]uint32{{v4l2PixFmtYUYV, v4l2PixFmtMJPEG}, frameSizeProbeFormats()} {
+		var bestW, bestH uint32
+		for _, pixfmt := range formats {
+			w, h := sizeFor(pixfmt)
+			if uint64(w)*uint64(h) > uint64(bestW)*uint64(bestH) {
+				bestW, bestH = w, h
+			}
+		}
+		if bestW > 0 && bestH > 0 {
+			return bestW, bestH
 		}
 	}
-	return bestW, bestH
+	return 0, 0
 }
 
 // deviceSupportsMJPEGSize reports whether the device advertises MJPEG output at

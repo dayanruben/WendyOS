@@ -182,3 +182,39 @@ func TestFrameSizeProbeFormatsCoversThermalPixelFormats(t *testing.T) {
 		t.Errorf("probe order changed: want YUYV first, got %v", probed)
 	}
 }
+
+// cameraOffering describes a camera by the best default size it offers in each
+// pixel format. Formats it lacks answer (0,0), as bestDefaultFrameSize does.
+func cameraOffering(sizes map[uint32][2]uint32) func(pixfmt uint32) (uint32, uint32) {
+	return func(pixfmt uint32) (uint32, uint32) {
+		s := sizes[pixfmt]
+		return s[0], s[1]
+	}
+}
+
+// Widening the probe must not move a camera that already had a default. One
+// offering a larger mode only in GREY would otherwise take it, and the raw tap
+// would then pin GRAY8: a colour camera turned grey by an agent update.
+func TestDefaultFrameSizeKeepsWebcamFormatsFirst(t *testing.T) {
+	w, h := bestDefaultFrameSizeAcrossFormats(cameraOffering(map[uint32][2]uint32{
+		v4l2PixFmtYUYV: {640, 480},
+		v4l2PixFmtGrey: {1280, 720},
+	}))
+	if w != 640 || h != 480 {
+		t.Errorf("default = %dx%d, want the YUYV 640x480 it had before the wider probe", w, h)
+	}
+}
+
+// A camera with nothing in YUYV or MJPEG still gets a default from the formats
+// the capture path can negotiate. The PureThermal's Lepton offers 160x120 in
+// UYVY, Y16 and GREY, and before the wider probe it got no size at all.
+func TestDefaultFrameSizeFallsBackToOtherCaptureFormats(t *testing.T) {
+	w, h := bestDefaultFrameSizeAcrossFormats(cameraOffering(map[uint32][2]uint32{
+		v4l2PixFmtUYVY: {160, 120},
+		v4l2PixFmtY16:  {160, 120},
+		v4l2PixFmtGrey: {160, 120},
+	}))
+	if w != 160 || h != 120 {
+		t.Errorf("default = %dx%d, want 160x120 from the Lepton's formats", w, h)
+	}
+}
