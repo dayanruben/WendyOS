@@ -17,15 +17,24 @@ and reuse the session's single device connection.
    `simulator` group and call `simulator_list`.
 3. Deploy with `run(project_path=<absolute path>)`. It reuses the connected
    target unless you pass `device`. `start=false` creates without starting.
-   `run` reports `readiness: "not_checked"` and deploys every service; use the
-   CLI's `--service` to deploy one. Check `project_validate(project_path=...)`
-   (`setup` group) first when the configuration is new or changed.
+   By default, `run` deploys every service and reports `readiness: "not_checked"`.
+   Pass `service="api"` to deploy that service and its dependencies. On supported
+   WendyOS targets, `wait_ready=true` waits for configured TCP readiness or
+   process stability; `readiness_timeout_seconds=30` bounds that wait within
+   `timeout_seconds`. Local Docker/Podman do not support the wait.
+   Success returns a compact receipt. Read `build_log_uri` for the bounded log
+   tail (last eight runs in this server session), or set `include_output=true`.
+   Check `project_validate(project_path=...)` (`setup` group) first when the
+   configuration is new or changed.
 4. Verify: `container_list` (`running_state`, `termination_reason`), then
    `telemetry_logs(app_name=..., service_name=..., min_severity=...)` for
    startup errors, then the app's own output. `telemetry_logs` returns a
    bounded sample, not a live stream. `app_inspect` (`observability` group)
    adds service states, recorded exits and recent errors; with `project_path`
-   it also checks the declared TCP readiness on a direct device.
+   it also checks the declared TCP readiness on a direct device. Request
+   `fields=["state","readiness"]` to skip logs and usage. Repeated diagnostic
+   rows include `repeat_count` and first/last observed timestamps. A passed TCP
+   check does not establish application behavior.
 
 `container_start` may restart a running app. `container_delete` takes
 `delete_image` and `delete_volumes`. `container_exec(app_name=..., command=[...])`
