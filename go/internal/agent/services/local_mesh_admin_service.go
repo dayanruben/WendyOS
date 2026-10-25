@@ -111,16 +111,22 @@ func (s *LocalMeshAdminService) read(device meshid.Device) (meshsharing.Config, 
 	return sharing, *carriers, nil
 }
 
-func (s *LocalMeshAdminService) response(sharing meshsharing.Config, carriers localmesh.TCPConfig) *pb.LocalMeshStatus {
+// savedIntent reports the saved configuration with no runtime observation.
+// Participation stays pending until the runtime reports on it.
+func savedIntent(sharing meshsharing.Config, carriers localmesh.TCPConfig) *pb.LocalMeshStatus {
 	state, detail := "disabled", "Wendy net is disabled."
 	if sharing.Participate {
 		state, detail = "pending-runtime", "Configuration is saved; awaiting runtime state."
 	}
-	out := &pb.LocalMeshStatus{Configured: &pb.LocalMeshConfiguration{
+	return &pb.LocalMeshStatus{Configured: &pb.LocalMeshConfiguration{
 		Participate: sharing.Participate, Roam: sharing.Roam, ShareUplink: sharing.ShareUplink,
 		Nan: carriers.NAN, Ble: carriers.BLE, Ethernet: carriers.Ethernet, InfrastructureWifi: carriers.InfrastructureWiFi,
 		TcpListen: carriers.Listen, ConfiguredTcpPeers: uint32(len(carriers.Peers)),
 	}, State: state, Detail: detail}
+}
+
+func (s *LocalMeshAdminService) response(sharing meshsharing.Config, carriers localmesh.TCPConfig) *pb.LocalMeshStatus {
+	out := savedIntent(sharing, carriers)
 	if s.runtime != nil {
 		runtime := s.runtime()
 		out.RuntimeAvailable = runtime.Available
@@ -166,7 +172,7 @@ func (s *LocalMeshAdminService) ConfigureLocalMesh(ctx context.Context, req *pb.
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "reading wendy net configuration: %v", err)
 	}
-	previous := sharing
+	previous, previousCarriers := sharing, carriers
 	shareChanged := req.Participate != nil || req.Roam != nil || req.ShareUplink != nil
 	carrierChanged := req.Nan != nil || req.Ble != nil || req.Ethernet != nil || req.InfrastructureWifi != nil
 	if req.Participate != nil {
@@ -215,6 +221,14 @@ func (s *LocalMeshAdminService) ConfigureLocalMesh(ctx context.Context, req *pb.
 			zap.Bool("participate", sharing.Participate), zap.Bool("roam", sharing.Roam), zap.Bool("shareUplink", sharing.ShareUplink),
 			zap.Bool("nan", carriers.NAN), zap.Bool("ble", carriers.BLE),
 			zap.Bool("ethernet", carriers.Ethernet), zap.Bool("infrastructureWifi", carriers.InfrastructureWiFi))
+	}
+	// The runtime polls the saved documents and has not seen a change yet: its
+	// last report still describes the previous settings. Report the change as
+	// saved intent; GetLocalMeshStatus shows the runtime once it applies it.
+	if sharing.Participate != previous.Participate || sharing.Roam != previous.Roam || sharing.ShareUplink != previous.ShareUplink ||
+		carriers.NAN != previousCarriers.NAN || carriers.BLE != previousCarriers.BLE ||
+		carriers.Ethernet != previousCarriers.Ethernet || carriers.InfrastructureWiFi != previousCarriers.InfrastructureWiFi {
+		return savedIntent(sharing, carriers), nil
 	}
 	return s.response(sharing, carriers), nil
 }

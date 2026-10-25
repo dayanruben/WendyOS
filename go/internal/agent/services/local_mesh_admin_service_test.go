@@ -337,6 +337,58 @@ func TestLocalMeshParticipationDisableRetainsCarrierChoices(t *testing.T) {
 	}
 }
 
+// The runtime polls the saved documents, so when ConfigureLocalMesh returns it
+// still reports the previous configuration. A response to a change must not
+// present that state as the result: enabling a disabled device used to answer
+// "disabled", and disabling an active one answered "mesh-active".
+func TestLocalMeshAdminConfigureDoesNotReportPreChangeRuntimeState(t *testing.T) {
+	dir := t.TempDir()
+	tenant, device := adminTenant(t), adminDevice(t)
+	svc := NewLocalMeshAdminService(nil, dir, func() (meshid.Tenant, meshid.Device) { return tenant, device })
+	runtime := LocalMeshRuntimeStatus{Available: true, State: "disabled", Detail: "Wendy Net participation is disabled."}
+	svc.SetRuntimeStatusSource(func() LocalMeshRuntimeStatus { return runtime })
+	ctx := ctxWithIdentity(t, userPrincipal(adminTenantID, "alice"))
+	enable := &pb.ConfigureLocalMeshRequest{Participate: proto.Bool(true), Ble: proto.Bool(true), Ethernet: proto.Bool(true), InfrastructureWifi: proto.Bool(true)}
+
+	got, err := svc.ConfigureLocalMesh(ctx, enable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := got.GetConfigured(); !c.GetParticipate() || !c.GetBle() || !c.GetEthernet() || !c.GetInfrastructureWifi() {
+		t.Fatalf("enable not saved: %+v", c)
+	}
+	if got.GetState() != "pending-runtime" || got.GetRuntimeAvailable() || got.GetAuthenticatedPeers() != 0 {
+		t.Fatalf("enable reported the pre-change runtime state: %+v", got)
+	}
+
+	// Once the runtime has applied it, the same request changes nothing and
+	// reports the runtime as it is.
+	runtime = LocalMeshRuntimeStatus{Available: true, State: "mesh-active", Detail: "Carriers: BLE: ready; LAN: ready.", AuthenticatedPeers: 2}
+	got, err = svc.ConfigureLocalMesh(ctx, enable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetState() != "mesh-active" || !got.GetRuntimeAvailable() || got.GetAuthenticatedPeers() != 2 {
+		t.Fatalf("unchanged configuration hid the runtime state: %+v", got)
+	}
+
+	got, err = svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Nan: proto.Bool(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetState() != "pending-runtime" || got.GetDetail() == runtime.Detail {
+		t.Fatalf("carrier change reported the previous carriers' health: %+v", got)
+	}
+
+	got, err = svc.ConfigureLocalMesh(ctx, &pb.ConfigureLocalMeshRequest{Participate: proto.Bool(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetConfigured().GetParticipate() || got.GetState() != "disabled" || got.GetAuthenticatedPeers() != 0 {
+		t.Fatalf("disable reported the pre-change runtime state: %+v", got)
+	}
+}
+
 func TestLocalMeshAdminReportsPendingLANCarriers(t *testing.T) {
 	for name, carriers := range map[string]localmesh.TCPConfig{
 		"Ethernet": {Ethernet: true},
