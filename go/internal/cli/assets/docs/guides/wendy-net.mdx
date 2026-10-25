@@ -88,7 +88,7 @@ and route recovery after a change; a saved setting is not a connectivity test.
 | `local` | The device has a healthy Internet connection of its own. It offers it if sharing is enabled. |
 | `relay` | It participates in Wendy Net, but Internet roaming is off. |
 | `roaming` | It is using an authenticated shared gateway. |
-| `offline` | Roaming is enabled but no usable shared gateway was found. |
+| `offline` | Roaming is enabled but no usable shared gateway was found. If the detail says it is negotiating a lease, a gateway is selected and the device is still connecting to it; over Bluetooth this can take about a minute. |
 | `pending-runtime` or `error` | Read the accompanying detail; configuration is not yet active or needs attention. |
 
 Test an actual Internet request from the device or intended app before depending
