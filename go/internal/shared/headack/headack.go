@@ -55,6 +55,7 @@ const (
 	SignedInFuture        Refusal = "signed_in_future"
 	LeafExpiredAtIat      Refusal = "leaf_expired_at_iat"
 	UnpinnedRoot          Refusal = "unpinned_root"
+	EntryHashMissing      Refusal = "entry_hash_missing"
 	EntryHashMismatch     Refusal = "entry_hash_mismatch"
 	HeadBelowAck          Refusal = "head_below_ack"
 	HeadHashMismatch      Refusal = "head_hash_mismatch"
@@ -204,7 +205,12 @@ func verify(resp *cloudpbv2.GetLastHeadAckResponse, root *x509.Certificate, devi
 
 	// Step 3. acked_entry_hash and postbox_head_entry_hash are cloud-asserted:
 	// they catch cloud's store disagreeing with the device, not a lying cloud.
-	if resp.AckedEntryHash == nil || !bytes.Equal(resp.AckedEntryHash, ack.EntryHash) {
+	// An ack without a signed hash names no entry: absent cloud hashes would
+	// match it, and an empty kept hash would hide equivocation.
+	if len(ack.EntryHash) == 0 {
+		return Ack{}, EntryHashMissing
+	}
+	if !bytes.Equal(resp.AckedEntryHash, ack.EntryHash) {
 		return Ack{}, EntryHashMismatch
 	}
 	// Step 4. A head above the ack is a display hint.
@@ -212,7 +218,7 @@ func verify(resp *cloudpbv2.GetLastHeadAckResponse, root *x509.Certificate, devi
 	if head < ack.EntryID {
 		return Ack{}, HeadBelowAck
 	}
-	if head == ack.EntryID && (resp.PostboxHeadEntryHash == nil || !bytes.Equal(resp.PostboxHeadEntryHash, ack.EntryHash)) {
+	if head == ack.EntryID && !bytes.Equal(resp.PostboxHeadEntryHash, ack.EntryHash) {
 		return Ack{}, HeadHashMismatch
 	}
 	// Step 5. An equal entry_id with the kept hash is the same ack served again.

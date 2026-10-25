@@ -19,6 +19,7 @@ import (
 
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Vectors: service-protos conformance/reqsig at the commit in testdata/SOURCE.
@@ -250,6 +251,15 @@ func TestChecksNoVectorCovers(t *testing.T) {
 	if _, err := decodeAck(append(bytes.Clone(resp.Ack.Payload), 0x48, 0x01)); err == nil {
 		t.Error("ack with an unknown field decoded")
 	}
+
+	// A re-signed ack with no entry_hash, served with empty cloud hashes.
+	unhashed, _ := (proto.MarshalOptions{Deterministic: true}).Marshal(&cloudpbv2.PostboxHeadAck{EntryId: 42, ObservedAt: timestamppb.New(time.Unix(1789999990, 0))})
+	sum := sha256.Sum256(unhashed)
+	empty := resign(t, valid, func(c map[string]any) { c["body_sha256"] = base64.RawURLEncoding.EncodeToString(sum[:]) })
+	empty.Ack.Payload, empty.AckedEntryHash, empty.PostboxHeadEntryId, empty.PostboxHeadEntryHash = unhashed, []byte{}, 42, []byte{}
+	check("signed hash empty", empty, Ack{}, EntryHashMissing)
+	empty.AckedEntryHash, empty.PostboxHeadEntryHash = nil, nil
+	check("signed and cloud hashes absent", empty, Ack{}, EntryHashMissing)
 
 	// A kept ack without its hash cannot show equivocation; it does not refuse.
 	first, err := valid.run(root, Ack{})
