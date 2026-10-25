@@ -877,8 +877,9 @@ func tuneMeshBeforeTLS(ctx context.Context, tune func(context.Context) (time.Dur
 		return 0, false, ctx.Err()
 	}
 	var unavailable *leUpdateUnavailableError
+	var rejected *leUpdateRejectedError
 	var completed *leUpdateCompletedError
-	return interval, errors.As(err, &unavailable) || errors.As(err, &completed), err
+	return interval, errors.As(err, &unavailable) || errors.As(err, &rejected) || errors.As(err, &completed), err
 }
 
 func watchLinkContext(ctx context.Context, conn net.Conn) func() {
