@@ -41,7 +41,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/hashicorp/mdns v1.0.7
-	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/compress v1.20.3
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/mattn/go-isatty v0.0.21
 	github.com/miekg/dns v1.1.72
