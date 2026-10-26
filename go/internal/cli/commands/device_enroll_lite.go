@@ -58,6 +58,7 @@ func runSelectedDeviceEnrollment(cmd *cobra.Command, target *SelectedDevice, aut
 }
 
 var (
+	errLiteUUIDUnsupported  = errors.New("this Wendy Lite firmware cannot enroll with a device UUID; update the firmware over USB before enrolling")
 	errLiteAlreadyEnrolled  = errors.New("this board still holds an issued identity, even if its cloud asset was removed; connect it over USB and run 'wendy device unenroll' with that USB device selected, then enroll again; older firmware must be updated first")
 	connectLiteEnrollmentFn = func(target models.ExternalDevice) (liteEnrollmentDevice, error) {
 		return (&providers.MicroWendyProvider{}).ConnectEnrollment(target)
@@ -85,7 +86,7 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if err != nil {
 		return err
 	}
-	if err := checkLiteEnrollmentIdentity(challenge); err != nil {
+	if err := checkLiteEnrollmentState(challenge); err != nil {
 		return err
 	}
 	trustProfile := liteenroll.TrustProfileFromChallenge(challenge)
@@ -97,15 +98,16 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if challenge.CloudEnrollmentSupported != nil && !challenge.GetCloudEnrollmentSupported() {
 		return fmt.Errorf("this Wendy Lite firmware was built without cloud enrollment support; rebuild it with PKI, cloud and Wi-Fi support enabled before enrolling")
 	}
+	// The device's one id is a UUID the CLI mints. Firmware that cannot store
+	// a UUID identity is refused, never enrolled under its hardware id.
+	if !challenge.GetUuidEnrollmentSupported() {
+		return errLiteUUIDUnsupported
+	}
 	name, err = enrollmentName(identity.Name, name)
 	if err != nil {
 		return err
 	}
-	deviceID, err := liteEnrollmentDeviceID(identity.ID, challenge.GetUuidEnrollmentSupported())
-	if err != nil {
-		return err
-	}
-	cfg, err := liteenroll.Config(auth, deviceID, opts.csrURL, opts.timeURL, opts.brokerHost, opts.brokerPort)
+	cfg, err := liteenroll.Config(auth, uuid.NewString(), opts.csrURL, opts.timeURL, opts.brokerHost, opts.brokerPort)
 	if err != nil {
 		return err
 	}
@@ -121,7 +123,7 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if err != nil {
 		return err
 	}
-	if err := checkLiteEnrollmentIdentity(challenge); err != nil {
+	if err := checkLiteEnrollmentState(challenge); err != nil {
 		return err
 	}
 	// The default TSA's pinned root and verified HTTPS anchor must reach the
@@ -167,6 +169,9 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	}
 	mintCtx, cancel := context.WithTimeout(cloudCtx, 30*time.Second)
 	hardware := &cloudpb.DeviceHardware{}
+	if identity.ID != "" {
+		hardware.SerialNumber = proto.String(identity.ID)
+	}
 	if target.OSVersion != "" {
 		hardware.OsVersion = proto.String(target.OSVersion)
 	}
@@ -199,25 +204,19 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	return nil
 }
 
-func checkLiteEnrollmentIdentity(challenge *litepb.WendyComEnrollmentChallenge) error {
-	if challenge.GetEnrolled() {
+// A pending enrollment still owns a Cloud asset. Replacing its configuration
+// with a new UUID would lose the board's only binding to that reserved asset.
+func checkLiteEnrollmentState(challenge *litepb.WendyComEnrollmentChallenge) error {
+	if challenge == nil {
+		return fmt.Errorf("Wendy Lite returned no enrollment status")
+	}
+	if challenge.Enrolled {
 		return errLiteAlreadyEnrolled
 	}
-	if id := challenge.GetDeviceId(); id != "" {
-		return fmt.Errorf("this board has a pending enrollment for %s; wait for it to finish, or connect over USB and run 'wendy device unenroll' with that USB device selected before enrolling again", id)
+	if challenge.GetDeviceId() != "" || challenge.GetTenantId() != "" {
+		return fmt.Errorf("this board still holds a pending enrollment identity; allow enrollment to finish, or connect it over USB and run 'wendy device unenroll' with that USB device selected before enrolling again")
 	}
 	return nil
-}
-
-func liteEnrollmentDeviceID(hardwareID string, supportsUUID bool) (string, error) {
-	if !supportsUUID {
-		return "lite-" + hardwareID, nil
-	}
-	id, err := uuid.NewRandom()
-	if err != nil {
-		return "", fmt.Errorf("generating enrollment device UUID: %w", err)
-	}
-	return id.String(), nil
 }
 
 func waitLiteEnrollment(ctx context.Context, target models.ExternalDevice) error {

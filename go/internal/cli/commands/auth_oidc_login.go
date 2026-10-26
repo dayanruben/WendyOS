@@ -272,6 +272,8 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 		DPoPPrivateKey: privateKeyPEM,
 		Certificates:   []config.CertificateInfo{certInfo},
 	}
+	keepRegistryKey(cfg, &authEntry)
+	registerRegistryKeyAfterMint(ctx, &authEntry)
 	cfg.AddAuth(authEntry)
 	// Name the new session as a context; the first login becomes "default" and
 	// current. A later login does not change the current context.
@@ -286,6 +288,16 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	fmt.Println(sessionKeyLine(keyAlgorithmName(key.Public()), "OIDC"))
 	clitimesync.CacheProof(ctx)
 	return nil
+}
+
+// keepRegistryKey keeps this machine's registry key across sign-ins of the
+// same operator on the same session; another principal starts without one.
+func keepRegistryKey(cfg *config.Config, entry *config.AuthConfig) {
+	for _, prior := range cfg.Auth {
+		if sameOAuthSession(&prior, entry) && len(prior.Certificates) > 0 && prior.Certificates[0].PrincipalURI == entry.Certificates[0].PrincipalURI {
+			entry.RegistryPrivateKey, entry.RegistryKeyID = prior.RegistryPrivateKey, prior.RegistryKeyID
+		}
+	}
 }
 
 type oidcHTTPDoer interface {
@@ -471,7 +483,7 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite b
 		return fmt.Errorf("wendy-auth did not rotate the refresh token for pki-core enrollment")
 	}
 	// The old handle has already been consumed. Retain the rotated one even if
-	// a later validation or issuance step fails; refreshAllCerts persists this
+	// a later validation or issuance step fails; refreshCerts persists this
 	// mutation so the user's login is not stranded.
 	auth.RefreshToken = identityToken.RefreshToken
 	tokenVerifier, err := loadOIDCTokenVerifier(ctx, meta)

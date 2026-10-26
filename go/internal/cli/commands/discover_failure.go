@@ -79,7 +79,7 @@ func lanProbeFailure(dev models.LANDevice, err error, credentials []config.Certi
 			allExpired = allExpired && certExpired(credential, time.Now())
 		}
 		if allExpired {
-			return probeFailure("credentials_expired", "This CLI's stored client certificates are expired by this computer's clock.", "Check this computer's clock, then run 'wendy auth refresh-certs' to renew expired credentials.")
+			return probeFailure("credentials_expired", "This CLI's stored client certificates are expired by this computer's clock.", "Check this computer's clock.", refreshCertsStep(switchContextStep(dev.OrgID)))
 		}
 	}
 	return failure
@@ -127,7 +127,8 @@ func lanIdentityFailure(err error) *models.ProbeFailure {
 		key = pin.Key
 		details = fmt.Sprintf("Saved certificate key: %s. Presented certificate key: %s.", pin.Want, pin.Got)
 	case errors.As(err, &identity):
-		details = fmt.Sprintf("Saved: asset %s in organization %s. Now: asset %s in organization %s.", identity.WantAsset, orgLabel("", identity.WantOrg), identity.GotAsset, orgLabel("", identity.GotOrg))
+		saved, now := identityMismatchSides(identity)
+		details = fmt.Sprintf("Saved: %s. Now: %s.", saved, now)
 	}
 	// Render only known diagnostic fields, with terminal controls removed.
 	if key != "" {
