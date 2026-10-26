@@ -44,7 +44,7 @@ require (
 	github.com/klauspost/compress v1.20.3
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/mattn/go-isatty v0.0.21
-	github.com/miekg/dns v1.1.72
+	github.com/miekg/dns v1.1.73
 	github.com/moby/buildkit v0.32.2
 	github.com/moby/patternmatcher v0.6.1
 	github.com/muesli/cancelreader v0.2.2
@@ -179,9 +179,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.46.0 // indirect
 	go.opentelemetry.io/otel/trace v1.46.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-	golang.org/x/tools v0.50.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 	sigs.k8s.io/knftables v0.0.18 // indirect
