@@ -54,11 +54,11 @@ struct `'wendy project entitlements remove'` {
                 #expect(result.status.isSuccess)
                 // Without a terminal the CLI runs in JSON mode: the result is
                 // one JSON object on stdout that reports whether it saved.
-                let summary = try #require(
-                    try JSONSerialization.jsonObject(with: Data(result.stdout.utf8))
-                        as? [String: Any]
+                let summary = try JSONDecoder().decode(
+                    ProjectEditResult.self,
+                    from: Data(result.stdout.utf8)
                 )
-                #expect(summary["saved"] as? Bool == true)
+                #expect(summary.saved)
             }
 
             try await cli.sh(
@@ -132,11 +132,11 @@ struct `'wendy project entitlements remove'` {
 
             try await cli.sh("wendy project entitlements remove network") { result in
                 #expect(result.status.isSuccess)
-                let summary = try #require(
-                    try JSONSerialization.jsonObject(with: Data(result.stdout.utf8))
-                        as? [String: Any]
+                let summary = try JSONDecoder().decode(
+                    ProjectEditResult.self,
+                    from: Data(result.stdout.utf8)
                 )
-                #expect(summary["saved"] as? Bool == true)
+                #expect(summary.saved)
             }
 
             try await cli.sh(
