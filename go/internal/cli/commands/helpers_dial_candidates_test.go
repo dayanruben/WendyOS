@@ -176,8 +176,15 @@ func TestPinnedUnprovisionedDeviceIsToldHowToUnpin(t *testing.T) {
 	if strings.Contains(msg, "not the fix") {
 		t.Errorf("the device answered, unprovisioned; telling the user unpinning is not the fix sends them away from the recovery:\n%s", msg)
 	}
-	if !strings.Contains(failure.CLIMessage(), "wendy device unpin orin") {
-		t.Errorf("styled rendering lost the recovery command:\n%s", failure.CLIMessage())
+	if strings.Contains(msg, "no agent answered") {
+		t.Errorf("its only address answered; there is no silent address to warn about:\n%s", msg)
+	}
+	var styled interface {
+		error
+		CLIMessage() string
+	}
+	if !errors.As(err, &styled) || !strings.Contains(styled.CLIMessage(), "wendy device unpin orin") {
+		t.Errorf("styled rendering lost the recovery command:\n%v", err)
 	}
 	// Still the same refusal to every caller that branches on it: enrollment's
 	// explicit trust prompt, the BLE gate and error classification.
@@ -211,12 +218,19 @@ func TestPinnedRefusalOffersUnpinOnlyWhenTheDeviceAnsweredWithoutTLS(t *testing.
 		{addr: "169.254.213.32:50051", err: refused("169.254.213.32:50051")},
 		{addr: "169.254.213.32:50052", err: refused("169.254.213.32:50052")},
 	}
+	answeredEverywhere := []mtlsAttemptError{
+		{addr: "169.254.213.32:50051", err: errors.New(notTLS)},
+		{addr: "169.254.213.32:50052", err: refused("169.254.213.32:50052")},
+		{addr: "[fe80::5741:1%en17]:50051", err: errors.New(notTLS)},
+		{addr: "[fe80::5741:1%en17]:50052", err: refused("[fe80::5741:1%en17]:50052")},
+	}
 	for _, tc := range []struct {
 		name      string
 		attempts  []mtlsAttemptError
 		certSeen  bool
 		wantUnpin bool
 		want      []string
+		notWant   []string
 	}{
 		{
 			name: "plaintext port answered", attempts: answered, wantUnpin: true,
@@ -224,7 +238,15 @@ func TestPinnedRefusalOffersUnpinOnlyWhenTheDeviceAnsweredWithoutTLS(t *testing.
 				"169.254.213.32:50051 answered without TLS",
 				"169.254.213.32 (port 50051: answered without TLS; port 50052: connection refused)",
 				"fe80::5741:1%en17 (connection refused)",
+				// The other address was silent, so the answering one may be a
+				// stale record pointing at another machine.
+				"no agent answered at fe80::5741:1%en17. If 169.254.213.32 is no longer this device's address (a stale DNS or mDNS record)",
 			},
+		},
+		{
+			name: "every address answered without TLS", attempts: answeredEverywhere, wantUnpin: true,
+			want:    []string{"169.254.213.32:50051, [fe80::5741:1%en17]:50051 answered without TLS"},
+			notWant: []string{"no agent answered", "stale DNS"},
 		},
 		{name: "nothing answered", attempts: silent, want: []string{"not the fix", "169.254.213.32 (connection refused)"}},
 		{name: "a certificate was refused too", attempts: answered, certSeen: true, want: []string{"not the fix", "present a certificate"}},
@@ -236,12 +258,24 @@ func TestPinnedRefusalOffersUnpinOnlyWhenTheDeviceAnsweredWithoutTLS(t *testing.
 			if got := strings.Contains(msg, "wendy device unpin wendyos-hack-device-7.local"); got != tc.wantUnpin {
 				t.Errorf("offers unpin = %v, want %v:\n%s", got, tc.wantUnpin, msg)
 			}
-			if got := failure.diagnostic != nil; got != tc.wantUnpin {
-				t.Errorf("styled diagnostic = %v, want %v", got, tc.wantUnpin)
+			// Only the unprovisioned refusal carries a styled rendering: the CLI
+			// entry point restyles anything in the chain that has one, and a
+			// reachability refusal must keep the plain rendering.
+			var styled interface {
+				error
+				CLIMessage() string
+			}
+			if got := errors.As(error(failure), &styled); got != tc.wantUnpin {
+				t.Errorf("styled rendering = %v, want %v", got, tc.wantUnpin)
 			}
 			for _, want := range tc.want {
 				if !strings.Contains(msg, want) {
 					t.Errorf("message is missing %q:\n%s", want, msg)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(msg, notWant) {
+					t.Errorf("message has %q:\n%s", notWant, msg)
 				}
 			}
 			if !errors.Is(failure, errNoAuthenticatedEndpoint) || failure.certSeen != tc.certSeen || !reflect.DeepEqual(failure.candidates, candidates) {

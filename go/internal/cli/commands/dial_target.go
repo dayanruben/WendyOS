@@ -611,7 +611,7 @@ type noAuthenticatedEndpointError struct {
 	candidates []string
 	certSeen   bool
 	// diagnostic is set only when the device answered without TLS — the
-	// unprovisioned case, which is told how to unpin. Its CLIMessage styles it
+	// unprovisioned case, which is told how to unpin. Unwrap exposes it, styled
 	// like the identity refusals it then reads as.
 	diagnostic *devicePinDiagnostic
 }
@@ -621,6 +621,31 @@ func (e *noAuthenticatedEndpointError) Error() string { return e.msg }
 func (e *noAuthenticatedEndpointError) Is(target error) bool {
 	return target == errNoAuthenticatedEndpoint
 }
+
+// Unwrap yields the styled rendering of an unprovisioned refusal, and nothing
+// for the others. The CLI entry point restyles any error in the chain with a
+// CLIMessage, splicing it into the surrounding text, so a reachability refusal
+// carrying one would lose the plain rendering every other error gets: an
+// unstyled wrapper with the error marker mid-line, and no gRPC rewriting.
+func (e *noAuthenticatedEndpointError) Unwrap() error {
+	if e.diagnostic == nil {
+		return nil
+	}
+	return &unprovisionedRefusal{msg: e.msg, diagnostic: e.diagnostic}
+}
+
+// unprovisionedRefusal is the CLI rendering of a pinned device that answered
+// unprovisioned; see noAuthenticatedEndpointError.Unwrap.
+type unprovisionedRefusal struct {
+	msg        string
+	diagnostic *devicePinDiagnostic
+}
+
+func (e *unprovisionedRefusal) Error() string { return e.msg }
+
+// CLIMessage renders the refusal like the identity refusals, whose recovery
+// steps it shares.
+func (e *unprovisionedRefusal) CLIMessage() string { return e.diagnostic.message(true) }
 
 // blocksUnauthenticatedFallback reports whether err forbids reaching this device
 // over a transport that enforces nothing — today the picker's Bluetooth
@@ -686,11 +711,21 @@ func pinnedHostNoAuthenticatedEndpointError(pinKey string, candidates []string, 
 	}
 	tried := describeDialAttempts(attempts)
 	if plaintext := addrsAnsweredWithoutTLS(attempts); len(plaintext) > 0 && !certSeen {
+		details := fmt.Sprintf("Now:   %s answered without TLS, as an unprovisioned agent does; no mTLS endpoint answered\nTried: %s",
+			strings.Join(plaintext, ", "), strings.Join(tried, ", "))
+		// The answering address is not proof it is still this device's: a stale
+		// DNS or mDNS record can point at a neighbour's freshly flashed board
+		// while the device itself is silent. Keep the reachability caution when
+		// some address had no agent at all, so an unpin there is a choice made
+		// knowing that.
+		if silent := hostsWithoutAgent(candidates, plaintext); len(silent) > 0 {
+			details += fmt.Sprintf("\nNote:  no agent answered at %s. If %s is no longer this device's address (a stale DNS or mDNS record), the agent answering there is another machine: keep the pin.",
+				strings.Join(silent, ", "), strings.Join(hostsOf(plaintext), ", "))
+		}
 		diagnostic := devicePinDiagnostic{
 			hostname: pinKey,
 			heading:  fmt.Sprintf("Connection blocked: device %q is pinned to an enrolled identity but now answers unprovisioned.", pinKey),
-			details: fmt.Sprintf("Now:   %s answered without TLS, as an unprovisioned agent does; no mTLS endpoint answered\nTried: %s",
-				strings.Join(plaintext, ", "), strings.Join(tried, ", ")),
+			details:  details,
 		}
 		failure.msg = diagnostic.message(false)
 		failure.diagnostic = &diagnostic
@@ -739,6 +774,39 @@ func addrsAnsweredWithoutTLS(attempts []mtlsAttemptError) []string {
 		}
 		seen[a.addr] = true
 		out = append(out, a.addr)
+	}
+	return out
+}
+
+// hostsWithoutAgent lists, once each and in candidate order, the candidate
+// hosts that are not among answered's. In the unprovisioned branch nothing
+// presented a certificate, so these are the addresses where no agent answered
+// on either port.
+func hostsWithoutAgent(candidates, answered []string) []string {
+	answeredHost := map[string]bool{}
+	for _, host := range hostsOf(answered) {
+		answeredHost[host] = true
+	}
+	var out []string
+	for _, host := range hostsOf(candidates) {
+		if !answeredHost[host] {
+			out = append(out, host)
+		}
+	}
+	return out
+}
+
+// hostsOf is the host of each host:port in addrs, once each and in order.
+func hostsOf(addrs []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, addr := range addrs {
+		host := hostOnly(addr)
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		out = append(out, host)
 	}
 	return out
 }
