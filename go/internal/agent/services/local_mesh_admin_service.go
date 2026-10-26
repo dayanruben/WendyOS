@@ -172,7 +172,7 @@ func (s *LocalMeshAdminService) ConfigureLocalMesh(ctx context.Context, req *pb.
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "reading wendy net configuration: %v", err)
 	}
-	previous, previousCarriers := sharing, carriers
+	previous := sharing
 	shareChanged := req.Participate != nil || req.Roam != nil || req.ShareUplink != nil
 	carrierChanged := req.Nan != nil || req.Ble != nil || req.Ethernet != nil || req.InfrastructureWifi != nil
 	if req.Participate != nil {
@@ -222,13 +222,8 @@ func (s *LocalMeshAdminService) ConfigureLocalMesh(ctx context.Context, req *pb.
 			zap.Bool("nan", carriers.NAN), zap.Bool("ble", carriers.BLE),
 			zap.Bool("ethernet", carriers.Ethernet), zap.Bool("infrastructureWifi", carriers.InfrastructureWiFi))
 	}
-	// The runtime polls the saved documents and has not seen a change yet: its
-	// last report still describes the previous settings. Report the change as
-	// saved intent; GetLocalMeshStatus shows the runtime once it applies it.
-	if sharing.Participate != previous.Participate || sharing.Roam != previous.Roam || sharing.ShareUplink != previous.ShareUplink ||
-		carriers.NAN != previousCarriers.NAN || carriers.BLE != previousCarriers.BLE ||
-		carriers.Ethernet != previousCarriers.Ethernet || carriers.InfrastructureWiFi != previousCarriers.InfrastructureWiFi {
-		return savedIntent(sharing, carriers), nil
-	}
-	return s.response(sharing, carriers), nil
+	// The runtime polls the saved documents. Even an unchanged request can be
+	// a retry before it applies the previous change. Always acknowledge saved
+	// intent; GetLocalMeshStatus provides runtime observations.
+	return savedIntent(sharing, carriers), nil
 }
