@@ -27,6 +27,11 @@ For supported Wi-Fi Aware hardware, add `--nan=true`.
 You can enable more than one connection type. Only the options you supply change;
 other saved settings are preserved.
 
+`configure` confirms saved settings, including when you repeat the same command.
+It reports `pending-runtime` when participation is enabled and `disabled` when
+it is off, with no runtime observations. Use `status` to check runtime state
+after the agent has had time to apply the settings.
+
 Changing settings restarts local routing and may interrupt existing connections.
 To disable one connection type, set its option to `false`. To stop all Wendy Net
 participation while retaining the saved connection choices, use
