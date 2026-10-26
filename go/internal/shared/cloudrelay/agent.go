@@ -41,6 +41,13 @@ type Agent struct {
 	signing, encryption *ecdsa.PrivateKey
 	lease               *pb.IssuePresenceLeaseResponse
 	leaseClaims         claims
+	// leases holds each unexpired lease Cloud issued to these keys, by jti.
+	// Cloud binds a session grant to the newest lease it issued, whether or
+	// not a broker admitted it, and the broker redelivers an unacknowledged
+	// offer on the next presence stream for the route. An offer can therefore
+	// name a lease this agent has already replaced, by renewal or by
+	// reconnecting.
+	leases              map[string]claims
 	slots               chan struct{}
 	sourceAddresses     func() ([]net.Addr, error)
 	sourceCheckInterval time.Duration
@@ -164,6 +171,20 @@ func (a *Agent) validateLease(ctx context.Context, l *pb.IssuePresenceLeaseRespo
 	}
 	return c, nil
 }
+
+// remember keeps a lease Cloud issued to these keys until it expires.
+func (a *Agent) remember(c claims) {
+	if a.leases == nil {
+		a.leases = map[string]claims{}
+	}
+	now := time.Now().Unix()
+	for id, l := range a.leases {
+		if l.Exp <= now {
+			delete(a.leases, id)
+		}
+	}
+	a.leases[c.JTI] = c
+}
 func (a *Agent) issue(ctx context.Context) (*pb.IssuePresenceLeaseResponse, claims, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -186,6 +207,8 @@ func (a *Agent) issue(ctx context.Context) (*pb.IssuePresenceLeaseResponse, clai
 	if err != nil {
 		return nil, c, err
 	}
+	// Cloud already binds new grants to this lease, whatever happens to it next.
+	a.remember(c)
 	raw, err := proto.Marshal(l)
 	if err != nil {
 		return nil, c, err
@@ -216,6 +239,7 @@ func (a *Agent) runOnce(parent context.Context) error {
 				if c, e := a.validateLease(ctx, &l); e == nil {
 					a.lease = &l
 					a.leaseClaims = c
+					a.remember(c)
 				}
 			}
 		}
@@ -321,9 +345,6 @@ func (a *Agent) runOnce(parent context.Context) error {
 		started bool
 	}
 	pending := map[string]*offerState{}
-	// Keep earlier lease bindings until they expire, so in-flight offers remain
-	// verifiable when a renewal changes the presence jti.
-	leases := map[string]claims{c.JTI: c}
 	var renewing *pb.IssuePresenceLeaseResponse
 	var renewedClaims claims
 	for {
@@ -370,7 +391,6 @@ func (a *Agent) runOnce(parent context.Context) error {
 				c = renewedClaims
 				a.lease = lease
 				a.leaseClaims = c
-				leases[c.JTI] = c
 				renewing = nil
 				renewal.Reset(renewalDelay(lease, c))
 				expiry.Reset(time.Until(time.Unix(c.Exp, 0)))
@@ -386,9 +406,9 @@ func (a *Agent) runOnce(parent context.Context) error {
 						_ = os.Remove(filepath.Join(a.StateDir, "offer-"+binding([]byte(id))+".pb"))
 					}
 				}
-				for id, l := range leases {
+				for id, l := range a.leases {
 					if l.Exp <= now.Unix() {
-						delete(leases, id)
+						delete(a.leases, id)
 					}
 				}
 				if prior := pending[o.OfferId]; prior != nil {
@@ -403,7 +423,7 @@ func (a *Agent) runOnce(parent context.Context) error {
 					if e != nil {
 						return e
 					}
-					bound, ok := leases[g.Presence]
+					bound, ok := a.leases[g.Presence]
 					if !ok || g.Route != c.Route || g.Session != o.SessionId || g.Agent != binding(publicDER(a.signing)) {
 						return fmt.Errorf("relay offer presence binding mismatch")
 					}
