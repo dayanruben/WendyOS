@@ -500,13 +500,13 @@ func TestMergedDevices_LiteEnrolledAcrossTransports(t *testing.T) {
 	const enrolled = "0b8e3a52-6f1d-4c8e-9a47-2d5f1e6c7b90"
 	c := &DevicesCollection{
 		ExternalDevices: []ExternalDevice{
-			liteExternal("wendy-lite:AA:BB", "lite-board", map[string]string{
+			liteExternal("wendy-lite:AA:BB", "Lite Board", map[string]string{
 				"type": "BLE", "deviceId": enrolled, "enrolledDeviceId": enrolled,
 			}),
 			liteExternal("wendy-lite:lite-board.local.", "Lite Board", map[string]string{
 				"type": "LAN", "deviceId": enrolled,
 			}),
-			liteExternal("wendy-lite:/dev/cu.usbmodem2101", "Lite Board (USB)", map[string]string{
+			liteExternal("wendy-lite:/dev/cu.usbmodem2101", "Lite Board", map[string]string{
 				"type": "USB", "deviceId": "a1b2c3d4e5f6", "enrolledDeviceId": enrolled,
 			}),
 		},

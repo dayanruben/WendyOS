@@ -414,7 +414,7 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 
 	// Merge wendy-lite external devices that are one board seen over USB, LAN
 	// and BLE. The key is LiteDedupID, compared exactly, not the display name:
-	// two boards can share a name, and one board can report different names.
+	// two boards can share a name.
 	// The prefix keeps it from ever matching a LAN or BLE key. A row with no id
 	// (an unflashed board) is keyed by its connection so it stands alone.
 	for i := range c.ExternalDevices {
