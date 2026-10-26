@@ -28,6 +28,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -1348,6 +1349,10 @@ func newDeviceUnenrollCmd() *cobra.Command {
 					fmt.Printf("Cloud cleanup is incomplete for org %d, asset %d in %s.\n", orgID, assetID, cloudConn.Target())
 					fmt.Printf("Retry cloud cleanup: %s\n", retryCommand)
 					fmt.Printf("If the legacy Cloud API remains unavailable, remove asset %d from organization %d in that Cloud dashboard.\n", assetID, orgID)
+					// The pins just cleared come back while the asset is listed:
+					// Cloud's roster is authority for seedPinsFromCloudAssets, and
+					// the Cloud-only retry deliberately keeps pins.
+					fmt.Printf("Until then, commands that read Cloud's device list, such as 'wendy cloud discover', pin this device again; if a later connection is refused, run 'wendy device unpin %s'.\n", shellQuoteArg(certs.AssetURN(orgID, assetID)))
 				} else {
 					fmt.Printf("Revoked %d certificate(s) and deleted asset %d from Wendy Cloud.\n", result.CertificatesRevoked, assetID)
 				}

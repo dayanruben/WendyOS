@@ -632,11 +632,13 @@ func TestLegacyUnenrollForgetsTheResetIdentity(t *testing.T) {
 		deleteErr  error
 		membersErr error
 		principal  bool
+		text       bool
 		wantReset  bool
 		wantErr    string
 	}{
 		{name: "cloud cleanup succeeds", wantReset: true},
 		{name: "cloud cleanup fails after reset", deleteErr: status.Error(codes.Unknown, ""), wantReset: true, wantErr: "deleting asset 42"},
+		{name: "cloud cleanup fails after reset, text output", deleteErr: status.Error(codes.Unknown, ""), text: true, wantReset: true, wantErr: "deleting asset 42"},
 		{name: "certificate carries a tenant principal", principal: true, wantReset: true},
 		{name: "preflight fails before reset", membersErr: status.Error(codes.PermissionDenied, "not a member"), wantErr: "device was not reset"},
 	} {
@@ -684,7 +686,7 @@ func TestLegacyUnenrollForgetsTheResetIdentity(t *testing.T) {
 			resolveUnenrollTargetFn = func(context.Context, ...resolveOption) (*SelectedDevice, error) {
 				return &SelectedDevice{Agent: &grpcclient.AgentConnection{ProvisioningService: agent, IsMTLS: true}}, nil
 			}
-			jsonOutput = true
+			jsonOutput = !tc.text
 
 			cmd := newDeviceUnenrollCmd()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -728,6 +730,21 @@ func TestLegacyUnenrollForgetsTheResetIdentity(t *testing.T) {
 			}
 			if !strings.Contains(stderr, `Cleared device pin "wendyos-hack-device-7"`) {
 				t.Errorf("cleared pins were not reported on stderr:\n%s", stderr)
+			}
+			if tc.text {
+				// Cloud still lists the asset, so roster syncs pin it again
+				// until the retry succeeds; the output has to say how to clear
+				// that pin, since the Cloud-only retry keeps it.
+				for _, want := range []string{
+					"Retry cloud cleanup: wendy cloud device unenroll --device",
+					"'wendy cloud discover', pin this device again",
+					"run 'wendy device unpin urn:wendy:org:55:asset:42'",
+				} {
+					if !strings.Contains(stdout, want) {
+						t.Errorf("text output is missing %q:\n%s", want, stdout)
+					}
+				}
+				return
 			}
 			var report map[string]any
 			if err := json.Unmarshal([]byte(stdout), &report); err != nil {
