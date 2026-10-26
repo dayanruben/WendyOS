@@ -1250,8 +1250,10 @@ func newDeviceUnenrollCmd() *cobra.Command {
 			}
 
 			// Determine the device's current enrollment so we know which cloud
-			// asset to clean up afterwards.
-			provResp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
+			// asset to clean up afterwards. The peer is the certificate a numeric
+			// legacy reset forgets the pins of.
+			var provPeer grpcpeer.Peer
+			provResp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{}, grpc.Peer(&provPeer))
 			if err != nil {
 				return fmt.Errorf("checking provisioning status: %w", err)
 			}
@@ -1311,10 +1313,10 @@ func newDeviceUnenrollCmd() *cobra.Command {
 			// Cloud cleanup then succeeded, so forget it now: a pin left behind
 			// refuses every later connection to the unprovisioned device
 			// (WDY-3974). The Cloud retry below never contacts the device.
-			identity := legacyEnrollmentIdentity(orgID, assetID)
-			pinErr := forgetResetDeviceIdentity(identity)
+			identityKeys := legacyResetIdentityKeys(conn, &provPeer, orgID, assetID)
+			pinErr := forgetResetDeviceIdentity(identityKeys...)
 			if pinErr != nil {
-				pinErr = fmt.Errorf("device reset, but clearing this CLI's saved identity for it failed: %w; run 'wendy device unpin %s'", pinErr, identity.IdentityKey())
+				pinErr = fmt.Errorf("device reset, but clearing this CLI's saved identity for it failed: %w; run %s", pinErr, unpinCommandsFor(identityKeys))
 			}
 			retrySelector := (cloudDeviceSelector{Endpoint: cloudConn.Target(), OrgID: orgID, AssetID: assetID}).String()
 			retryCommand := "wendy cloud device unenroll --device " + shellQuoteArg(retrySelector)

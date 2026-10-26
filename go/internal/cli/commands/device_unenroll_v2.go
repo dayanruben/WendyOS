@@ -396,7 +396,7 @@ func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, 
 	if err != nil {
 		return err
 	}
-	if err := forgetResetDeviceIdentity(principal); err != nil {
+	if err := forgetResetDeviceIdentity(principal.IdentityKey()); err != nil {
 		return fmt.Errorf("unenrolled; local identity pin cleanup failed: %w", err)
 	}
 	if !jsonOutput {

@@ -2,11 +2,14 @@ package commands
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,12 +20,15 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -567,12 +573,21 @@ func TestLegacyCloudUnenrollInventoriesAllPagesBeforeMutation(t *testing.T) {
 
 // legacyUnenrollAgent is the device side of numeric legacy unenrollment: an
 // agent enrolled as asset 42 of organization 55 whose reset always succeeds.
+// leaf, when set, is the certificate it presents on the verified connection.
 type legacyUnenrollAgent struct {
 	agentpb.WendyProvisioningServiceClient
+	leaf  *x509.Certificate
 	reset bool
 }
 
-func (a *legacyUnenrollAgent) IsProvisioned(context.Context, *agentpb.IsProvisionedRequest, ...grpc.CallOption) (*agentpb.IsProvisionedResponse, error) {
+func (a *legacyUnenrollAgent) IsProvisioned(_ context.Context, _ *agentpb.IsProvisionedRequest, opts ...grpc.CallOption) (*agentpb.IsProvisionedResponse, error) {
+	for _, opt := range opts {
+		if p, ok := opt.(grpc.PeerCallOption); ok && a.leaf != nil {
+			*p.PeerAddr = peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{
+				HandshakeComplete: true, PeerCertificates: []*x509.Certificate{a.leaf},
+			}}}
+		}
+	}
 	return &agentpb.IsProvisionedResponse{Response: &agentpb.IsProvisionedResponse_Provisioned{
 		Provisioned: &agentpb.ProvisionedResponse{CloudHost: "grpc.a.sh:443", OrganizationId: 55, AssetId: 42},
 	}}, nil
@@ -607,29 +622,49 @@ func seedSessionBrokerState(t *testing.T) string {
 // pins naming it must go too — the report's case is Cloud failing the asset
 // delete after the reset, which used to return before anything was cleared and
 // left every later command refused. A reset that never happened clears nothing.
+//
+// A certificate carrying a tenant principal files the device under that
+// principal instead of its urn:wendy URN, so the identity the device presented
+// is cleared as well as the one its enrollment reports.
 func TestLegacyUnenrollForgetsTheResetIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		deleteErr  error
 		membersErr error
+		principal  bool
 		wantReset  bool
 		wantErr    string
 	}{
 		{name: "cloud cleanup succeeds", wantReset: true},
 		{name: "cloud cleanup fails after reset", deleteErr: status.Error(codes.Unknown, ""), wantReset: true, wantErr: "deleting asset 42"},
+		{name: "certificate carries a tenant principal", principal: true, wantReset: true},
 		{name: "preflight fails before reset", membersErr: status.Error(codes.PermissionDenied, "not a member"), wantErr: "device was not reset"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			preserveCloudUnenrollmentHooks(t)
+			resetKey := "urn:wendy:org:55:asset:42"
+			devicePin := config.DevicePin{OrgID: 55, CloudGRPC: "grpc.a.sh:443", AssetID: "42"}
+			agent := &legacyUnenrollAgent{}
+			if tc.principal {
+				// The dual-SAN leaf Cloud mints for an organization with a pki
+				// tenant. The SPKI store filed it under the principal, and an
+				// earlier connection backfilled the principal into the pin.
+				resetKey = certs.AssetSPIFFEURI(testOperatorTenant, 42)
+				devicePin.Principal = resetKey
+				principalURI, _ := url.Parse(resetKey)
+				urn, _ := url.Parse("urn:wendy:org:55:asset:42")
+				agent.leaf = &x509.Certificate{Raw: []byte("verified certificate DER"), URIs: []*url.URL{principalURI, urn}}
+			}
 			other := config.DevicePin{OrgID: 55, CloudGRPC: "grpc.a.sh:443", AssetID: "99"}
 			pins := map[string]config.DevicePin{
-				"wendyos-hack-device-7": {OrgID: 55, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
-				// The same device pinned under another name it was dialled by.
+				"wendyos-hack-device-7": devicePin,
+				// The same device pinned under another name it was dialled by,
+				// with no principal: Cloud's roster seeds pins without one.
 				"169.254.213.32": {OrgID: 55, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
 				"other-device":   other,
 			}
 			readPins := writePinTestConfig(t, pins)
-			seedSPKIPins(t, "urn:wendy:org:55:asset:42", "urn:wendy:org:55:asset:99")
+			seedSPKIPins(t, resetKey, "urn:wendy:org:55:asset:99")
 			brokerState := seedSessionBrokerState(t)
 
 			certificate := activeLegacyUnenrollCertificate(11)
@@ -646,9 +681,8 @@ func TestLegacyUnenrollForgetsTheResetIdentity(t *testing.T) {
 				return cloudConn, ctx, &config.AuthConfig{Certificates: []config.CertificateInfo{{UserID: "selected-user"}}}, nil
 			}
 			t.Cleanup(func() { dialLegacyUnenrollCloudFn = origDial })
-			agent := &legacyUnenrollAgent{}
 			resolveUnenrollTargetFn = func(context.Context, ...resolveOption) (*SelectedDevice, error) {
-				return &SelectedDevice{Agent: &grpcclient.AgentConnection{ProvisioningService: agent}}, nil
+				return &SelectedDevice{Agent: &grpcclient.AgentConnection{ProvisioningService: agent, IsMTLS: true}}, nil
 			}
 			jsonOutput = true
 
@@ -683,8 +717,8 @@ func TestLegacyUnenrollForgetsTheResetIdentity(t *testing.T) {
 			if want := map[string]config.DevicePin{"other-device": other}; !reflect.DeepEqual(got, want) {
 				t.Errorf("pins after reset = %v, want only the other device's %v", got, want)
 			}
-			if _, ok := spki["urn:wendy:org:55:asset:42"]; ok {
-				t.Error("the reset identity's SPKI pin survived")
+			if _, ok := spki[resetKey]; ok {
+				t.Errorf("the reset identity's SPKI pin %s survived", resetKey)
 			}
 			if _, ok := spki["urn:wendy:org:55:asset:99"]; !ok {
 				t.Error("another device's SPKI pin was cleared")
@@ -710,6 +744,34 @@ func TestLegacyUnenrollForgetsTheResetIdentity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A clear that could not reach the SPKI store must say so, since unenroll turns
+// the error into the unpin commands that finish it. The config half still goes.
+func TestForgetResetDeviceIdentityReportsAnUnopenableSPKIStore(t *testing.T) {
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"wendyos-hack-device-7": {OrgID: 55, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+	})
+	dir, err := config.ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A directory where known_devices.json belongs cannot be read as the store.
+	store := filepath.Join(dir, "known_devices.json")
+	if err := os.RemoveAll(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	err = forgetResetDeviceIdentity("urn:wendy:org:55:asset:42")
+	if err == nil || !strings.Contains(err.Error(), "certificate key pin store") {
+		t.Fatalf("err = %v, want the SPKI store failure reported", err)
+	}
+	if got := readPins(); len(got) != 0 {
+		t.Errorf("config pins = %v, want the reset device's cleared despite the SPKI failure", got)
 	}
 }
 
