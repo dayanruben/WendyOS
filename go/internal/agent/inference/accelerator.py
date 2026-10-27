@@ -59,6 +59,10 @@ TOMBSTONE_SECONDS = 24 * 3600
 # Status and throughput go to the agent at least this often.
 STATUS_SECONDS = 10
 
+# Why an auto campaign is on the CPU while its engine is on its way. Not
+# degraded: the engine is coming.
+NOT_READY = "the TensorRT engine is not ready yet"
+
 MAX_PLAN_BYTES = 1 << 30
 
 # What the child reports when a build had to wait for memory.
@@ -525,7 +529,7 @@ class Accelerator:
         if self.strict:
             self.state.update(active="", runtime="", precision="")
         if self.offered:
-            self.state["reason"] = "the TensorRT engine is not ready yet"
+            self.state["reason"] = NOT_READY
 
     # -- the scoring loop ---------------------------------------------------
 
@@ -729,7 +733,11 @@ class Accelerator:
         available = self.available_mib()
         if available is None or available >= budget:
             return True
-        self.update(engine={"state": "waiting_for_memory",
+        # Degraded, since nothing says memory will ever free up. The reason
+        # stays the same from one retry to the next, so it is logged once.
+        self.update(degraded=True, reason=f"too little free memory to load the TensorRT engine (it needs {budget} MiB); "
+                    f"retrying every {MEMORY_RETRY_SECONDS // 60 or 1} minutes",
+                    engine={"state": "waiting_for_memory",
                             "error": f"{available} MiB of memory is available; loading the engine needs {budget} MiB"})
         self.wait(MEMORY_RETRY_SECONDS)
         return False
@@ -739,7 +747,8 @@ class Accelerator:
         detections, and swaps it in. Returns ready, failed, stopped, or retry
         when the plan would not deserialize."""
         budget = self.tensorrt_plan["gpu_budget_mib"]
-        self.update(engine={"state": "verifying", "cached": cached, "plan_bytes": record["plan_bytes"],
+        self.update(degraded=False, reason=NOT_READY,
+                    engine={"state": "verifying", "cached": cached, "plan_bytes": record["plan_bytes"],
                             "build_seconds": record.get("build_seconds", 0)})
         # Measured across the CUDA context and the engine together: on a
         # Jetson the GPU allocates from the memory MemAvailable counts.
@@ -797,11 +806,13 @@ class Accelerator:
         job = {"key": key, "fields": fields, "model_path": self.model["path"], "bindings": plan["bindings"],
                "engine_dir": plan["engine_dir"], "workspace_mib": plan["workspace_mib"],
                "build_min_available_mib": minimum, "discard_plan_sha256": discard}
-        self.update(engine={"state": "queued"})
+        self.update(degraded=False, reason=NOT_READY, engine={"state": "queued"})
         return self.run_builder(job, plan.get("build_timeout_seconds", 1800))
 
     def wait_for_memory(self, available, minimum):
-        self.update(engine={"state": "waiting_for_memory",
+        self.update(degraded=True, reason=f"too little free memory to build the TensorRT engine (it needs {minimum} MiB); "
+                    f"retrying every {MEMORY_RETRY_SECONDS // 60 or 1} minutes",
+                    engine={"state": "waiting_for_memory",
                             "error": f"{available} MiB of memory is available; a build needs {minimum} MiB"})
         return ("waiting_for_memory", "") if self.wait(MEMORY_RETRY_SECONDS) else ("stopped", "")
 

@@ -524,6 +524,12 @@ class AcceleratorTests(unittest.TestCase):
         self.assertEqual(waiting["accelerator"]["engine"]["error"],
                          "2048 MiB of memory is available; a build needs 3072 MiB")
         self.assertEqual(waiting["accelerator"]["active"], "cpu")
+        # Loud, since memory may never free up, and worded the same every
+        # retry so the agent logs it once.
+        self.assertTrue(waiting["accelerator"]["degraded"])
+        self.assertIn("too little free memory to build the TensorRT engine (it needs 3072 MiB)",
+                      waiting["accelerator"]["reason"])
+        self.assertFalse(subject.status()["degraded"])
         self.assertEqual(len(subject.jobs), 1)
         self.assertEqual(subject.status()["active"], "tensorrt")
 

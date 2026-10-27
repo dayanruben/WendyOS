@@ -408,8 +408,9 @@ never scores on the CPU: if TensorRT is unavailable the campaign reports
   WendyOS image.
 - **The engine.** The device builds a TensorRT engine for the model in the
   background, at FP16; for `yolo11n` on a Jetson Orin Nano this took about 11
-  minutes and about 2.2 GB of memory. A build starts only when about 3 GB of
-  memory is available, and otherwise waits. Under `auto` the model keeps
+  minutes and about 2.2 GB of memory. A build starts only when 3 GiB of
+  memory is available; otherwise it is retried every 2 minutes, and the
+  campaign reports itself degraded until then. Under `auto` the model keeps
   detecting on the CPU meanwhile. The engine is cached and reused across
   restarts and reboots, with no network, until the model, TensorRT version or
   GPU changes.
