@@ -102,6 +102,12 @@ class YOLOTests(unittest.TestCase):
                 result = detector(SimpleNamespace(to_image=lambda: Image.new("RGB", (320, 320))))
                 self.assertEqual(result[0]["label"], "person")
                 self.assertEqual(result[0]["box"], [110, 135, 210, 185])
+                # With no accelerator plan the CPU scores, and says so.
+                self.assertEqual(detector.provenance["engine"], "cpu")
+                self.assertEqual(detector.provenance["precision"], "fp32")
+                self.assertEqual(detector.accelerator_status["active"], "cpu")
+                import hashlib
+                self.assertEqual(detector.model_sha256, hashlib.sha256(path.read_bytes()).hexdigest())
                 # A valid external tensor is present on disk, but the runtime
                 # must not follow model-supplied filesystem references.
                 onnx.save_model(model, path, save_as_external_data=True,
@@ -258,6 +264,22 @@ class DetectorFailureTests(unittest.TestCase):
         self.assertNotIn("error", types_seen)
         self.assertEqual(types_seen.count("source_error"), 10)
         self.assertEqual(types_seen.count("prediction"), 30)
+
+    def test_frame_with_no_engine_yet_is_not_a_failure(self):
+        # A tensorrt campaign scores nothing until its engine is ready.
+        emitted, _ = self.run_with_detector(lambda frame: None, frame_count=30, wait=1)
+        self.assertEqual(emitted, [])
+
+    def test_prediction_names_the_engine(self):
+        class Detector:
+            provenance = {"engine": "tensorrt", "precision": "fp16", "infer_ms": 5.5}
+
+            def __call__(self, frame):
+                return []
+
+        emitted, _ = self.run_with_detector(Detector(), frame_count=1, wait=1)
+        self.assertEqual(emitted, [{"type": "prediction", "source_id": "camera", "generation": 1, "detections": [],
+                                    "engine": "tensorrt", "precision": "fp16", "infer_ms": 5.5}])
 
     def test_detection_error_never_raises(self):
         from worker import detection_error
@@ -499,6 +521,29 @@ class OfflineStartTests(unittest.TestCase):
         calls = []
         load_pinned(dict(self.config, revision="main"), lambda local: calls.append(local))
         self.assertEqual(calls, [False])
+
+    def test_ready_reports_the_planned_engine(self):
+        import json
+        import types
+        from unittest import mock
+        import worker
+
+        self.cache_model()
+        plan = {"requested": "auto", "candidates": ["cpu"],
+                "reason": "no supported accelerator: TensorRT needs an NVIDIA GPU with CUDA"}
+        lines = [json.dumps(dict(self.config, accelerator_plan=plan)).encode()]
+        stdin = types.SimpleNamespace(buffer=types.SimpleNamespace(
+            readline=lambda *limit: lines.pop(0) if lines else b""))
+        emitted = []
+        with mock.patch("worker.emit", emitted.append), mock.patch("worker.sys.stdin", stdin):
+            worker.main()
+        ready = emitted[0]
+        self.assertEqual(ready["type"], "ready")
+        self.assertEqual(ready["accelerator"]["active"], "cpu")
+        self.assertEqual(ready["accelerator"]["requested"], "auto")
+        self.assertFalse(ready["accelerator"]["degraded"])
+        self.assertEqual(ready["accelerator"]["reason"], plan["reason"])
+        self.assertEqual(len(ready["accelerator"]["model_sha256"]), 64)
 
     def test_worker_reports_the_reason_to_the_agent(self):
         import json

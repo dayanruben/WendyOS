@@ -376,6 +376,7 @@ disabled.
 | `backend` | no | `transformers` by default, or `yolo_onnx` for a compatible YOLO ONNX detection export. |
 | `model` | yes | `owner/repository` or `https://huggingface.co/owner/repository`; the repository containing the checkpoint or ONNX export. |
 | `model_file` | for `yolo_onnx` | Relative `.onnx` file path inside the pinned repository. Not accepted with `transformers`. |
+| `accelerator` | no | `auto` by default, `cpu`, or `tensorrt`. Chooses the hardware that runs the model; see below. `tensorrt` requires `backend: yolo_onnx`. |
 | `revision` | yes | Lowercase, 40-character Hugging Face commit SHA. Branch names are rejected. |
 | `labels` | yes | 1–32 unique, nonempty model labels, each at most 128 bytes. |
 | `threshold` | yes | Detection confidence in `(0, 1]`. |
@@ -391,6 +392,45 @@ Inference requires a camera source and a trigger matching its event in
 `inference_status`, including runtime state, per-camera state and notification
 errors. Temporary camera loss retains presence/cooldown state so reconnecting
 does not produce a duplicate detection.
+
+#### Accelerators
+
+With `accelerator: auto`, a `yolo_onnx` model runs on an NVIDIA Jetson's GPU
+through TensorRT when the device reports an NVIDIA GPU with CUDA and has the
+TensorRT libraries; every other device, and the `transformers` backend, runs
+on the CPU. `cpu` never uses an accelerator. `tensorrt` requires TensorRT and
+never scores on the CPU: if TensorRT is unavailable the campaign reports
+`error` with the reason and retries.
+
+- **First use.** The agent downloads NVIDIA's Python bindings for the device's
+  TensorRT version once (about 0.85 MB, pinned by SHA-256) and caches them in
+  its inference directory. The TensorRT and CUDA libraries come from the
+  WendyOS image.
+- **The engine.** The device builds a TensorRT engine for the model in the
+  background, at FP16; for `yolo11n` on a Jetson Orin Nano this took about 11
+  minutes and about 2.2 GB of memory. A build starts only when about 3 GB of
+  memory is available, and otherwise waits. Under `auto` the model keeps
+  detecting on the CPU meanwhile. The engine is cached and reused across
+  restarts and reboots, with no network, until the model, TensorRT version or
+  GPU changes.
+- **The switch.** Before replacing the CPU, the engine must find the same
+  detections as the CPU on the same camera frames: same labels, IoU of at
+  least 0.8, and scores within 0.05.
+- **Fallback.** If the bindings cannot be fetched, the build fails, the engine
+  disagrees with the CPU, or it needs more than 1 GiB of memory, an `auto`
+  campaign stays on the CPU. It is never silent: on a device with a usable GPU,
+  `inference_status.accelerator.degraded` is `true` with a `reason`, and the
+  agent logs a warning. A failed build is not retried for 24 hours unless the
+  model changes.
+
+`inference_status.accelerator` reports what actually runs: `active` (`cpu` or
+`tensorrt`), `degraded` and `reason`, `runtime` and `precision`, and `engine`
+with its `state` (`checking`, `waiting_for_memory`, `queued`, `building` with
+`elapsed_seconds`, `verifying`, `ready` or `failed` with an `error`).
+`inference_status.stats` reports `fps` and inference latency (`infer_ms_p50`,
+`infer_ms_p95`). Each `prediction` record carries `accelerator`, `precision`,
+`infer_ms` and `model_sha256`, because FP16 TensorRT scores differ slightly
+from FP32 CPU scores.
 
 See [the all-camera people example](https://github.com/wendylabsinc/WendyOS/tree/main/Examples/WendyDataPeople)
 for a complete campaign. Campaign revision hashing now uses revision schema 2,

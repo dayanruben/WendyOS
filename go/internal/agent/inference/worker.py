@@ -7,6 +7,7 @@ no camera device access, agent RPC credentials, or notification credentials.
 import base64
 import ast
 from collections import deque
+import hashlib
 import io
 import json
 import os
@@ -255,12 +256,19 @@ class Detector:
             raise ValueError("inference.labels contains labels absent from the model")
         if not hasattr(self.processor, "post_process_object_detection"):
             raise ValueError("model processor does not support object detection")
+        # The agent offers this backend the CPU alone (inference/accelerator.go).
+        import accelerator
+        self.runtime = f"PyTorch {torch.__version__}"
+        self.accelerator_status = accelerator.plan_status(config.get("accelerator_plan"), self.runtime)
+        self.provenance = {"engine": "cpu", "precision": "fp32"}
 
     def __call__(self, frame):
         image = frame.to_image()
         inputs = self.processor(images=image, return_tensors="pt")
+        started = time.perf_counter()
         with self.torch.inference_mode():
             outputs = self.model(**inputs)
+        self.provenance["infer_ms"] = round((time.perf_counter() - started) * 1000, 2)
         result = self.processor.post_process_object_detection(
             outputs, target_sizes=[(image.height, image.width)], threshold=self.threshold)[0]
         return [{"label": self.model.config.id2label[int(label)], "score": float(score), "box": box.tolist()}
@@ -269,7 +277,12 @@ class Detector:
 
 
 class YOLODetector:
-    """YOLOv8/YOLO11 raw detection ONNX, with no repository Python or pickle."""
+    """YOLOv8/YOLO11 raw detection ONNX, with no repository Python or pickle.
+
+    Preprocessing and decoding are shared Python; an engine sees only the
+    letterboxed [1, 3, height, width] tensor. That keeps every engine's output
+    comparable with the CPU's, which is how a TensorRT engine is checked
+    before it replaces the CPU (accelerator.py)."""
 
     def __init__(self, config):
         import numpy as np
@@ -312,6 +325,7 @@ class YOLODetector:
         session_options.inter_op_num_threads = 1
         self.session = ort.InferenceSession(model_bytes, sess_options=session_options,
                                            providers=["CPUExecutionProvider"])
+        self.model_path, self.model_sha256 = filename, hashlib.sha256(model_bytes).hexdigest()
         inputs, outputs = self.session.get_inputs(), self.session.get_outputs()
         if len(inputs) != 1 or inputs[0].type != "tensor(float)":
             raise ValueError("YOLO ONNX requires one float32 image input")
@@ -343,6 +357,25 @@ class YOLODetector:
             raise ValueError("Expected raw YOLOv8/YOLO11 detection output [1, 4 + classes, anchors]; export without NMS")
         self.np, self.input_name = np, inputs[0].name
         self.height, self.width = shape[2:]
+        import accelerator
+        plan = config.get("accelerator_plan")
+        output_shape = [1, len(self.names) + 4, outputs[0].shape[2]]
+        if type(output_shape[2]) is not int and plan and "tensorrt" in (plan.get("candidates") or []):
+            # A fixed-size engine needs a fixed anchor count.
+            plan = dict(plan, candidates=["cpu"], degraded=True,
+                        reason="the model's output has no fixed anchor count, so it cannot get a TensorRT engine")
+        cpu = accelerator.CpuEngine(self.session, self.input_name, f"ONNX Runtime {ort.__version__}")
+        self.accelerator = accelerator.Accelerator(
+            plan, cpu,
+            {"path": filename, "sha256": self.model_sha256, "input_shape": shape, "output_shape": output_shape,
+             "threshold": self.threshold, "decode": self.decode_model_space},
+            lambda message: emit(message))
+        self.accelerator_status = self.accelerator.status()
+        self.provenance = {}
+
+    def decode_model_space(self, output):
+        """Detections in the model's own input pixels: for comparing engines."""
+        return yolo_detections(output, self.names, self.labels, self.threshold, 1, 0, 0, self.width, self.height)
 
     def __call__(self, frame):
         from PIL import Image
@@ -354,7 +387,13 @@ class YOLODetector:
         canvas = Image.new("RGB", (self.width, self.height), (114, 114, 114))
         canvas.paste(image.resize(size, Image.Resampling.BILINEAR), (dx, dy))
         tensor = np.asarray(canvas, dtype=np.float32).transpose(2, 0, 1)[None] / 255.0
-        output = self.session.run(None, {self.input_name: tensor})[0]
+        started = time.perf_counter()
+        output, engine = self.accelerator.infer(tensor)
+        if output is None:
+            # A tensorrt campaign waiting for its engine scores nothing.
+            return None
+        self.provenance = {"engine": engine.name, "precision": engine.precision,
+                           "infer_ms": round((time.perf_counter() - started) * 1000, 2)}
         return yolo_detections(output, self.names, self.labels, self.threshold,
                                scale, dx, dy, image.width, image.height)
 
@@ -471,13 +510,19 @@ def run(config, detector):
                     emit({"type": "source_error", "source_id": decoder.source_id,
                           "generation": decoder.generation, "error": detection_error(exc)})
                     continue
+                if detections is None:
+                    # No engine is serving yet. Not a failure, and no result.
+                    continue
                 recent.append(True)
                 with lock:
                     # A source reset while inference ran invalidates the result.
                     if decoders.get(decoder.source_id) is not decoder or decoder.stream.stopped:
                         continue
-                emit({"type": "prediction", "source_id": decoder.source_id,
-                      "generation": decoder.generation, "detections": detections})
+                prediction = {"type": "prediction", "source_id": decoder.source_id,
+                              "generation": decoder.generation, "detections": detections}
+                # Which engine scored this frame, at what precision, how fast.
+                prediction.update(getattr(detector, "provenance", None) or {})
+                emit(prediction)
             stopped.wait(0.02)
     finally:
         with lock:
@@ -493,8 +538,18 @@ def main():
         # The agent shows this reason as the campaign's inference error.
         emit({"type": "error", "error": str(exc)})
         sys.exit(1)
-    emit({"type": "ready"})
-    run(config, detector)
+    # Ready as soon as the CPU can score. A TensorRT engine, found or built in
+    # the background, takes over later, so its build never risks the agent's
+    # ready deadline.
+    emit({"type": "ready", "accelerator": getattr(detector, "accelerator_status", None)})
+    accelerator = getattr(detector, "accelerator", None)
+    if accelerator is not None:
+        accelerator.start()
+    try:
+        run(config, detector)
+    finally:
+        if accelerator is not None:
+            accelerator.stop()
 
 
 if __name__ == "__main__":

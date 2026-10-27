@@ -167,6 +167,7 @@ func (m *campaignInferenceManager) snapshot(name, revision string) *data.Inferen
 	for source, state := range job.status.Sources {
 		snapshot.Sources[source] = state
 	}
+	snapshot.Accelerator = acceleratorSnapshot(job.status.Accelerator, time.Now())
 	return &snapshot
 }
 
@@ -198,6 +199,10 @@ func (j *campaignInferenceJob) supervise(ctx context.Context) {
 	}
 	for ctx.Err() == nil {
 		j.setState("loading", nil)
+		// A new process reports its own accelerator; the last one's is stale.
+		j.mu.Lock()
+		j.status.Accelerator, j.status.Stats = nil, nil
+		j.mu.Unlock()
 		err := j.run(ctx)
 		if ctx.Err() != nil {
 			return
@@ -310,6 +315,10 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 			if result.Type == "error" {
 				return errors.New(result.Error)
 			}
+			if result.Type == "accelerator" {
+				j.acceleratorState(result.Accelerator, result.Stats)
+				continue
+			}
 			j.mu.Lock()
 			generation, active := j.generations[result.SourceID]
 			j.mu.Unlock()
@@ -330,6 +339,9 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 			j.sourceState(result.SourceID, "detecting")
 			attributes := map[string]any{"campaign": j.campaign.Name, "source_id": result.SourceID, "model_version": j.campaign.Inference.Revision, "detections": detections,
 				"input_reference_status": "encoded_stream_decode_does_not_preserve_sample_ids", "runtime_results_dropped": result.DroppedResults}
+			// What scored the frame: FP16 TensorRT scores differ slightly from
+			// FP32 CPU scores, so a dataset has to be able to tell them apart.
+			j.predictionProvenance(attributes, result)
 			record := data.ApplicationRecord{Version: 1, Type: "prediction", Model: j.campaign.Inference.Model, Attributes: attributes}
 			if _, err := j.owner.service.manager.RecordCampaignApplication(campaignAppPrefix+j.campaign.Name, record); err != nil {
 				j.owner.service.manager.Warnf("recording campaign prediction: %v", err)

@@ -26,7 +26,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 )
 
-//go:embed worker.py pyproject.toml uv.lock
+//go:embed worker.py accelerator.py pyproject.toml uv.lock
 var assets embed.FS
 
 const uvVersion = "0.10.9"
@@ -62,6 +62,23 @@ type Result struct {
 	Generation     uint64      `json:"generation"`
 	Detections     []Detection `json:"detections,omitempty"`
 	Error          string      `json:"error,omitempty"`
+	// Engine, Precision and InferMs say what scored a prediction: cpu or
+	// tensorrt, at fp32 or fp16, taking this long.
+	Engine    string  `json:"engine,omitempty"`
+	Precision string  `json:"precision,omitempty"`
+	InferMs   float64 `json:"infer_ms,omitempty"`
+	// Accelerator and Stats are the process's own report of what it runs on,
+	// on ready and on accelerator results. A ready result reaches Results as
+	// an accelerator result.
+	Accelerator *data.AcceleratorStatus `json:"accelerator,omitempty"`
+	Stats       *data.InferenceStats    `json:"stats,omitempty"`
+}
+
+// workerConfig is the process's config line: the campaign's inference block
+// and the accelerators the agent offers.
+type workerConfig struct {
+	data.CampaignInference
+	AcceleratorPlan AcceleratorPlan `json:"accelerator_plan"`
 }
 
 type Session interface {
@@ -75,10 +92,17 @@ type Factory interface {
 }
 
 // ManagedFactory installs a checksum-pinned uv and a locked, isolated CPU
-// runtime into the agent's writable data partition on first use.
+// runtime into the agent's writable data partition on first use. On a device
+// whose Hardware reports an NVIDIA GPU with CUDA and that has the TensorRT
+// libraries, it also fetches the pinned TensorRT Python bindings once.
 type ManagedFactory struct {
 	Root string
-	mu   sync.Mutex
+	// Hardware probes the device's accelerators; nil means none.
+	Hardware func() Hardware
+	mu       sync.Mutex
+
+	bindingsFailure  error
+	bindingsFailedAt time.Time
 }
 
 func (f *ManagedFactory) prepare(ctx context.Context) (string, string, error) {
@@ -108,7 +132,7 @@ func (f *ManagedFactory) prepare(ctx context.Context) (string, string, error) {
 	}
 
 	hash := sha256.New()
-	files := []string{"worker.py", "pyproject.toml", "uv.lock"}
+	files := []string{"worker.py", "accelerator.py", "pyproject.toml", "uv.lock"}
 	for _, name := range files {
 		b, _ := assets.ReadFile(name)
 		hash.Write(b)
@@ -234,6 +258,14 @@ func (f *ManagedFactory) Start(ctx context.Context, config data.CampaignInferenc
 	if err != nil {
 		return nil, err
 	}
+	root, err := filepath.Abs(f.Root)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := f.acceleratorPlan(ctx, root, config)
+	if err != nil {
+		return nil, err
+	}
 	childCtx, cancel := context.WithCancel(ctx)
 	command := exec.CommandContext(childCtx, uv, "run", "--project", dir, "--frozen", "--no-dev", "--no-build", "--managed-python", "--python", "3.12", "python", "-u", filepath.Join(dir, "worker.py"))
 	command.Dir = dir
@@ -290,6 +322,14 @@ func (f *ManagedFactory) Start(ctx context.Context, config data.CampaignInferenc
 				}
 				initialized = true
 				ready <- nil
+				if result.Accelerator != nil {
+					// The results channel is empty here, so this never blocks.
+					result.Type = "accelerator"
+					select {
+					case session.results <- result:
+					case <-childCtx.Done():
+					}
+				}
 				continue
 			}
 			result.DroppedResults = dropped
@@ -321,7 +361,7 @@ func (f *ManagedFactory) Start(ctx context.Context, config data.CampaignInferenc
 			}
 		}
 	}()
-	if err := json.NewEncoder(stdin).Encode(config); err != nil {
+	if err := json.NewEncoder(stdin).Encode(workerConfig{config, plan}); err != nil {
 		session.Close()
 		return nil, err
 	}
@@ -384,6 +424,9 @@ func runtimeEnvironment(root string) []string {
 		"UV_PYTHON_INSTALL_DIR=" + filepath.Join(root, "python"),
 		"HF_HOME=" + filepath.Join(root, "models"),
 		"UV_NO_PROGRESS=1", "TOKENIZERS_PARALLELISM=false", "OMP_NUM_THREADS=2",
+		// CUDA loads kernels when first used rather than all at start, which
+		// keeps a TensorRT context small. Inert without CUDA.
+		"CUDA_MODULE_LOADING=LAZY",
 	}
 	for _, key := range []string{"PATH", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if value, ok := os.LookupEnv(key); ok {
