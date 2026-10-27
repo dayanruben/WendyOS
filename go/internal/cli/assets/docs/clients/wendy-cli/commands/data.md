@@ -444,8 +444,9 @@ under Fallback), and `engine` with its `state` (`checking`, `scheduled`,
 `waiting_for_memory`, `waiting_for_cpu`, `queued`, `building` with
 `started_at` and `elapsed_seconds`, `verifying`, `ready` or `failed` with an
 `error`) and any `warnings` TensorRT printed while loading it.
-`inference_status.stats` reports `fps` and inference latency (`infer_ms_p50`,
-`infer_ms_p95`). Each `prediction` record carries `accelerator`, `precision`,
+`inference_status.stats` reports `fps`, inference latency (`infer_ms_p50`,
+`infer_ms_p95`) and `frames_scored`, the frames the model process has scored
+since it started. Each `prediction` record carries `accelerator`, `precision`,
 `infer_ms` and `model_sha256`, because FP16 TensorRT scores differ slightly
 from FP32 CPU scores.
 
@@ -458,7 +459,11 @@ never more than 512 MiB).
 See [the all-camera people example](https://github.com/wendylabsinc/WendyOS/tree/main/Examples/WendyDataPeople)
 for a complete campaign. Campaign revision hashing now uses revision schema 2,
 which includes inference and notification settings. Existing plans receive new
-revision hashes when redeployed; the YAML `version` remains `1`.
+revision hashes when redeployed; the YAML `version` remains `1`. An absent
+`accelerator` is left out of the hash, so campaigns deployed before the field
+existed keep their revisions and are not re-armed by an agent update. Writing
+`accelerator: auto` explicitly is a new revision, as an explicit
+`backend: transformers` is, although it behaves the same as leaving it out.
 
 ### Notifications
 
