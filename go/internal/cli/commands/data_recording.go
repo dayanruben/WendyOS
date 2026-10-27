@@ -62,7 +62,7 @@ func newDataExportStreamCmd() *cobra.Command {
 						return err
 					}
 				} else {
-					fmt.Fprintf(cmd.ErrOrStderr(), "Exported %d records to %s\n", count, destination)
+					fmt.Fprintf(cmd.ErrOrStderr(), "Exported %d records to %s\n", count, absDisplayPath(destination))
 				}
 				if !follow {
 					return nil
@@ -146,7 +146,7 @@ func exportRecordingFile(ctx context.Context, client agentpbv2.DataServiceClient
 		}
 		_, err = client.AcknowledgeRecordingExport(ctx, &agentpbv2.DataRecordingExportAckRequest{AppId: req.AppId, Service: req.Service, Stream: req.Stream, Checkpoint: tokens[0]})
 		if err != nil {
-			return count, fmt.Errorf("export saved to %s, but reclamation acknowledgement failed: %w", output, err)
+			return count, fmt.Errorf("export saved to %s, but reclamation acknowledgement failed: %w", absDisplayPath(output), err)
 		}
 	}
 	return count, nil

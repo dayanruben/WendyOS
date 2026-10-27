@@ -199,8 +199,8 @@ func shortRevision(revision string) string {
 	return revision
 }
 
-func withDataClient(ctx context.Context, fn func(agentpbv2.DataServiceClient) error) error {
-	conn, err := connectToAgent(ctx)
+func withDataClient(ctx context.Context, fn func(agentpbv2.DataServiceClient) error, opts ...resolveOption) error {
+	conn, err := connectToAgent(ctx, opts...)
 	if err != nil {
 		return err
 	}
@@ -458,9 +458,17 @@ func newDataEpisodesCmd() *cobra.Command {
 }
 
 func newDataInspectCmd() *cobra.Command {
-	return &cobra.Command{Use: "inspect <episode>", Short: "Inspect and verify an episode manifest", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	var nonInteractive bool
+	c := &cobra.Command{Use: "inspect [episode]", Short: "Inspect and verify an episode manifest", Long: "Print an episode's manifest and verify its checksums. Without an episode ID, select one of the device's episodes, newest first.\nNon-interactive and --json invocations require an explicit episode ID.", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if e := requireEpisodeArg(args, episodePickerAllowed(nonInteractive), "inspect"); e != nil {
+			return e
+		}
 		return withDataClient(cmd.Context(), func(c agentpbv2.DataServiceClient) error {
-			r, e := c.Inspect(cmd.Context(), &agentpbv2.DataInspectRequest{Episode: args[0], Verify: true})
+			id, ok, e := resolveEpisodeArg(cmd.Context(), c, args, cmd.OutOrStdout(), "Select an episode to inspect")
+			if e != nil || !ok {
+				return e
+			}
+			r, e := c.Inspect(cmd.Context(), &agentpbv2.DataInspectRequest{Episode: id, Verify: true})
 			if e != nil {
 				return e
 			}
@@ -477,8 +485,10 @@ func newDataInspectCmd() *cobra.Command {
 				return fmt.Errorf("episode verification failed: %s", strings.Join(r.GetVerificationErrors(), "; "))
 			}
 			return nil
-		})
+		}, dataDialOptions(nonInteractive)...)
 	}}
+	c.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Disable terminal prompts; pass the episode ID instead of picking one")
+	return c
 }
 
 type inspectionManifest struct {
@@ -613,6 +623,17 @@ func downloadDestination(id, output string) (destination, stage string) {
 	return destination, destination + ".partial"
 }
 
+// absDisplayPath is how a data command names a local path it wrote. The
+// default download destination is the episode ID itself, so a relative path
+// printed "Downloaded <id> to <id>" and never said where that was. The path is
+// returned unchanged when the working directory cannot be read.
+func absDisplayPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
+}
+
 // dataDownloadResult is the --json payload of "wendy data download". Unlike
 // every other data subcommand this one reports what it wrote to the local
 // filesystem, which no wire message describes, so it is a command-shaped struct
@@ -627,13 +648,33 @@ type dataDownloadResult struct {
 
 func newDataDownloadCmd() *cobra.Command {
 	var output string
-	c := &cobra.Command{Use: "download <episode>", Short: "Resume and verify an episode download", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		id := args[0]
-		destination, stage := downloadDestination(id, output)
-		if _, e := os.Stat(destination); e == nil {
-			return fmt.Errorf("destination already exists: %s", destination)
+	var nonInteractive bool
+	c := &cobra.Command{Use: "download [episode]", Short: "Resume and verify an episode download", Long: "Download an episode into a new local directory, resuming an interrupted transfer and verifying every file. Without an episode ID, select one of the device's episodes, newest first.\nNon-interactive and --json invocations require an explicit episode ID.", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if e := requireEpisodeArg(args, episodePickerAllowed(nonInteractive), "download"); e != nil {
+			return e
+		}
+		freeDestination := func(id string) (destination, stage string, err error) {
+			destination, stage = downloadDestination(id, output)
+			if _, e := os.Stat(destination); e == nil {
+				return "", "", fmt.Errorf("destination already exists: %s", absDisplayPath(destination))
+			}
+			return destination, stage, nil
+		}
+		// A named episode is still refused before the device is dialed.
+		if len(args) > 0 {
+			if _, _, e := freeDestination(args[0]); e != nil {
+				return e
+			}
 		}
 		return withDataClient(cmd.Context(), func(client agentpbv2.DataServiceClient) error {
+			id, ok, e := resolveEpisodeArg(cmd.Context(), client, args, cmd.OutOrStdout(), "Select an episode to download")
+			if e != nil || !ok {
+				return e
+			}
+			destination, stage, e := freeDestination(id)
+			if e != nil {
+				return e
+			}
 			inspect, e := client.Inspect(cmd.Context(), &agentpbv2.DataInspectRequest{Episode: id})
 			if e != nil {
 				return e
@@ -664,11 +705,12 @@ func newDataDownloadCmd() *cobra.Command {
 			if jsonOutput {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Downloaded %s to %s\n", id, destination)
+			fmt.Fprintf(cmd.OutOrStdout(), "Downloaded %s to %s\n", id, absDisplayPath(destination))
 			return nil
-		})
+		}, dataDialOptions(nonInteractive)...)
 	}}
 	c.Flags().StringVarP(&output, "output", "o", "", "Destination directory (default episode ID)")
+	c.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Disable terminal prompts; pass the episode ID instead of picking one")
 	return c
 }
 
