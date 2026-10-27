@@ -77,6 +77,7 @@ func acceleratorSnapshot(status *data.AcceleratorStatus, now time.Time) *data.Ac
 	}
 	if status.Engine != nil {
 		engine := *status.Engine
+		engine.Warnings = append([]string(nil), status.Engine.Warnings...)
 		if started, err := time.Parse(time.RFC3339, engine.StartedAt); err == nil && engine.State == "building" {
 			engine.ElapsedSeconds = math.Round(now.Sub(started).Seconds())
 		}

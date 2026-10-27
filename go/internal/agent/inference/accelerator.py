@@ -19,6 +19,7 @@ import fcntl
 import hashlib
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,22 @@ TOMBSTONE_SECONDS = 24 * 3600
 # Status and throughput go to the agent at least this often.
 STATUS_SECONDS = 10
 
+# When an auto campaign needs an engine built, the build starts after a random
+# delay of up to this long. An agent update restarts every campaign on every
+# device at once, and with no engine cached each would otherwise start a build
+# of about 14 minutes and 2.2 GB the moment it came back. The CPU detects
+# meanwhile, so the delay costs speed, never detections. A tensorrt campaign
+# scores nothing until its engine is ready, so it builds at once.
+BUILD_JITTER_SECONDS = 20 * 60
+# A build starts only while other processes use at most this fraction of the
+# device's CPU time, sampled over CPU_SAMPLE_SECONDS. The worker's own CPU
+# inference does not count: it is what the engine replaces, so counting it
+# would keep the busiest campaigns on the CPU for good.
+BUILD_MAX_CPU_BUSY = 0.5
+CPU_SAMPLE_SECONDS = 5
+# How long to wait before checking the CPU again.
+CPU_RETRY_SECONDS = 120
+
 # Why an auto campaign is on the CPU while its engine is on its way. Not
 # degraded: the engine is coming.
 NOT_READY = "the TensorRT engine is not ready yet"
@@ -68,13 +85,23 @@ MAX_PLAN_BYTES = 1 << 30
 # What the child reports when a build had to wait for memory.
 EXIT_WAITING_FOR_MEMORY = 3
 
+# The TensorRT messages that are logged: TensorRT's ILogger.Severity runs 0
+# internal error, 1 error, 2 warning, 3 info, 4 verbose. Info and verbose are
+# for debugging TensorRT itself, and a build emits thousands of them.
+TENSORRT_LOG_SEVERITY = 2
+
+# Engine status fields that describe one state only. They go when the state
+# changes, so a ready engine does not keep the start time of its build.
+TRANSIENT_ENGINE_FIELDS = ("error", "started_at", "started", "not_before")
+
 
 class EngineError(Exception):
     """An engine could not be loaded, built or run."""
 
 
-def utc_now():
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def utc_now(after=0):
+    moment = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=after)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def available_mib():
@@ -90,9 +117,96 @@ def available_mib():
     return None
 
 
+def rss_mib():
+    """This process's resident memory in MiB, or None off Linux."""
+    try:
+        with open("/proc/self/status") as status:
+            for line in status:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        return None
+    return None
+
+
+def cpu_times():
+    """(busy, total) clock ticks of all CPUs since boot, and this process's
+    own busy ticks, or None off Linux. /proc/stat and /proc/self/stat both
+    count in USER_HZ ticks."""
+    try:
+        with open("/proc/stat") as stat:
+            fields = stat.readline().split()
+        with open("/proc/self/stat") as stat:
+            own = stat.read()
+    except OSError:
+        return None
+    if not fields or fields[0] != "cpu":
+        return None
+    # user nice system idle iowait irq softirq steal; guest time is already
+    # inside user and nice.
+    values = [int(value) for value in fields[1:9]]
+    idle = values[3] + values[4]
+    # The process name, in parentheses, may hold spaces: fields count from the
+    # last parenthesis. utime and stime are fields 14 and 15.
+    after_name = own[own.rindex(")") + 2:].split()
+    return sum(values) - idle, sum(values), int(after_name[11]) + int(after_name[12])
+
+
 def short(text, limit=300):
     text = str(text)
     return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def claim_stdout():
+    """Gives the protocol its own descriptor and points fd 1 at stderr.
+    Returns the protocol's file.
+
+    stdout is the agent's JSON channel, and the agent ends a worker on any
+    line that is not JSON. Native libraries do not know that: TensorRT's
+    default logger, CUDA and other C or C++ code write to fd 1 directly,
+    below sys.stdout. After a reboot TensorRT printed a warning there while
+    loading the cached engine, and the agent killed the worker every few
+    seconds, with no detections at all. After this call nothing but the
+    protocol can write to the channel: anything else written to fd 1, from
+    C, C++ or a stray print, lands on stderr, which the agent keeps as the
+    worker's diagnostics.
+
+    Call it first, before onnxruntime, TensorRT or CUDA is imported. The
+    duplicate is not inherited (PEP 446), so a child process cannot write to
+    the channel either."""
+    sys.stdout.flush()
+    channel = os.dup(1)
+    os.dup2(2, 1)
+    return os.fdopen(channel, "w", encoding="utf-8")
+
+
+def tensorrt_logger(trt):
+    """A TensorRT logger that writes warnings and errors to stderr, labelled
+    as TensorRT's own logger labels them, and keeps the last few for the
+    status. TensorRT's built-in trt.Logger prints to stdout.
+
+    Keep it referenced for as long as the builder or runtime it was given to
+    lives: TensorRT holds only a pointer to it."""
+
+    class StderrLogger(trt.ILogger):
+        def __init__(self):
+            trt.ILogger.__init__(self)
+            self.recent = deque(maxlen=4)
+
+        def log(self, severity, msg):
+            # TensorRT calls this from C++, where an exception would abort
+            # the process: a logger must never raise.
+            try:
+                level = int(getattr(severity, "value", severity))
+                if level > TENSORRT_LOG_SEVERITY:
+                    return
+                label = "FEWIV"[level] if 0 <= level < 5 else str(level)
+                self.recent.append(short(msg, 300))
+                print(f"[TRT] [{label}] {msg}", file=sys.stderr, flush=True)
+            except Exception:
+                pass
+
+    return StderrLogger()
 
 
 # ---------------------------------------------------------------------------
@@ -362,9 +476,12 @@ class TensorRTEngine:
         self.trt, self.cuda, self.np = trt, cuda, np
         self.runtime = f"TensorRT {trt.__version__}"
         self.buffers, self.stream = [], None
-        logger = trt.Logger(trt.Logger.WARNING)
-        self.trt_runtime = trt.Runtime(logger)
+        self.logger = tensorrt_logger(trt)
+        self.trt_runtime = trt.Runtime(self.logger)
         self.engine = self.trt_runtime.deserialize_cuda_engine(plan)
+        # What TensorRT warned about while loading, such as a plan it thinks
+        # was built on "a different model of device". Reported in the status.
+        self.warnings = list(self.logger.recent)
         if self.engine is None:
             raise EngineError("TensorRT could not deserialize the engine plan")
         try:
@@ -524,6 +641,10 @@ class Accelerator:
         self.latencies = deque(maxlen=256)
         self.scored = deque(maxlen=512)
         self.count = 0
+        # Whether this worker already waited out its build delay.
+        self.staggered = False
+        # What importing TensorRT and opening CUDA took, as a growth() pair.
+        self.import_cost = (0.0, 0.0)
         self.state = plan_status(self.plan, cpu.runtime, cpu.precision)
         self.state["model_sha256"] = model["sha256"]
         if self.strict:
@@ -597,7 +718,8 @@ class Accelerator:
             if engine is not None:
                 current = self.state.setdefault("engine", {})
                 if engine.get("state", current.get("state")) != current.get("state"):
-                    current.pop("error", None)
+                    for field in TRANSIENT_ENGINE_FIELDS:
+                        current.pop(field, None)
                 current.update(engine)
         self.report()
 
@@ -671,6 +793,28 @@ class Accelerator:
     def available_mib(self):
         return available_mib()
 
+    def memory_sample(self):
+        """(MemAvailable, this process's RSS), in MiB, either None off Linux."""
+        return available_mib(), rss_mib()
+
+    def cpu_busy(self):
+        """The fraction of all CPU time that other processes used over the
+        next CPU_SAMPLE_SECONDS, or None when unknown or stopping."""
+        try:
+            first = cpu_times()
+            if first is None or not self.wait(CPU_SAMPLE_SECONDS):
+                return None
+            second = cpu_times()
+        except (OSError, ValueError, IndexError):
+            return None
+        if second is None or second[1] <= first[1]:
+            return None
+        others = (second[0] - first[0]) - (second[2] - first[2])
+        return max(0.0, others) / (second[1] - first[1])
+
+    def build_delay(self):
+        return random.uniform(0, BUILD_JITTER_SECONDS)
+
     def load_engine(self, trt, cuda, plan):
         return TensorRTEngine(trt, cuda, plan, self.model["input_shape"], self.model["output_shape"])
 
@@ -678,7 +822,50 @@ class Accelerator:
         noise = self.np.random.default_rng(0).random(tuple(self.model["input_shape"]), dtype=self.np.float32)
         return list(self.frames) + [noise]
 
+    # -- memory ---------------------------------------------------------------
+    #
+    # What the accelerated path costs the device, which is what its budget
+    # holds it to. On a Jetson the GPU has no memory of its own: CUDA and
+    # TensorRT allocate from the same RAM as every process, so the cost is
+    # measured as RAM, two ways, because each misses something:
+    #
+    #  - The drop in MemAvailable. It sees the GPU's allocations, the CUDA
+    #    context and the engine's memory, which the GPU driver allocates and
+    #    a process's RSS need not count. It does not see library code read
+    #    from disk, which the kernel counts as available page cache.
+    #  - The growth of this process's RSS. It sees TensorRT's and CUDA's
+    #    libraries and their heap, and not the GPU's allocations.
+    #
+    # The cost is the larger of the two, and never less than the engine's own
+    # plan and activations. Both are measured over two short windows and
+    # added: importing TensorRT and opening CUDA, then loading the engine,
+    # with the CUDA context in it. A build can run between the two for many
+    # minutes, while other apps allocate and free, and it is not counted.
+    #
+    # Measuring the load alone, as before, left out the import and most of the
+    # context. On a Jetson Orin Nano it reported 47 to 88 MiB, while the
+    # TensorRT worker's RSS was 885 MB against 238 MB for a CPU-only one, and
+    # free memory fell by about 900 MiB.
+
+    @staticmethod
+    def growth(before, after):
+        """(MemAvailable drop, RSS growth) between two samples, in MiB, never
+        negative; None for a measure the system lacks."""
+        (available_before, rss_before), (available_after, rss_after) = before, after
+        drop = None if available_before is None or available_after is None else max(0.0, available_before - available_after)
+        grew = None if rss_before is None or rss_after is None else max(0.0, rss_after - rss_before)
+        return drop, grew
+
+    def memory_cost(self, loaded, engine_bytes):
+        """The accelerated path's cost in MiB, from the import window, the load
+        window and the engine's own size."""
+        drop = sum(window[0] or 0 for window in (self.import_cost, loaded))
+        grew = sum(window[1] or 0 for window in (self.import_cost, loaded))
+        return max(drop, grew, engine_bytes / (1 << 20))
+
     def accelerate(self):
+        # Taken before TensorRT or CUDA is in the process: see memory_cost.
+        baseline = self.memory_sample()
         try:
             trt = self.import_tensorrt()
         except Exception as exc:
@@ -691,6 +878,8 @@ class Accelerator:
             cuda.reset()
         except Exception as exc:
             return self.fall_back(f"CUDA is unavailable ({short(exc, 200)})")
+        # What stays after the reset: the libraries and the driver's state.
+        self.import_cost = self.growth(baseline, self.memory_sample())
         plan = self.tensorrt_plan
         fields = key_fields(self.model["sha256"], trt.__version__, plan.get("library", ""), cuda_version,
                             gpu_arch, self.model["input_shape"], self.model["output_shape"], plan["workspace_mib"])
@@ -750,9 +939,8 @@ class Accelerator:
         self.update(degraded=False, reason=NOT_READY,
                     engine={"state": "verifying", "cached": cached, "plan_bytes": record["plan_bytes"],
                             "build_seconds": record.get("build_seconds", 0)})
-        # Measured across the CUDA context and the engine together: on a
-        # Jetson the GPU allocates from the memory MemAvailable counts.
-        before = self.available_mib()
+        # The second memory window: the CUDA context and the engine.
+        before = self.memory_sample()
         try:
             self.cuda = self.open_cuda()
             gpu = self.load_engine(trt, self.cuda, engine_plan)
@@ -763,13 +951,17 @@ class Accelerator:
                 return "retry"
             self.fall_back(f"the TensorRT engine did not load ({short(exc, 200)})")
             return "failed"
-        after = self.available_mib()
-        measured = max(0, before - after) if before is not None and after is not None else 0
-        used = max(measured, (gpu.device_bytes() + record["plan_bytes"]) / (1 << 20))
+        used = self.memory_cost(self.growth(before, self.memory_sample()),
+                                gpu.device_bytes() + record["plan_bytes"])
         with self.lock:
             self.gpu = gpu
+        # Such as "Using an engine plan file across different models of
+        # devices", which TensorRT prints after a reboot. The parity check
+        # below decides whether the engine is still right.
+        self.update(engine={"warnings": list(getattr(gpu, "warnings", []))})
         if used > budget:
-            self.fall_back(f"the TensorRT engine took {used:.0f} MiB, over its {budget} MiB budget")
+            self.fall_back(f"the TensorRT engine took {used:.0f} MiB with TensorRT and its CUDA context, "
+                           f"over its {budget} MiB budget")
             return "failed"
         self.update(gpu_memory_mib=round(used, 1))
         if not self.frames:
@@ -797,12 +989,29 @@ class Accelerator:
 
     def build(self, key, fields, discard=None):
         """Builds the engine in a child process. (outcome, detail): outcome is
-        done, failed, waiting_for_memory or stopped."""
+        done, failed, waiting_for_memory, waiting_for_cpu or stopped.
+
+        A build costs minutes and gigabytes, so it waits for its turn: after
+        a random delay on auto (BUILD_JITTER_SECONDS), then until the device
+        has the memory and the CPU to spare. The CPU scores meanwhile."""
         plan = self.tensorrt_plan
+        if not self.strict and not self.staggered:
+            self.staggered = True
+            delay = self.build_delay()
+            if delay > 0:
+                self.update(degraded=False, reason=NOT_READY,
+                            engine={"state": "scheduled", "not_before": utc_now(after=delay)})
+                if not self.wait(delay):
+                    return "stopped", ""
         minimum = plan["build_min_available_mib"]
         available = self.available_mib()
         if available is not None and available < minimum:
             return self.wait_for_memory(available, minimum)
+        busy = self.cpu_busy()
+        if self.stopped.is_set():
+            return "stopped", ""
+        if busy is not None and busy > BUILD_MAX_CPU_BUSY:
+            return self.wait_for_cpu(busy)
         job = {"key": key, "fields": fields, "model_path": self.model["path"], "bindings": plan["bindings"],
                "engine_dir": plan["engine_dir"], "workspace_mib": plan["workspace_mib"],
                "build_min_available_mib": minimum, "discard_plan_sha256": discard}
@@ -815,6 +1024,17 @@ class Accelerator:
                     engine={"state": "waiting_for_memory",
                             "error": f"{available} MiB of memory is available; a build needs {minimum} MiB"})
         return ("waiting_for_memory", "") if self.wait(MEMORY_RETRY_SECONDS) else ("stopped", "")
+
+    def wait_for_cpu(self, busy):
+        # Degraded, like a wait for memory: a device that stays this busy never
+        # gets its engine. The reason stays the same from one retry to the
+        # next, so it is logged once.
+        self.update(degraded=True, reason=f"the CPU is too busy to build the TensorRT engine; "
+                    f"retrying every {CPU_RETRY_SECONDS // 60 or 1} minutes",
+                    engine={"state": "waiting_for_cpu",
+                            "error": f"other processes use {busy:.0%} of the CPU; "
+                                     f"a build starts at {BUILD_MAX_CPU_BUSY:.0%} or less"})
+        return ("waiting_for_cpu", "") if self.wait(CPU_RETRY_SECONDS) else ("stopped", "")
 
     def run_builder(self, job, timeout):
         """Runs accelerator.py --build-engine. The child takes the device-wide
@@ -881,7 +1101,7 @@ def _exit_with(parent):
 
 
 def build_plan(trt, model, workspace_mib):
-    logger = trt.Logger(trt.Logger.WARNING)
+    logger = tensorrt_logger(trt)
     builder = trt.Builder(logger)
     network = builder.create_network(0)
     parser = trt.OnnxParser(network, logger)
@@ -960,5 +1180,6 @@ def build_main(stdin=None, stdout=None):
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--build-engine"]:
-        sys.exit(build_main())
+        # The worker reads this process's stdout as JSON too.
+        sys.exit(build_main(stdout=claim_stdout()))
     sys.exit("usage: accelerator.py --build-engine < job.json")

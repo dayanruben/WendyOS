@@ -79,10 +79,16 @@ const (
 	// the device into the OOM killer. The Jetson's GPU shares this memory.
 	tensorRTBuildMinAvailableMiB = 3072
 
-	// tensorRTGPUBudgetMiB is the most a loaded engine may take: the CUDA
-	// context, the plan and its activations. Over it the campaign falls back
-	// to the CPU, reported as degraded. yolo11n is far below it.
-	tensorRTGPUBudgetMiB = 1024
+	// tensorRTGPUBudgetMiB is the most the accelerated path may take: the
+	// TensorRT and CUDA libraries the worker imports, the CUDA context, the
+	// plan and its activations. Over it the campaign falls back to the CPU,
+	// reported as degraded. The worker measures it as described above
+	// memory_cost in accelerator.py. On 2026-10-27 yolo11n on a Jetson Orin
+	// Nano 8 GB (JetPack 7.2, TensorRT 10.16.2) took about 900 MiB of free
+	// memory, and its worker's RSS was 885 MB against 238 MB for a CPU-only
+	// worker. 1.5 GiB is that plus room for other apps that allocate during
+	// the measurement.
+	tensorRTGPUBudgetMiB = 1536
 
 	// tensorRTBuildTimeout ends a build that hangs. The measured build took
 	// 655 s; the timeout leaves room for a slower power mode.
@@ -92,7 +98,75 @@ const (
 	// before it is tried again, so an offline device or a bad mirror costs
 	// one request per interval rather than one per worker start.
 	tensorRTBindingsRetry = 10 * time.Minute
+
+	// A model whose TensorRT worker exits tensorRTCrashLimit times within
+	// tensorRTCrashWindow, without being asked to and without reporting an
+	// error of its own, gets no TensorRT for tensorRTCrashHold: an auto
+	// campaign runs on the CPU, reported as degraded with the last exit's
+	// stderr, and a tensorrt campaign reports that as its error. Before, a
+	// worker that TensorRT crashed after every reboot was restarted every 8 s
+	// and detected nothing at all. After the hold, TensorRT is tried again.
+	tensorRTCrashLimit  = 3
+	tensorRTCrashWindow = 10 * time.Minute
+	tensorRTCrashHold   = time.Hour
 )
+
+// timeNow is behind a var for tests.
+var timeNow = time.Now
+
+// tensorRTCrashes are one model's recent unasked exits of TensorRT workers.
+type tensorRTCrashes struct {
+	exits []time.Time
+	// last is the last exit's reason, with the tail of its stderr.
+	last string
+	// until is when TensorRT is offered again, after held exits.
+	until time.Time
+	held  int
+}
+
+// tensorRTCrashKey names what a crash is held against: the model, and so
+// the engine. Labels, rate and threshold do not change the engine.
+func tensorRTCrashKey(config data.CampaignInference) string {
+	return config.Backend + "\x00" + config.Model + "\x00" + config.Revision + "\x00" + config.ModelFile
+}
+
+// workerCrashed records an unasked exit of a worker offered TensorRT.
+func (f *ManagedFactory) workerCrashed(key, reason string) {
+	now := timeNow()
+	f.crashMu.Lock()
+	defer f.crashMu.Unlock()
+	if f.crashes == nil {
+		f.crashes = map[string]*tensorRTCrashes{}
+	}
+	record := f.crashes[key]
+	if record == nil {
+		record = &tensorRTCrashes{}
+		f.crashes[key] = record
+	}
+	recent := record.exits[:0]
+	for _, at := range record.exits {
+		if now.Sub(at) < tensorRTCrashWindow {
+			recent = append(recent, at)
+		}
+	}
+	record.exits, record.last = append(recent, now), reason
+	if len(record.exits) >= tensorRTCrashLimit {
+		record.until, record.held, record.exits = now.Add(tensorRTCrashHold), len(record.exits), nil
+	}
+}
+
+// tensorRTHeldOff says why a model gets no TensorRT now, or "". The reason
+// is the same at every start during the hold, so the agent logs it once.
+func (f *ManagedFactory) tensorRTHeldOff(key string) string {
+	f.crashMu.Lock()
+	defer f.crashMu.Unlock()
+	record := f.crashes[key]
+	if record == nil || !timeNow().Before(record.until) {
+		return ""
+	}
+	return fmt.Sprintf("the TensorRT worker exited %d times within %d minutes, so TensorRT is off for this model until %s; last exit: %s",
+		record.held, int(tensorRTCrashWindow/time.Minute), record.until.UTC().Format(time.RFC3339), record.last)
+}
 
 // tensorRTBinding pins NVIDIA's Python bindings for one TensorRT version.
 // They are a 846 KB Debian package for exactly the TensorRT in the image and
@@ -226,6 +300,12 @@ func (f *ManagedFactory) acceleratorPlan(ctx context.Context, root string, confi
 		library = hostTensorRTVersion()
 	}
 	plan, binding := planAccelerator(config, hardware, library)
+	if binding != nil {
+		if held := f.tensorRTHeldOff(tensorRTCrashKey(config)); held != "" {
+			plan.Candidates, plan.Degraded, plan.Reason = []string{data.AcceleratorCPU}, true, held
+			binding = nil
+		}
+	}
 	if binding != nil {
 		bindings, err := f.tensorRTBindings(ctx, root, *binding)
 		if err != nil {

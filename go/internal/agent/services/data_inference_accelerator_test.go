@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -110,5 +111,97 @@ func TestInferenceHardwareIsDeviceInfo(t *testing.T) {
 	info := detectGPUInfo()
 	if hardware.GPUVendor != info.vendor || hardware.CUDAVersion != info.cudaVersion || hardware.GPUArch != info.gpuArch {
 		t.Fatalf("inference hardware %+v differs from device info %+v", hardware, info)
+	}
+}
+
+// scriptedFactory fails or starts a session, step by step; once out of steps
+// it starts sessions that stay up. No step runs before gate is closed.
+type scriptedFactory struct {
+	gate    chan struct{}
+	mu      sync.Mutex
+	steps   []any // an error, or an *inferenceTestSession
+	started chan *inferenceTestSession
+}
+
+func newTestSession() *inferenceTestSession {
+	return &inferenceTestSession{results: make(chan inference.Result, 16), inputs: make(chan inference.Input, 16), closed: make(chan struct{})}
+}
+
+func (f *scriptedFactory) Start(ctx context.Context, _ data.CampaignInference) (inference.Session, error) {
+	select {
+	case <-f.gate:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	session := newTestSession()
+	if len(f.steps) > 0 {
+		step := f.steps[0]
+		f.steps = f.steps[1:]
+		if err, ok := step.(error); ok {
+			return nil, err
+		}
+		session = step.(*inferenceTestSession)
+	}
+	select {
+	case f.started <- session:
+	default:
+	}
+	return session, nil
+}
+
+// A tensorrt campaign on a device without TensorRT cannot start, and was
+// logged every 5 s. Each reason is logged once now. A worker that dies after
+// it started is logged every time, with the tail of its stderr, which before
+// was lost, and its status says the same.
+func TestInferenceLogsStartFailuresOnceAndExitsWithTheirStderr(t *testing.T) {
+	previous := inferenceRetryDelay
+	inferenceRetryDelay = 5 * time.Millisecond
+	t.Cleanup(func() { inferenceRetryDelay = previous })
+	unavailable := errors.New("accelerator tensorrt is unavailable: this device has an NVIDIA GPU but no TensorRT libraries")
+	unfetched := errors.New("accelerator tensorrt is unavailable: the TensorRT Python bindings 10.16.2.10 are not on this device and could not be fetched")
+	exit := "model process exited: exit status 1; stderr: Traceback (most recent call last): | RuntimeError: CUDA error 999"
+	crashed := newTestSession()
+	crashed.err = errors.New(exit)
+	close(crashed.results)
+	factory := &scriptedFactory{gate: make(chan struct{}), started: make(chan *inferenceTestSession, 8),
+		steps: []any{unavailable, unavailable, unavailable, unavailable, unfetched, unfetched, unfetched, crashed}}
+
+	logged := &warnings{}
+	var service *DataService
+	exitStatus := make(chan *data.InferenceStatus, 1)
+	warn := func(message string) {
+		logged.add(message)
+		if strings.Contains(message, "RuntimeError: CUDA error 999") {
+			// The status as the supervisor left it when it logged the exit.
+			campaign, err := service.manager.Campaign("people-all-cameras")
+			if err == nil {
+				select {
+				case exitStatus <- service.inference.snapshot(campaign.Name, campaign.Revision):
+				default:
+				}
+			}
+		}
+	}
+	service, _, _ = startInferenceTestService(t, factory, warn, true)
+	close(factory.gate) // After service is set, for warn.
+	if session := receiveInference(t, factory.started); session != crashed {
+		t.Fatal("the crashing session was not the first to start")
+	}
+	receiveInference(t, factory.started) // The replacement, which stays up.
+
+	if n := logged.matching("no TensorRT libraries; retrying every 5ms, logged again when the reason changes"); n != 1 {
+		t.Fatalf("unavailable logged %d times: %q", n, logged.messages)
+	}
+	if n := logged.matching("could not be fetched; retrying every"); n != 1 {
+		t.Fatalf("unfetched logged %d times: %q", n, logged.messages)
+	}
+	if n := logged.matching(`campaign "people-all-cameras" inference: ` + exit + "; retrying in 5ms"); n != 1 {
+		t.Fatalf("exit logged %d times: %q", n, logged.messages)
+	}
+	status := receiveInference(t, exitStatus)
+	if status.State != "error" || status.Error != exit {
+		t.Fatalf("status at exit %+v", status)
 	}
 }

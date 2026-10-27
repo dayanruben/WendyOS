@@ -159,7 +159,10 @@ On a Jetson, `auto` runs a `yolo_onnx` model through TensorRT on the GPU, and
 every other device or backend runs on the CPU. The first TensorRT start builds
 an engine in the background, which takes minutes and about 2.2 GB of memory;
 `auto` keeps detecting on the CPU meanwhile and switches once the engine
-matches the CPU's detections. `tensorrt` never runs on the CPU and requires
+matches the CPU's detections. Under `auto` the build first waits a random
+delay of up to 20 minutes, and every build waits for free memory and an idle
+CPU, so `engine.state` may read `scheduled`, `waiting_for_memory` or
+`waiting_for_cpu` for a while. `tensorrt` never runs on the CPU and requires
 `backend: yolo_onnx`. Check `inference_status.accelerator`: `active` is what
 runs, `engine.state` is the build, and `degraded: true` with a `reason` means a
 usable GPU is not being used. Do not promise GPU speed until `active` is

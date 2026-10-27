@@ -407,31 +407,53 @@ never scores on the CPU: if TensorRT is unavailable the campaign reports
   its inference directory. The TensorRT and CUDA libraries come from the
   WendyOS image.
 - **The engine.** The device builds a TensorRT engine for the model in the
-  background, at FP16; for `yolo11n` on a Jetson Orin Nano this took about 11
-  minutes and about 2.2 GB of memory. A build starts only when 3 GiB of
-  memory is available; otherwise it is retried every 2 minutes, and the
-  campaign reports itself degraded until then. Under `auto` the model keeps
-  detecting on the CPU meanwhile. The engine is cached and reused across
-  restarts and reboots, with no network, until the model, TensorRT version or
-  GPU changes.
+  background, at FP16; for `yolo11n` on a Jetson Orin Nano this took 11 to 14
+  minutes and about 2.2 GB of memory. Under `auto` the model keeps detecting
+  on the CPU meanwhile. The engine is cached and reused across restarts and
+  reboots, with no network, until the model, TensorRT version or GPU changes.
+- **When a build starts.** Under `auto`, the first build waits a random delay
+  of up to 20 minutes (`engine.state: scheduled`, with `not_before`), so that
+  devices updated together do not all build at once. Every build then waits
+  until 3 GiB of memory is available (`waiting_for_memory`) and other
+  processes use at most half of the CPU (`waiting_for_cpu`), checking again
+  every 2 minutes; the campaign reports itself degraded while it waits for
+  either. A `tensorrt` campaign scores nothing until its engine is ready, so
+  it skips the delay.
 - **The switch.** Before replacing the CPU, the engine must find the same
   detections as the CPU on the same camera frames: same labels, IoU of at
   least 0.8, and scores within 0.05.
 - **Fallback.** If the bindings cannot be fetched, the build fails, the engine
-  disagrees with the CPU, or it needs more than 1 GiB of memory, an `auto`
-  campaign stays on the CPU. It is never silent: on a device with a usable GPU,
-  `inference_status.accelerator.degraded` is `true` with a `reason`, and the
-  agent logs a warning. A failed build is not retried for 24 hours unless the
-  model changes.
+  disagrees with the CPU, or the accelerated path needs more than 1.5 GiB of
+  memory (TensorRT's libraries, the CUDA context and the engine together), an
+  `auto` campaign stays on the CPU. It is never silent: on a device with a
+  usable GPU, `inference_status.accelerator.degraded` is `true` with a
+  `reason`, and the agent logs a warning. A failed build is not retried for
+  24 hours unless the model changes.
+- **A worker that keeps crashing.** If the model process exits three times
+  within 10 minutes while it has TensorRT, without being asked to and without
+  reporting an error of its own, the model gets no TensorRT for an hour: an
+  `auto` campaign detects on the CPU, degraded, and a `tensorrt` campaign
+  reports `error`. Either way the reason carries the end of the last
+  process's stderr. Whenever the model process exits, `inference_status.error`
+  and the agent log say why, with the end of its stderr.
 
 `inference_status.accelerator` reports what actually runs: `active` (`cpu` or
-`tensorrt`), `degraded` and `reason`, `runtime` and `precision`, and `engine`
-with its `state` (`checking`, `waiting_for_memory`, `queued`, `building` with
-`elapsed_seconds`, `verifying`, `ready` or `failed` with an `error`).
+`tensorrt`), `degraded` and `reason`, `runtime` and `precision`,
+`gpu_memory_mib` (what the accelerated path took, measured as described
+under Fallback), and `engine` with its `state` (`checking`, `scheduled`,
+`waiting_for_memory`, `waiting_for_cpu`, `queued`, `building` with
+`started_at` and `elapsed_seconds`, `verifying`, `ready` or `failed` with an
+`error`) and any `warnings` TensorRT printed while loading it.
 `inference_status.stats` reports `fps` and inference latency (`infer_ms_p50`,
 `infer_ms_p95`). Each `prediction` record carries `accelerator`, `precision`,
 `infer_ms` and `model_sha256`, because FP16 TensorRT scores differ slightly
 from FP32 CPU scores.
+
+The agent keeps what TensorRT needs in its inference directory: `accel/` holds
+the bindings, `engines/` the built engines (about 9 MB each for `yolo11n`),
+and `cuda-cache/` CUDA's cache of GPU code it compiled, which spares the next
+start compiling it again (about 172 MB with TensorRT on an Orin Nano, and
+never more than 512 MiB).
 
 See [the all-camera people example](https://github.com/wendylabsinc/WendyOS/tree/main/Examples/WendyDataPeople)
 for a complete campaign. Campaign revision hashing now uses revision schema 2,

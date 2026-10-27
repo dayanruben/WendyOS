@@ -535,7 +535,8 @@ class OfflineStartTests(unittest.TestCase):
         stdin = types.SimpleNamespace(buffer=types.SimpleNamespace(
             readline=lambda *limit: lines.pop(0) if lines else b""))
         emitted = []
-        with mock.patch("worker.emit", emitted.append), mock.patch("worker.sys.stdin", stdin):
+        with mock.patch("worker.emit", emitted.append), mock.patch("worker.sys.stdin", stdin), \
+                mock.patch("accelerator.claim_stdout", lambda: None):
             worker.main()
         ready = emitted[0]
         self.assertEqual(ready["type"], "ready")
@@ -555,12 +556,73 @@ class OfflineStartTests(unittest.TestCase):
         stdin = types.SimpleNamespace(buffer=types.SimpleNamespace(
             readline=lambda: json.dumps(self.config).encode()))
         with mock.patch("worker.emit", emitted.append), mock.patch("worker.sys.stdin", stdin), \
-                self.assertRaises(SystemExit) as exited:
+                mock.patch("accelerator.claim_stdout", lambda: None), self.assertRaises(SystemExit) as exited:
             worker.main()
         self.assertEqual(exited.exception.code, 1)
         self.assertEqual(len(emitted), 1)
         self.assertEqual(emitted[0]["type"], "error")
         self.assertIn("is not on this device and the network is unreachable", emitted[0]["error"])
+
+
+class ProtocolChannelTests(unittest.TestCase):
+    """The agent ends a worker on any stdout line that is not JSON. TensorRT
+    printed a warning to stdout while loading a cached engine after a reboot,
+    and the worker was killed every few seconds. Native code writing to fd 1,
+    before or after ready, must reach stderr and leave the protocol intact."""
+
+    # The real worker.main(), with a detector and an accelerator that write
+    # to fd 1 the ways native code and stray Python do.
+    SCRIPT = r'''
+import ctypes, os, sys
+sys.path.insert(0, sys.argv[1])
+import worker
+
+def noise(when):
+    os.write(1, b"[TRT] [W] write(2) to fd 1 " + when + b"\n")
+    libc = ctypes.CDLL(None)
+    libc.puts(b"[TRT] [W] C stdio to stdout " + when)
+    libc.fflush(None)
+    print("python print " + when.decode())
+
+class NoisyAccelerator:
+    def start(self):
+        # Where TensorRT loads a cached engine: after ready, in the background.
+        noise(b"after ready")
+        worker.emit({"type": "accelerator", "accelerator": {"active": "tensorrt"}})
+
+    def stop(self):
+        pass
+
+class NoisyDetector:
+    def __init__(self, config):
+        noise(b"before ready")
+        self.accelerator_status = {"active": "cpu"}
+        self.accelerator = NoisyAccelerator()
+
+worker.YOLODetector = NoisyDetector
+worker.main()
+'''
+
+    def test_native_output_on_stdout_goes_to_stderr(self):
+        import json
+        import os
+        import subprocess
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        config = {"backend": "yolo_onnx", "rate": 2}
+        # With stdin closed after the config line, run() returns and the worker exits.
+        worker = subprocess.run([sys.executable, "-u", "-c", self.SCRIPT, here],
+                                input=json.dumps(config).encode() + b"\n",
+                                capture_output=True, timeout=60)
+        self.assertEqual(worker.returncode, 0, worker.stderr.decode(errors="replace"))
+        lines = worker.stdout.decode().splitlines()
+        # Every line is protocol JSON, in order, and nothing else.
+        self.assertEqual([json.loads(line)["type"] for line in lines], ["ready", "accelerator"], lines)
+        stderr = worker.stderr.decode()
+        for when in ("before ready", "after ready"):
+            self.assertIn("[TRT] [W] write(2) to fd 1 " + when, stderr)
+            self.assertIn("[TRT] [W] C stdio to stdout " + when, stderr)
+            self.assertIn("python print " + when, stderr)
 
 
 if __name__ == "__main__":

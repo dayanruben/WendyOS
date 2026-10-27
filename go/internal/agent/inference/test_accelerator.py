@@ -1,7 +1,9 @@
 """Engine selection, the engine cache, the builder and the parity check, with
 TensorRT and CUDA replaced by fakes: no GPU is needed."""
 
+import contextlib
 import fcntl
+import io
 import json
 import os
 import pathlib
@@ -107,9 +109,10 @@ class CacheTests(unittest.TestCase):
 FAKE_TENSORRT = '''
 import os, time
 __version__ = "10.16.2.10"
-class Logger:
-    WARNING = 2
-    def __init__(self, severity=None): pass
+class ILogger:
+    class Severity:
+        INTERNAL_ERROR, ERROR, WARNING, INFO, VERBOSE = range(5)
+    def __init__(self): pass
 class MemoryPoolType: WORKSPACE = 0
 class BuilderFlag: FP16 = 1
 class OnnxParser:
@@ -122,10 +125,15 @@ class _Config:
     def set_memory_pool_limit(self, pool, size): self.workspace = size
     def set_flag(self, flag): self.flag = flag
 class Builder:
-    def __init__(self, logger): pass
+    def __init__(self, logger): self.logger = logger
     def create_network(self, flags): return object()
     def create_builder_config(self): return _Config()
     def build_serialized_network(self, network, config):
+        # What the real one does: talk through the logger, and print to fd 1
+        # from native code.
+        self.logger.log(ILogger.Severity.WARNING, "fake builder warning")
+        self.logger.log(ILogger.Severity.VERBOSE, "fake builder verbose detail")
+        os.write(1, b"[TRT] [W] native builder output on fd 1\\n")
         behaviour = os.environ.get("FAKE_TENSORRT_BUILD", "ok")
         if behaviour == "hang":
             print("hanging", flush=True)
@@ -134,8 +142,10 @@ class Builder:
             return None
         return b"plan:%d:%d" % (config.workspace >> 20, config.flag)
 class Runtime:
-    def __init__(self, logger): pass
+    def __init__(self, logger): self.logger = logger
     def deserialize_cuda_engine(self, plan):
+        self.logger.log(ILogger.Severity.WARNING, "Using an engine plan file across different models of devices "
+                        "is not supported and is likely to affect performance or even cause errors.")
         return object() if plan.startswith(b"plan:") else None
 '''
 
@@ -162,16 +172,16 @@ class BuilderTests(unittest.TestCase):
     def builder(self, behaviour="ok", job=None):
         env = dict(os.environ, FAKE_TENSORRT_BUILD=behaviour)
         child = subprocess.Popen([sys.executable, "-u", accelerator.__file__, "--build-engine"],
-                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         child.stdin.write(json.dumps(job or self.job).encode())
         child.stdin.close()
+        child.stdin = None  # Written and closed: communicate() must not flush it.
         return child
 
     def finish(self, child):
-        output = child.stdout.read()
-        child.stdout.close()
-        child.wait(timeout=30)
-        return child.returncode, [json.loads(line) for line in output.splitlines() if line.startswith(b"{")]
+        output, self.stderr = child.communicate(timeout=30)
+        # The worker reads every line the builder writes to stdout as JSON.
+        return child.returncode, [json.loads(line) for line in output.splitlines()]
 
     def test_build_promotes_a_verified_engine(self):
         code, messages = self.finish(self.builder())
@@ -217,12 +227,27 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(messages, [{"state": "done", "cached": True}])
 
+    def test_tensorrt_output_never_reaches_the_builder_channel(self):
+        code, messages = self.finish(self.builder())
+        self.assertEqual(code, 0)
+        self.assertEqual([m["state"] for m in messages], ["building", "done"])
+        stderr = self.stderr.decode()
+        # The builder's logger: TensorRT's warnings, labelled, on stderr; its
+        # verbose chatter nowhere.
+        self.assertIn("[TRT] [W] fake builder warning", stderr)
+        self.assertNotIn("verbose detail", stderr)
+        self.assertIn("[TRT] [W] Using an engine plan file across different models of devices", stderr)
+        # Native code writing to fd 1.
+        self.assertIn("native builder output on fd 1", stderr)
+
     def test_a_killed_builder_releases_the_lock(self):
         # The lock belongs to the builder process, so the kernel frees it with
         # the process: no crash, restart or backoff can keep the build slot.
         child = self.builder("hang")
         self.assertEqual(json.loads(child.stdout.readline())["state"], "building")
-        self.assertEqual(child.stdout.readline().strip(), b"hanging")
+        # The fake prints to stdout once it hangs, which lands on stderr.
+        while b"hanging" not in child.stderr.readline():
+            pass
         lock = os.open(self.engines / ".build.lock", os.O_RDWR)
         self.addCleanup(os.close, lock)
         with self.assertRaises(BlockingIOError):
@@ -230,6 +255,7 @@ class BuilderTests(unittest.TestCase):
         child.send_signal(signal.SIGKILL)
         child.wait(timeout=10)
         child.stdout.close()
+        child.stderr.close()
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.assertEqual(os.listdir(self.engines), [".build.lock"])
 
@@ -263,9 +289,10 @@ def decode(output, threshold=0.5):
 
 
 class FakeEngine:
-    def __init__(self, name, output, precision="fp32", runtime="fake", fail=False, device_bytes=0):
+    def __init__(self, name, output, precision="fp32", runtime="fake", fail=False, device_bytes=0, warnings=()):
         self.name, self.output, self.precision, self.runtime = name, output, precision, runtime
         self.fail, self.calls, self.closed, self._device_bytes = fail, 0, False, device_bytes
+        self.warnings = list(warnings)
 
     def infer(self, tensor):
         self.calls += 1
@@ -352,13 +379,30 @@ class FakeCuda:
 
 
 class ScriptedAccelerator(accelerator.Accelerator):
-    """The TensorRT, CUDA, memory and builder steps, scripted."""
+    """The TensorRT, CUDA, memory, CPU and builder steps, scripted.
 
-    def __init__(self, plan, cpu, model, gpu=None, memory=(8000,), build="done", import_error=None):
+    memory is MemAvailable for the build and load gates. samples are the
+    (MemAvailable, RSS) pairs memory_sample() reads, in order: before the
+    import, after it, before the load and after it. busy is the CPU use of
+    other processes, read once per build attempt; delay is the build delay."""
+
+    def __init__(self, plan, cpu, model, gpu=None, memory=(8000,), build="done", import_error=None,
+                 samples=((None, None),), busy=(None,), delay=0):
         self.emitted, self.exits = [], []
         super().__init__(plan, cpu, model, self.emitted.append, self.exits.append)
         self.gpu_engine, self.memory, self.build_outcome = gpu, list(memory), build
         self.import_error, self.jobs, self.loads, self.fake_cuda = import_error, [], [], FakeCuda()
+        self.samples, self.busy, self.delay, self.delays = list(samples), list(busy), delay, []
+
+    def memory_sample(self):
+        return self.samples.pop(0) if len(self.samples) > 1 else self.samples[0]
+
+    def cpu_busy(self):
+        return self.busy.pop(0) if len(self.busy) > 1 else self.busy[0]
+
+    def build_delay(self):
+        self.delays.append(self.delay)
+        return self.delay
 
     def import_tensorrt(self):
         if self.import_error:
@@ -399,9 +443,10 @@ class AcceleratorTests(unittest.TestCase):
         self.model = {"path": "/models/yolo11n.onnx", "sha256": "a" * 64, "input_shape": [1, 3, 64, 64],
                       "output_shape": [1, 6, 8], "threshold": 0.5, "decode": decode}
         self.tensor = np.zeros((1, 3, 64, 64), np.float32)
-        patcher = mock.patch.object(accelerator, "MEMORY_RETRY_SECONDS", 0)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name in ("MEMORY_RETRY_SECONDS", "CPU_RETRY_SECONDS"):
+            patcher = mock.patch.object(accelerator, name, 0)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def plan(self, requested="auto", **changes):
         candidates = ["tensorrt"] if requested == "tensorrt" else ["tensorrt", "cpu"]
@@ -601,6 +646,128 @@ class AcceleratorTests(unittest.TestCase):
         self.assertAlmostEqual(engine["elapsed_seconds"], 42, delta=1)
         self.assertNotIn("started", engine)
 
+    def engine_states(self, subject):
+        return [m["accelerator"]["engine"] for m in subject.emitted if m["accelerator"].get("engine")]
+
+    def test_build_start_time_goes_with_the_build(self):
+        # The hardware test found engine.started_at still in a ready status.
+        subject = self.accelerator()
+        builder = subject.run_builder
+
+        def run_builder(job, timeout):
+            subject.update(engine={"state": "building", "started_at": "2026-10-27T12:00:00Z",
+                                   "started": time.monotonic()})
+            return builder(job, timeout)
+        subject.run_builder = run_builder
+        subject.accelerate()
+        engine = subject.status()["engine"]
+        self.assertEqual(engine["state"], "ready")
+        self.assertNotIn("started_at", engine)
+        self.assertNotIn("elapsed_seconds", engine)
+        # What describes the engine itself stays.
+        self.assertEqual((engine["plan_bytes"], engine["build_seconds"]), (4, 3.0))
+        self.assertIn("2026-10-27T12:00:00Z", [e.get("started_at") for e in self.engine_states(subject)])
+
+    def test_memory_counts_the_tensorrt_import_and_the_cuda_context(self):
+        # MemAvailable falls 500 MiB over the import and 400 MiB over the load;
+        # RSS grows 462 + 185 MiB. Measuring the load alone said 400.
+        subject = self.accelerator(samples=((6000, 238), (5500, 700), (5500, 700), (5100, 885)))
+        subject.accelerate()
+        status = subject.status()
+        self.assertEqual(status["active"], "tensorrt")
+        self.assertEqual(status["gpu_memory_mib"], 900.0)
+
+    def test_rss_counts_where_memavailable_misses_it(self):
+        # Library pages read from disk count as available page cache, so only
+        # RSS sees them.
+        subject = self.accelerator(samples=((6000, 238), (5990, 800), (5990, 800), (5980, 880)))
+        subject.accelerate()
+        self.assertEqual(subject.status()["gpu_memory_mib"], 642.0)
+
+    def test_the_import_counts_against_the_budget(self):
+        # 300 MiB to load is within the 1024 MiB budget; 800 more to import
+        # TensorRT and open CUDA is not.
+        subject = self.accelerator(samples=((6000, 238), (5200, 600), (5200, 600), (4900, 700)))
+        subject.accelerate()
+        status = subject.status()
+        self.assertEqual((status["active"], status["degraded"]), ("cpu", True))
+        self.assertIn("took 1100 MiB with TensorRT and its CUDA context, over its 1024 MiB budget", status["reason"])
+        self.assertTrue(subject.gpu_engine.closed)
+
+    def test_memory_cost_without_proc(self):
+        # Off Linux neither measure exists; the engine's own size is the floor.
+        subject = self.accelerator(gpu=FakeEngine("tensorrt", self.output, "fp16", device_bytes=10 << 20))
+        subject.accelerate()
+        self.assertEqual(subject.status()["gpu_memory_mib"], round((10 << 20) / (1 << 20) + 4 / (1 << 20), 1))
+
+    def test_tensorrt_warnings_while_loading_are_reported(self):
+        warning = "Using an engine plan file across different models of devices is not supported"
+        subject = self.accelerator(gpu=FakeEngine("tensorrt", self.output, "fp16", warnings=[warning]))
+        subject.accelerate()
+        status = subject.status()
+        self.assertEqual(status["active"], "tensorrt")
+        self.assertEqual(status["engine"]["warnings"], [warning])
+
+    def test_auto_build_waits_for_its_random_delay(self):
+        subject = self.accelerator(delay=0.05)
+        started = time.monotonic()
+        subject.accelerate()
+        self.assertGreaterEqual(time.monotonic() - started, 0.05)
+        scheduled = [e for e in self.engine_states(subject) if e["state"] == "scheduled"]
+        self.assertTrue(scheduled)
+        self.assertRegex(scheduled[0]["not_before"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        # Not degraded: the CPU detects meanwhile and the engine is coming.
+        self.assertTrue(all(not m["accelerator"]["degraded"] for m in subject.emitted
+                            if m["accelerator"].get("engine", {}).get("state") == "scheduled"))
+        self.assertEqual(subject.status()["active"], "tensorrt")
+        self.assertNotIn("not_before", subject.status()["engine"])
+
+    def test_the_delay_is_once_per_worker_and_never_for_a_cached_engine(self):
+        subject = self.accelerator(delay=0.01, memory=(2048, 4096))
+        subject.accelerate()
+        # Waiting for memory retried the build; it was delayed once.
+        self.assertEqual(subject.delays, [0.01])
+        again = self.accelerator(delay=600)
+        again.accelerate()
+        self.assertEqual((again.delays, again.jobs), ([], []))
+        self.assertEqual(again.status()["active"], "tensorrt")
+
+    def test_tensorrt_campaign_builds_without_delay(self):
+        # It scores nothing until its engine is ready, so it does not wait.
+        subject = self.accelerator(self.plan("tensorrt"), delay=600)
+        subject.accelerate()
+        self.assertEqual(subject.delays, [])
+        self.assertEqual(subject.status()["active"], "tensorrt")
+
+    def test_build_waits_for_the_cpu(self):
+        subject = self.accelerator(busy=(0.9, 0.2))
+        subject.accelerate()
+        waiting = [m["accelerator"] for m in subject.emitted
+                   if m["accelerator"].get("engine", {}).get("state") == "waiting_for_cpu"]
+        self.assertTrue(waiting)
+        self.assertEqual(waiting[0]["engine"]["error"], "other processes use 90% of the CPU; a build starts at 50% or less")
+        self.assertTrue(waiting[0]["degraded"])
+        # Worded the same every retry, so the agent logs it once.
+        self.assertIn("the CPU is too busy to build the TensorRT engine", waiting[0]["reason"])
+        self.assertEqual(len({w["reason"] for w in waiting}), 1)
+        self.assertEqual(waiting[0]["active"], "cpu")
+        self.assertEqual(len(subject.jobs), 1)
+        status = subject.status()
+        self.assertEqual((status["active"], status["degraded"]), ("tensorrt", False))
+
+    def test_cpu_busy_leaves_out_the_worker_itself(self):
+        subject = accelerator.Accelerator(self.plan(), self.cpu, self.model, lambda message: None)
+        subject.wait = lambda seconds: True
+        # Over the sample: 1000 ticks in all, 600 of them busy, 400 of those
+        # this worker's own inference.
+        with mock.patch.object(accelerator, "cpu_times", side_effect=[(1000, 4000, 100), (1600, 5000, 500)]):
+            self.assertAlmostEqual(subject.cpu_busy(), 0.2)
+        with mock.patch.object(accelerator, "cpu_times", return_value=None):
+            self.assertIsNone(subject.cpu_busy())
+        if accelerator.cpu_times() is not None:
+            busy, total, own = accelerator.cpu_times()
+            self.assertTrue(0 <= own and 0 <= busy <= total)
+
 
 @unittest.skipIf(np is None, "requires numpy")
 class TensorRTEngineTests(unittest.TestCase):
@@ -670,19 +837,22 @@ class TensorRTEngineTests(unittest.TestCase):
             def create_execution_context(self):
                 return Context()
 
+        def deserialize(logger, plan):
+            logger.log(FakeILogger.Severity.WARNING, "Using an engine plan file across different models of devices")
+            logger.log(FakeILogger.Severity.INFO, "Loaded engine size: 9 MiB")
+            return Engine() if plan == b"plan" else None
+
         trt = types.SimpleNamespace(
-            __version__="10.16.2.10", float32="float32",
+            __version__="10.16.2.10", float32="float32", ILogger=FakeILogger,
             TensorIOMode=types.SimpleNamespace(INPUT="in", OUTPUT="out"),
-            Logger=types.SimpleNamespace(WARNING=2),
             Runtime=lambda logger: types.SimpleNamespace(
-                deserialize_cuda_engine=lambda plan: Engine() if plan == b"plan" else None))
-        trt.Logger = lambda severity: object()
-        trt.Logger.WARNING = 2
+                deserialize_cuda_engine=lambda plan: deserialize(logger, plan)))
         return trt, Cuda()
 
     def test_scores_through_device_buffers(self):
         trt, cuda = self.fakes()
-        engine = accelerator.TensorRTEngine(trt, cuda, b"plan", [1, 3, 4, 4], [1, 6, 8])
+        with contextlib.redirect_stderr(io.StringIO()):
+            engine = accelerator.TensorRTEngine(trt, cuda, b"plan", [1, 3, 4, 4], [1, 6, 8])
         tensor = np.arange(48, dtype=np.float32).reshape(1, 3, 4, 4)
         output = engine.infer(tensor)
         self.assertEqual(output.shape, (1, 6, 8))
@@ -694,13 +864,59 @@ class TensorRTEngineTests(unittest.TestCase):
 
     def test_refuses_an_engine_of_another_shape(self):
         trt, cuda = self.fakes(output_shape=(1, 6, 9))
-        with self.assertRaisesRegex(accelerator.EngineError, "shape"):
+        with self.assertRaisesRegex(accelerator.EngineError, "shape"), contextlib.redirect_stderr(io.StringIO()):
             accelerator.TensorRTEngine(trt, cuda, b"plan", [1, 3, 4, 4], [1, 6, 8])
 
     def test_refuses_a_plan_that_does_not_deserialize(self):
         trt, cuda = self.fakes()
-        with self.assertRaisesRegex(accelerator.EngineError, "deserialize"):
+        with self.assertRaisesRegex(accelerator.EngineError, "deserialize"), contextlib.redirect_stderr(io.StringIO()):
             accelerator.TensorRTEngine(trt, cuda, b"other", [1, 3, 4, 4], [1, 6, 8])
+
+    def test_tensorrt_logs_to_stderr_and_the_warnings_are_kept(self):
+        # TensorRT's own logger printed this warning to stdout, the worker's
+        # protocol channel, after a reboot.
+        trt, cuda = self.fakes()
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            engine = accelerator.TensorRTEngine(trt, cuda, b"plan", [1, 3, 4, 4], [1, 6, 8])
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "[TRT] [W] Using an engine plan file across different models of devices\n")
+        self.assertEqual(engine.warnings, ["Using an engine plan file across different models of devices"])
+
+
+class FakeILogger:
+    """tensorrt.ILogger: a base class whose log() TensorRT calls."""
+
+    class Severity:
+        INTERNAL_ERROR, ERROR, WARNING, INFO, VERBOSE = range(5)
+
+    def __init__(self):
+        pass
+
+
+class LoggerTests(unittest.TestCase):
+    def test_keeps_warnings_and_errors_and_drops_the_chatter(self):
+        logger = accelerator.tensorrt_logger(types.SimpleNamespace(ILogger=FakeILogger))
+        self.assertIsInstance(logger, FakeILogger)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            for severity, message in enumerate(["internal", "error", "warning", "info", "verbose"]):
+                logger.log(severity, message)
+            # TensorRT passes a pybind11 enum, which has a value.
+            logger.log(types.SimpleNamespace(value=1), "enum error")
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue().splitlines(),
+                         ["[TRT] [F] internal", "[TRT] [E] error", "[TRT] [W] warning", "[TRT] [E] enum error"])
+        self.assertEqual(list(logger.recent), ["internal", "error", "warning", "enum error"])
+
+    def test_never_raises_into_tensorrt(self):
+        # TensorRT calls it from C++: an exception there aborts the worker.
+        logger = accelerator.tensorrt_logger(types.SimpleNamespace(ILogger=FakeILogger))
+        closed = io.StringIO()
+        closed.close()
+        with contextlib.redirect_stderr(closed):
+            logger.log(2, "stderr is gone")
+        logger.log(object(), "not a severity")
 
 
 if __name__ == "__main__":

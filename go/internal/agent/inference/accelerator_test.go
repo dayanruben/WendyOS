@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ulikunitz/xz"
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
@@ -307,7 +308,10 @@ func TestAcceleratorPlanFallsBackLoudlyWithoutBindings(t *testing.T) {
 	}
 }
 
-func TestAcceleratorPlanForTensorRT(t *testing.T) {
+// withTensorRTHost makes this host look like a Jetson with TensorRT 10.16.2
+// whose image ships the bindings, and returns the bindings directory.
+func withTensorRTHost(t *testing.T) string {
+	t.Helper()
 	contents := map[string]string{"tensorrt/__init__.py": "bindings\n"}
 	image := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(image, "tensorrt"), 0700); err != nil {
@@ -326,13 +330,18 @@ func TestAcceleratorPlanForTensorRT(t *testing.T) {
 	previous, previousImage := tensorRTLibraryDirs, imageTensorRTBindingDirs
 	tensorRTLibraryDirs, imageTensorRTBindingDirs = []string{libraries}, []string{image}
 	t.Cleanup(func() { tensorRTLibraryDirs, imageTensorRTBindingDirs = previous, previousImage })
+	return image
+}
+
+func TestAcceleratorPlanForTensorRT(t *testing.T) {
+	image := withTensorRTHost(t)
 	root := t.TempDir()
 	plan, err := (&ManagedFactory{Hardware: func() Hardware { return orin }}).acceleratorPlan(context.Background(), root, yoloInference(""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := &TensorRTPlan{Library: "10.16.2", Bindings: image, EngineDir: filepath.Join(root, "engines"), CUDARuntime: "libcudart.so.13",
-		WorkspaceMiB: 1024, BuildMinAvailableMiB: 3072, GPUBudgetMiB: 1024, BuildTimeoutSeconds: 1800}
+		WorkspaceMiB: 1024, BuildMinAvailableMiB: 3072, GPUBudgetMiB: 1536, BuildTimeoutSeconds: 1800}
 	if !reflect.DeepEqual(plan.TensorRT, want) || !reflect.DeepEqual(plan.Candidates, []string{"tensorrt", "cpu"}) {
 		t.Fatalf("plan %+v, tensorrt %+v", plan, plan.TensorRT)
 	}
@@ -374,5 +383,90 @@ func TestAcceleratorResultsDecode(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(runtimeEnvironment(t.TempDir()), "\n"), "CUDA_MODULE_LOADING=LAZY") {
 		t.Fatal("worker environment lacks lazy CUDA module loading")
+	}
+}
+
+// A TensorRT worker that keeps dying unasked gets no TensorRT for a while: an
+// auto campaign detects on the CPU, a tensorrt campaign reports the reason.
+// Before, the worker was restarted every 8 s and detected nothing.
+func TestCrashingTensorRTWorkerFallsBackToTheCPU(t *testing.T) {
+	withTensorRTHost(t)
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	previous := timeNow
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = previous })
+	factory := &ManagedFactory{Hardware: func() Hardware { return orin }}
+	root := t.TempDir()
+	plan := func(accelerator string) (AcceleratorPlan, error) {
+		return factory.acceleratorPlan(context.Background(), root, yoloInference(accelerator))
+	}
+	// Real processes, wired the way Start wires a worker offered TensorRT.
+	key := tensorRTCrashKey(yoloInference(""))
+	crash := func(stderr string) {
+		t.Helper()
+		session, err := shWorker(t, context.Background(), `echo '{"type":"ready"}'; echo '`+stderr+`' >&2; exit 1`,
+			func(reason string) { factory.workerCrashed(key, reason) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		drain(t, session)
+		session.Close()
+	}
+
+	crash("first")
+	now = now.Add(time.Minute)
+	crash("second")
+	if p, err := plan(""); err != nil || p.TensorRT == nil {
+		t.Fatalf("two exits took TensorRT away: %+v, %v", p, err)
+	}
+	now = now.Add(time.Minute)
+	crash("Segmentation fault in libnvinfer")
+
+	auto, err := plan("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := "the TensorRT worker exited 3 times within 10 minutes, so TensorRT is off for this model until 2026-10-27T13:02:00Z; " +
+		"last exit: exit status 1; stderr: Segmentation fault in libnvinfer"
+	if !reflect.DeepEqual(auto.Candidates, []string{"cpu"}) || !auto.Degraded || auto.Reason != reason || auto.TensorRT != nil {
+		t.Fatalf("auto plan %+v", auto)
+	}
+	if _, err := plan("tensorrt"); err == nil || err.Error() != "accelerator tensorrt is unavailable: "+reason {
+		t.Fatalf("strict plan error %v", err)
+	}
+	// The same at every start during the hold, so it is logged once.
+	now = now.Add(30 * time.Minute)
+	if again, _ := plan(""); again.Reason != reason {
+		t.Fatalf("reason changed to %q", again.Reason)
+	}
+	// Another model is not affected.
+	other := yoloInference("")
+	other.Revision = strings.Repeat("b", 40)
+	if p, err := factory.acceleratorPlan(context.Background(), root, other); err != nil || p.TensorRT == nil {
+		t.Fatalf("another model lost TensorRT: %+v, %v", p, err)
+	}
+	// After the hold TensorRT is tried again, and exits count afresh.
+	now = now.Add(31 * time.Minute)
+	if p, err := plan(""); err != nil || p.TensorRT == nil || p.Degraded {
+		t.Fatalf("TensorRT was not offered after the hold: %+v, %v", p, err)
+	}
+	crash("once more")
+	if p, _ := plan(""); p.TensorRT == nil {
+		t.Fatal("one exit after the hold took TensorRT away")
+	}
+}
+
+func TestTensorRTExitsOutsideTheWindowDoNotAddUp(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	previous := timeNow
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = previous })
+	factory := &ManagedFactory{}
+	for range 5 {
+		factory.workerCrashed("model", "exit status 1")
+		now = now.Add(6 * time.Minute)
+	}
+	if held := factory.tensorRTHeldOff("model"); held != "" {
+		t.Fatalf("exits 6 minutes apart were held: %s", held)
 	}
 }

@@ -179,8 +179,8 @@ type AcceleratorStatus struct {
 
 // EngineStatus is a TensorRT engine's build or cache state.
 type EngineStatus struct {
-	// State is checking, waiting_for_memory, queued, building, verifying,
-	// ready or failed.
+	// State is checking, scheduled, waiting_for_memory, waiting_for_cpu,
+	// queued, building, verifying, ready or failed.
 	State string `json:"state"`
 	// Key is the engine cache key: a hash over the model, TensorRT version,
 	// GPU, precision, input shape and builder settings.
@@ -194,6 +194,11 @@ type EngineStatus struct {
 	BuildSeconds   float64 `json:"build_seconds,omitempty"`
 	PlanBytes      int64   `json:"plan_bytes,omitempty"`
 	Error          string  `json:"error,omitempty"`
+	// NotBefore is when a scheduled build may start: an auto campaign's
+	// first build waits a random delay, so a fleet does not build at once.
+	NotBefore string `json:"not_before,omitempty"`
+	// Warnings are what TensorRT warned about while loading the engine.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ParityStatus compares CPU and TensorRT detections on the same frames.

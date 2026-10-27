@@ -19,11 +19,18 @@ import time
 
 
 def emit(result):
+    line = json.dumps(result, allow_nan=False) + "\n"
     with output_lock:
-        print(json.dumps(result, allow_nan=False), flush=True)
+        channel = protocol or sys.stdout
+        channel.write(line)
+        channel.flush()
 
 
 output_lock = threading.Lock()
+# The protocol channel: a private copy of the agent's stdout pipe once main()
+# has claimed it (accelerator.claim_stdout), so that nothing else can write to
+# it. Until then, and in tests, sys.stdout.
+protocol = None
 
 # The worker exits, so the agent restarts it with a fresh process, once this
 # many of the last FAILURE_WINDOW frames failed. Fewer failures cost only their
@@ -531,6 +538,11 @@ def run(config, detector):
 
 
 def main():
+    # First of all, before onnxruntime, PyTorch, TensorRT or CUDA is loaded:
+    # from here on, whatever native code prints to stdout lands on stderr.
+    import accelerator
+    global protocol
+    protocol = accelerator.claim_stdout()
     config = json.loads(sys.stdin.buffer.readline())
     try:
         detector = YOLODetector(config) if config.get("backend") == "yolo_onnx" else Detector(config)
