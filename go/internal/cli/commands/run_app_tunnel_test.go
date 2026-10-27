@@ -15,6 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -48,11 +52,44 @@ func swapCloudAppTunnel(t *testing.T, start func(ctx context.Context, conn *grpc
 	return &calls
 }
 
-// fixedTunnel is an injected starter whose tunnel listens on localPort.
+// fixedTunnel is an injected starter whose tunnel listens on localPort and
+// whose relays reach localPort too: the app stands in at the tunnel's local
+// end.
 func fixedTunnel(localPort int) func(context.Context, *grpcclient.AgentConnection, int) (*cloudAppTunnel, error) {
 	return func(_ context.Context, _ *grpcclient.AgentConnection, remotePort int) (*cloudAppTunnel, error) {
-		return &cloudAppTunnel{LocalPort: localPort, RemotePort: remotePort}, nil
+		target := net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
+		return &cloudAppTunnel{LocalPort: localPort, RemotePort: remotePort, relay: func(ctx context.Context) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", target)
+		}}, nil
 	}
+}
+
+// tunnelFakeContainerClient is lifecycleFakeContainerClient plus the agent's
+// GetContainerPorts. With ports nil it answers Unimplemented, as an agent
+// from before that call does.
+type tunnelFakeContainerClient struct {
+	lifecycleFakeContainerClient
+
+	mu    sync.Mutex
+	ports func(*agentpb.GetContainerPortsRequest) []*agentpb.PortEntry
+	calls int
+}
+
+func (f *tunnelFakeContainerClient) GetContainerPorts(_ context.Context, req *agentpb.GetContainerPortsRequest, _ ...grpc.CallOption) (*agentpb.GetContainerPortsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.ports == nil {
+		return nil, status.Error(codes.Unimplemented, "unknown method GetContainerPorts")
+	}
+	return &agentpb.GetContainerPortsResponse{Ports: f.ports(req)}, nil
+}
+
+func (f *tunnelFakeContainerClient) portCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 // offNetworkCloudConn is a cloud connection whose device reports a LAN
@@ -64,7 +101,7 @@ func offNetworkCloudConn(t *testing.T) *grpcclient.AgentConnection {
 	return &grpcclient.AgentConnection{
 		Host:             "Dev Kit",
 		Reconnect:        neverReconnect,
-		ContainerService: &lifecycleFakeContainerClient{},
+		ContainerService: &tunnelFakeContainerClient{},
 		AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
 			NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"10.20.30.40"}}},
 		}},
@@ -629,5 +666,290 @@ func TestServiceHookRunnerCloudTunnelEndToEndClosesWithRun(t *testing.T) {
 	if c, err := net.DialTimeout("tcp", local, time.Second); err == nil {
 		c.Close()
 		t.Fatalf("%s still accepts connections after the run ended", local)
+	}
+}
+
+// fakeClock is the time a tunnelReadiness under test reads.
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) now() time.Time { return c.t }
+
+// simulateSlowStart drives attempt the way waitForReadinessProbe does for
+// camera-feed-yolo, whose readiness timeoutSeconds is 180 so a two-minute
+// start stays in the first, 500 ms-tick phase: an attempt per tick, and the
+// next at once when an attempt outlasts its tick. It returns when an attempt
+// passes, or false once window has gone by.
+func simulateSlowStart(clock *fakeClock, window time.Duration, attempt func(context.Context) error) (time.Duration, bool) {
+	start := clock.now()
+	for clock.now().Sub(start) < window {
+		tick := clock.now().Add(500 * time.Millisecond)
+		if attempt(context.Background()) == nil {
+			return clock.now().Sub(start), true
+		}
+		if clock.now().Before(tick) {
+			clock.t = tick
+		}
+	}
+	return 0, false
+}
+
+// How many Wendy Cloud relays readiness opens while an app takes two minutes
+// to listen (camera-feed-yolo loading its model on a Jetson Orin Nano), each
+// relay taking a second to set up and fail. Every attempt used to open one.
+// Now the agent is asked first, over the existing connection, and a relay
+// opens to confirm once it reports the port; an agent that cannot answer gets
+// backed-off relays, and one that never reports the port gets the spaced
+// safety relays.
+func TestTunnelReadinessRelaysOverSlowStart(t *testing.T) {
+	const (
+		appUp        = 2 * time.Minute
+		window       = 180 * time.Second
+		relayLatency = time.Second
+	)
+	type scenario struct {
+		clock  *fakeClock
+		start  time.Time
+		relays int // relays opened
+		calls  int // GetContainerPorts calls over the existing connection
+	}
+	newScenario := func() *scenario {
+		start := time.Unix(1_700_000_000, 0)
+		return &scenario{clock: &fakeClock{t: start}, start: start}
+	}
+	relay := func(s *scenario) func(context.Context) error {
+		return func(context.Context) error {
+			s.relays++
+			s.clock.t = s.clock.t.Add(relayLatency)
+			if s.clock.t.Sub(s.start) < appUp {
+				return errors.New("relay closed: connection refused on the device")
+			}
+			return nil
+		}
+	}
+	agent := func(s *scenario, reports bool, err error) func(context.Context) (bool, error) {
+		return func(context.Context) (bool, error) {
+			s.calls++
+			if err != nil {
+				return false, err
+			}
+			return reports && s.clock.t.Sub(s.start) >= appUp, nil
+		}
+	}
+	run := func(t *testing.T, s *scenario, attempt func(context.Context) error) time.Duration {
+		t.Helper()
+		readyAt, ok := simulateSlowStart(s.clock, window, attempt)
+		if !ok {
+			t.Fatalf("never ready within %s; %d relays", window, s.relays)
+		}
+		return readyAt
+	}
+
+	// Before: each attempt opened its own relay.
+	before := newScenario()
+	run(t, before, relay(before))
+	t.Logf("before: %d relays", before.relays)
+	if before.relays < 100 {
+		t.Fatalf("the per-attempt baseline opened %d relays; the model no longer matches the old probe", before.relays)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		reports   bool
+		agentErr  error
+		maxRelays int
+		maxLate   time.Duration
+	}{
+		// The agent lists the app's listening port: relays wait on it.
+		{name: "agent reports the port", reports: true, maxRelays: 8, maxLate: 2 * relayLatency},
+		// An agent from before GetContainerPorts: backed-off relays.
+		{name: "agent without GetContainerPorts", agentErr: status.Error(codes.Unimplemented, "unknown method"), maxRelays: 25, maxLate: tunnelRelayBackoffMax + relayLatency},
+		// An agent that answers but never sees the socket: safety relays.
+		{name: "agent never reports the port", reports: false, maxRelays: 8, maxLate: tunnelSafetyRelayMax + relayLatency},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newScenario()
+			r := newTunnelReadiness(s.clock.now, agent(s, tc.reports, tc.agentErr), relay(s))
+			readyAt := run(t, s, r.attempt)
+			t.Logf("after: %d relays (before %d), %d agent calls, ready at %s", s.relays, before.relays, s.calls, readyAt)
+			if s.relays > tc.maxRelays {
+				t.Fatalf("opened %d relays over a %s start, want at most %d", s.relays, appUp, tc.maxRelays)
+			}
+			if late := readyAt - appUp; late > tc.maxLate {
+				t.Fatalf("ready %s after the app answered, want within %s", late, tc.maxLate)
+			}
+			if tc.agentErr != nil && s.calls != 1 {
+				t.Fatalf("asked an agent without GetContainerPorts %d times, want once", s.calls)
+			}
+			if tc.agentErr == nil && s.calls > int(appUp/devicePortsPollInterval)+30 {
+				t.Fatalf("asked the agent %d times, want at most one call per %s", s.calls, devicePortsPollInterval)
+			}
+		})
+	}
+}
+
+// The relay backoff only grows: 1 s after the first relay, then 2, 4 and 5 s,
+// and a failure never shortens it.
+func TestTunnelReadinessBackoffGrowsToCap(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	var at []time.Duration
+	start := clock.now()
+	r := newTunnelReadiness(clock.now, nil, func(context.Context) error {
+		at = append(at, clock.now().Sub(start))
+		return errors.New("no reply")
+	})
+	for clock.now().Sub(start) < 30*time.Second {
+		_ = r.attempt(context.Background())
+		clock.t = clock.t.Add(100 * time.Millisecond)
+	}
+	want := []time.Duration{0, time.Second, 3 * time.Second, 7 * time.Second, 12 * time.Second, 17 * time.Second, 22 * time.Second, 27 * time.Second}
+	if fmt.Sprint(at) != fmt.Sprint(want) {
+		t.Fatalf("relays at %v, want %v", at, want)
+	}
+}
+
+// trackedRelay is one fake relay whose app reads the request and answers
+// when answer closes. Close ends the app's side too.
+type trackedRelay struct {
+	net.Conn
+	once    sync.Once
+	closed  chan struct{}
+	onClose func()
+}
+
+func (c *trackedRelay) Close() error {
+	c.once.Do(func() {
+		close(c.closed)
+		c.onClose()
+	})
+	return c.Conn.Close()
+}
+
+// A readiness probe opens its relay itself and closes it before it returns,
+// answered or timed out, and a second probe on the same tunnel does not open
+// another while the first holds one.
+func TestCloudAppTunnelProbeRelayHoldsOneRelayAndClosesIt(t *testing.T) {
+	var mu sync.Mutex
+	open, maxOpen, opened := 0, 0, 0
+	answer := make(chan struct{})
+	requested := make(chan struct{}, 4)
+	tunnel := &cloudAppTunnel{LocalPort: 3005, RemotePort: 3005, relay: func(ctx context.Context) (net.Conn, error) {
+		client, app := net.Pipe()
+		mu.Lock()
+		open++
+		opened++
+		maxOpen = max(maxOpen, open)
+		answer := answer
+		mu.Unlock()
+		relay := &trackedRelay{Conn: client, closed: make(chan struct{}), onClose: func() {
+			mu.Lock()
+			open--
+			mu.Unlock()
+		}}
+		go func() {
+			defer app.Close()
+			buf := make([]byte, 512)
+			if _, err := app.Read(buf); err != nil {
+				return
+			}
+			requested <- struct{}{}
+			select {
+			case <-answer:
+				_, _ = app.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+			case <-relay.closed:
+			}
+		}()
+		return relay, nil
+	}}
+	counts := func() (int, int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return open, maxOpen, opened
+	}
+
+	first := make(chan error, 1)
+	go func() { first <- tunnel.probeRelay(context.Background()) }()
+	<-requested
+	if err := tunnel.probeRelay(context.Background()); err == nil {
+		t.Fatal("a second probe passed while the first held the tunnel's probe relay")
+	}
+	if _, _, opened := counts(); opened != 1 {
+		t.Fatalf("opened %d relays with one probe in flight, want 1", opened)
+	}
+	close(answer)
+	if err := <-first; err != nil {
+		t.Fatalf("probe with a reply failed: %v", err)
+	}
+	if open, _, _ := counts(); open != 0 {
+		t.Fatalf("%d relays still open after the probe returned", open)
+	}
+
+	// An app that never answers: the attempt's deadline closes the relay.
+	mu.Lock()
+	answer = make(chan struct{})
+	mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	began := time.Now()
+	if err := tunnel.probeRelay(ctx); err == nil {
+		t.Fatal("probe passed with no reply")
+	}
+	if elapsed := time.Since(began); elapsed > 2*time.Second {
+		t.Fatalf("timed-out probe took %s to return", elapsed)
+	}
+	if open, maxOpen, opened := counts(); open != 0 || maxOpen != 1 || opened != 2 {
+		t.Fatalf("open=%d maxOpen=%d opened=%d, want 0, 1, 2", open, maxOpen, opened)
+	}
+}
+
+// End to end on a real tunnel: while the agent reports the app is not
+// listening yet, readiness opens no relay; once it reports the forwarded
+// port, one relay confirms the app answers.
+func TestWaitForTunneledReadinessWaitsOnAgentThenConfirmsOnce(t *testing.T) {
+	appPort, heads := headServer(t)
+	port := freeLoopbackPort(t)
+	var mu sync.Mutex
+	var dialed []int
+	conn := offNetworkCloudConn(t)
+	conn.RegistryDialer = appBehindCloud(net.JoinHostPort("127.0.0.1", strconv.Itoa(appPort)), &dialed, &mu)
+	agent := conn.ContainerService.(*tunnelFakeContainerClient)
+	var asked []string
+	agent.ports = func(req *agentpb.GetContainerPortsRequest) []*agentpb.PortEntry {
+		asked = append(asked, req.GetAppName())
+		if len(asked) <= 2 {
+			// Loading the model: only a UDP socket so far.
+			return []*agentpb.PortEntry{{Protocol: "udp", Port: uint32(port), Address: "0.0.0.0"}}
+		}
+		return []*agentpb.PortEntry{{Protocol: "tcp6", Port: uint32(port), Address: "::"}}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tunnel, err := openCloudAppTunnel(ctx, conn, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tunnel.Close()
+	cfg := &appconfig.AppConfig{
+		AppID:     "camera-feed-yolo",
+		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 10},
+	}
+
+	out := captureStderr(t, func() {
+		if err := waitForTunneledReadiness(ctx, conn, cfg, tunnel, 0); err != nil {
+			t.Errorf("readiness: %v", err)
+		}
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dialed) != 1 || dialed[0] != port {
+		t.Fatalf("relays opened to %v, want one to port %d after the agent reported it", dialed, port)
+	}
+	if heads() != 1 {
+		t.Fatalf("app got %d HEAD requests, want 1", heads())
+	}
+	if agent.portCalls() != 3 || asked[0] != "camera-feed-yolo" {
+		t.Fatalf("asked the agent %d times for %v, want 3 for camera-feed-yolo", agent.portCalls(), asked)
+	}
+	if !strings.Contains(out, fmt.Sprintf("Waiting for localhost:%d to be ready", port)) || !strings.Contains(out, "Ready.") {
+		t.Fatalf("readiness output changed:\n%s", out)
 	}
 }

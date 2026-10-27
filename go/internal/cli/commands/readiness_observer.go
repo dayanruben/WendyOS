@@ -117,7 +117,7 @@ func waitForAttachedReadiness(ctx context.Context, conn *grpcclient.AgentConnect
 
 // waitForAttachedReadinessWith is waitForAttachedReadiness with the probed
 // readiness config, host, HTTP port and probe factory chosen by the caller
-// (waitForTunneledReadiness probes a cloud app tunnel's local port). cfg still
+// (waitForTunneledReadiness probes an app through a cloud app tunnel). cfg still
 // names the app whose running state the slow-start observation checks.
 func waitForAttachedReadinessWith(ctx context.Context, conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, readiness *appconfig.ReadinessConfig, hostname string, httpPort int, newProbe readinessProbeFactory, timeoutOverride time.Duration) error {
 	started := time.Now()
