@@ -100,7 +100,15 @@ file, verifies checksums, and publishes the completed local directory atomically
 Use a destination that preserves existing local data.
 
 For one-off capture, select returned source IDs explicitly when only a subset
-is wanted. With no source flags, `record` selects every healthy source.
+is wanted. With no source flags, `record` selects every healthy source: the
+table marks them `*`, and in `--json` an unhealthy source's `unusable_reason`
+says why it is left out.
+
+Microphone IDs are stable: `audio:<PipeWire node name>`, or
+`audio:alsa:<card>:<device>` without PipeWire. The old `audio:<number>` form
+still resolves, with a deprecation warning, in `--source`, `--exclude-source`,
+`--calibration` and campaign `audio:` selectors. It can name a different
+microphone after a reboot or replug, so do not write it into a plan.
 
 ```sh
 wendy --json data record --name commissioning --source <source-id> --device <selector>
