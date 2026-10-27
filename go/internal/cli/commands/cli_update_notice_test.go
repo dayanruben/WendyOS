@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cliupdate"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -365,13 +369,15 @@ func TestCLIUpdateSnoozeIncludesNewReleases(t *testing.T) {
 	}
 }
 
-func TestCLIUpdatePromptOnlyExplicitDeferralSnoozes(t *testing.T) {
+func TestCLIUpdateDismissalOrFailedDownloadDoesNotSnooze(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		accepted  bool
 		promptErr error
+		event     string
 	}{
-		{name: "cancelled", promptErr: errors.New("cancelled")},
+		{name: "escape", promptErr: tui.ErrCancelled, event: "cli_update_dismissed"},
+		{name: "interrupted", promptErr: fmt.Errorf("CLI update prompt: %w", tea.ErrInterrupted), event: "cli_update_dismissed"},
 		{name: "download failed", accepted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -385,6 +391,9 @@ func TestCLIUpdatePromptOnlyExplicitDeferralSnoozes(t *testing.T) {
 				}
 				return errors.New("download failed")
 			}
+			events := map[string]int{}
+			analytics.SetTrackHookForTesting(func(event string, _ map[string]string) { events[event]++ })
+			t.Cleanup(func() { analytics.SetTrackHookForTesting(nil) })
 			cmd := &cobra.Command{}
 			cmd.SetContext(context.Background())
 			cmd.SetErr(&bytes.Buffer{})
@@ -397,7 +406,34 @@ func TestCLIUpdatePromptOnlyExplicitDeferralSnoozes(t *testing.T) {
 			if cfg.CLIUpdatePromptedAt != "" {
 				t.Fatal("recorded a snooze without explicit deferral")
 			}
+			if tc.event != "" && events[tc.event] != 2 {
+				t.Fatalf("events=%v, want %s twice", events, tc.event)
+			}
 		})
+	}
+}
+
+// A dialog that cannot open must not repeat the notice after every command.
+func TestCLIUpdatePromptFailureSnoozes(t *testing.T) {
+	setupInteractiveCLIUpdate(t)
+	previous := confirmCLIUpdate
+	t.Cleanup(func() { confirmCLIUpdate = previous })
+	prompts := 0
+	confirmCLIUpdate = func(*cobra.Command, string) (bool, error) {
+		prompts++
+		return false, errors.New("CLI update prompt: error entering raw mode")
+	}
+	events := map[string]int{}
+	analytics.SetTrackHookForTesting(func(event string, _ map[string]string) { events[event]++ })
+	t.Cleanup(func() { analytics.SetTrackHookForTesting(nil) })
+	if shown, out := runNotifyCLIUpdate(t); !shown || !strings.Contains(out, "wendy update") || strings.Contains(out, "Remind you tomorrow") {
+		t.Fatalf("first run: shown=%v out=%q", shown, out)
+	}
+	if shown, out := runNotifyCLIUpdate(t); shown || out != "" || prompts != 1 {
+		t.Fatalf("second run: shown=%v out=%q prompts=%d", shown, out, prompts)
+	}
+	if events["cli_update_dismissed"] != 1 || events["cli_update_deferred"] != 0 {
+		t.Fatalf("events=%v", events)
 	}
 }
 
