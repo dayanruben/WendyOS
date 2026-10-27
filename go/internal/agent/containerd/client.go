@@ -2172,8 +2172,8 @@ func (c *Client) applyNvidiaCDISpec(spec *localoci.Spec, cdiSpec *cdi.CDISpecifi
 // repaired, and starting the app regardless is what produces a crash loop whose
 // exit code names nothing — see ErrDeviceUnavailable.
 func (c *Client) refreshAcceleratorDeviceNumbersForStart(ctx context.Context, container containerd.Container, appName string, labels map[string]string) error {
-	entitlements := parseEntitlementsFromAnnotations(labels)
-	if !hasGPUEntitlement(entitlements) && !entitlementsContain(entitlements, appconfig.EntitlementNPU) {
+	appCfg := &appconfig.AppConfig{Entitlements: parseEntitlementsFromAnnotations(labels)}
+	if !appCfg.HasEntitlement(appconfig.EntitlementGPU) && !appCfg.HasEntitlement(appconfig.EntitlementNPU) {
 		return nil
 	}
 
@@ -2468,7 +2468,8 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	// the spec pins the major/minor pairs the host had when the container was
 	// created, and several of the majors an accelerator depends on — Jetson's
 	// nvgpu and nvidia-uvm nodes, AMD's /dev/kfd — are allocated dynamically at
-	// module load, so they are stable for a registration rather than for the life of a
+	// module load. Qualcomm FastRPC misc minors can also change across boots.
+	// These numbers are stable for a registration rather than for the life of a
 	// container definition. Re-resolve them here, before NewTask consumes the
 	// spec, so a container whose numbers have gone stale is repaired by an
 	// ordinary restart instead of needing a reboot or a redeploy.
@@ -2477,8 +2478,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	// writes an exact pair records the path it came from), so this covers both
 	// the GPU's own device entries and the bind-mounted, cgroup-only pins that
 	// AMD compute, i2c and serial use. Which containers are refreshed is still
-	// gated on a GPU or NPU entitlement here. FastRPC misc minors also
-	// change across boots; NPU-only apps must refresh their scoped grants.
+	// gated on a GPU or NPU entitlement here.
 	if devErr := c.refreshAcceleratorDeviceNumbersForStart(ctx, container, appName, containerLabels); devErr != nil {
 		// Preflight: the app declared hardware this host no longer has. Starting
 		// anyway produces a container that runs, fails inside the vendor runtime,
