@@ -1700,12 +1700,13 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 	// task alive and join it.
 	phaseStarted = time.Now()
 	if existing != nil {
+		oldNPUTaskRetained := false
 		// From here on the old container loses its network and its task, so
 		// a failure leaves the app without a running version, even when the
 		// delete itself is what fails. Say so, or the user would assume the
 		// previous version is still up.
 		defer func() {
-			if retErr != nil {
+			if retErr != nil && !oldNPUTaskRetained {
 				retErr = fmt.Errorf("%w; the previous version of %q was stopped and is no longer running", retErr, containerName)
 			}
 		}()
@@ -1714,11 +1715,13 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 		oldHadData := false
 		retiredMesh := false
 		oldHadNAN := false
+		oldHadNPU := false
 		if oldLabels, labelErr := existing.Labels(ctx); labelErr == nil {
 			oldEntitlements := parseEntitlementsFromAnnotations(oldLabels)
 			oldHadSystemAPI = entitlementsContain(oldEntitlements, appconfig.EntitlementNotifications)
 			oldHadData = entitlementsContain(oldEntitlements, appconfig.EntitlementEpisodeWrite)
 			oldHadNAN = hasNANEntitlement(oldEntitlements)
+			oldHadNPU = entitlementsContain(oldEntitlements, appconfig.EntitlementNPU)
 			oldSpec, _ := existing.Spec(ctx)
 			if oldLabels[labelKeyNetworkIdentity] == desiredNetworkIdentity {
 				reusedNetworkSandbox, _ = c.reusableNetworkSandbox(ctx, containerName, desiredNetworkIdentity)
@@ -1750,8 +1753,8 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 		}
 		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
 		// Terminate the old task's whole process group — not just init — and
-		// wait for it to exit. NAN apps first get SIGTERM so they can cancel
-		// supplicant publish/NDP handles; other apps keep immediate SIGKILL.
+		// wait for it to exit. NAN apps get grace for supplicant cleanup;
+		// NPU apps must finish owner-directed SDK cleanup without forced kill.
 		// A surviving process keeps devices/ports the new container needs
 		// (WDY-1818: /dev/video0 held for hours after replace).
 		if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
@@ -1763,9 +1766,13 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 			// The container and NAN operation keys retain ownership while
 			// graceful task exit waits outside the global metadata mutex.
 			c.mu.Unlock()
-			termErr := c.terminateReplacedTask(ctx, task, containerName, oldHadNAN)
+			termErr := c.terminateReplacedTask(ctx, task, containerName, oldHadNAN, oldHadNPU)
 			c.mu.Lock()
 			if termErr != nil {
+				if oldHadNPU {
+					oldNPUTaskRetained = true
+					return termErr
+				}
 				c.logger.Error("Failed to delete old task during replace; forcing runtime delete",
 					zap.String("container_name", containerName),
 					zap.Error(termErr))
@@ -1797,9 +1804,13 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 				// The container and NAN operation keys retain ownership while
 				// graceful task exit waits outside the global metadata mutex.
 				c.mu.Unlock()
-				termErr := c.terminateReplacedTask(ctx, task, containerName, oldHadNAN)
+				termErr := c.terminateReplacedTask(ctx, task, containerName, oldHadNAN, oldHadNPU)
 				c.mu.Lock()
 				if termErr != nil {
+					if oldHadNPU {
+						oldNPUTaskRetained = true
+						return termErr
+					}
 					// Mirror the first attempt's fallback above: if the
 					// re-kill itself fails, fall back to force-deleting the
 					// task via the runtime directly before retrying, rather
@@ -4461,11 +4472,17 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 		}
 	}
 
-	// SIGTERM the whole process group for graceful shutdown, escalating to
-	// SIGKILL after the grace period. Group-wide signalling (not just init)
-	// ensures no descendant survives holding devices/ports (WDY-1818).
-	if err := c.terminateTask(ctx, task, containerID, syscall.SIGTERM, stopGracePeriod, killWaitTimeout); err != nil {
-		return errors.Join(clearSandboxErr, err)
+	// Ordinary apps receive group-wide TERM and bounded escalation so no
+	// descendant retains devices/ports (WDY-1818). NPU apps must instead let
+	// their owner release SDK resources before descendants exit.
+	var stopErr error
+	if entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNPU) {
+		stopErr = c.terminateNPUTask(ctx, task, containerID)
+	} else {
+		stopErr = c.terminateTask(ctx, task, containerID, syscall.SIGTERM, stopGracePeriod, killWaitTimeout)
+	}
+	if stopErr != nil {
+		return errors.Join(clearSandboxErr, stopErr)
 	}
 
 	if c.proxyManager != nil {
