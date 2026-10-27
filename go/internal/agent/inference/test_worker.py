@@ -92,10 +92,13 @@ class YOLOTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "model.onnx"
             onnx.save(model, path)
-            with patch("huggingface_hub.get_hf_file_metadata", return_value=SimpleNamespace(size=path.stat().st_size)), \
+            with patch("huggingface_hub.get_hf_file_metadata", return_value=SimpleNamespace(size=path.stat().st_size)) as metadata, \
                     patch("huggingface_hub.hf_hub_download", return_value=str(path)) as download:
                 detector = YOLODetector(config)
-                download.assert_called_once_with(repo_id="test/yolo", filename="model.onnx", revision="a" * 40, token=False)
+                # Cached: loaded from the cache alone, with no request to the Hub.
+                download.assert_called_once_with(repo_id="test/yolo", filename="model.onnx", revision="a" * 40,
+                                                 token=False, local_files_only=True)
+                metadata.assert_not_called()
                 result = detector(SimpleNamespace(to_image=lambda: Image.new("RGB", (320, 320))))
                 self.assertEqual(result[0]["label"], "person")
                 self.assertEqual(result[0]["box"], [110, 135, 210, 185])
@@ -274,6 +277,147 @@ class DetectorFailureTests(unittest.TestCase):
         self.assertLessEqual(len(message.encode()), 512)
         self.assertTrue(message.startswith("inference: RuntimeError: é"))
         self.assertEqual(detection_error(KeyError()), "inference: KeyError")
+
+
+class OfflineStartTests(unittest.TestCase):
+    """A pinned model already on the device starts with no network call, and
+    one that is missing while the network is down fails with a plain reason."""
+
+    REVISION = "9c5acfdd74aaff2d0f47c51b878506361039a51f"
+
+    def setUp(self):
+        import importlib.util
+        if any(importlib.util.find_spec(name) is None
+               for name in ("numpy", "onnx", "onnxruntime", "huggingface_hub", "httpx")):
+            self.skipTest("requires the YOLO ONNX runtime dependencies")
+        import socket
+        import tempfile
+        from unittest import mock
+        import huggingface_hub.constants
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.cache = directory.name
+        patches = [mock.patch.object(huggingface_hub.constants, "HF_HUB_CACHE", self.cache)]
+        # The network is down: every lookup fails the way it does on a device
+        # without a route, and is recorded.
+        self.lookups = []
+
+        def no_network(host, *args, **kwargs):
+            self.lookups.append(host)
+            raise socket.gaierror(-3, "Temporary failure in name resolution")
+
+        patches.append(mock.patch("socket.getaddrinfo", no_network))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.config = {"backend": "yolo_onnx", "model": "webnn/yolo11n", "model_file": "onnx/yolo11n.onnx",
+                       "revision": self.REVISION, "labels": ["person"], "threshold": .5}
+
+    def cache_model(self):
+        """Lays the model out the way huggingface_hub caches a download."""
+        import pathlib
+        from onnx import helper, numpy_helper, TensorProto
+        import numpy as np
+        import onnx
+
+        predictions = np.zeros((1, 5, 1), dtype=np.float32)
+        graph = helper.make_graph([
+            helper.make_node("Constant", [], ["detections"], value=numpy_helper.from_array(predictions))
+        ], "detector", [helper.make_tensor_value_info("images", TensorProto.FLOAT, [1, 3, 640, 640])],
+            [helper.make_tensor_value_info("detections", TensorProto.FLOAT, [1, 5, 1])])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=9)
+        helper.set_model_props(model, {"names": "{0: 'person'}", "task": "detect"})
+        repo = pathlib.Path(self.cache) / "models--webnn--yolo11n"
+        blob = repo / "blobs" / ("b" * 64)
+        blob.parent.mkdir(parents=True)
+        onnx.save(model, blob)
+        snapshot = repo / "snapshots" / self.REVISION / "onnx" / "yolo11n.onnx"
+        snapshot.parent.mkdir(parents=True)
+        snapshot.symlink_to(blob)
+
+    def test_cached_yolo_model_starts_without_the_network(self):
+        from worker import YOLODetector
+        self.cache_model()
+        detector = YOLODetector(self.config)
+        self.assertEqual(detector.names, ["person"])
+        self.assertEqual(self.lookups, [])
+
+    def test_missing_yolo_model_offline_names_the_reason(self):
+        from worker import ModelUnavailable, YOLODetector
+        with self.assertRaises(ModelUnavailable) as raised:
+            YOLODetector(self.config)
+        self.assertTrue(str(raised.exception).startswith(
+            "model webnn/yolo11n@9c5acfd is not on this device and the network is unreachable ("),
+            str(raised.exception))
+        self.assertIn("huggingface.co", self.lookups)
+
+    def test_missing_model_online_is_fetched(self):
+        from worker import load_pinned
+        calls = []
+
+        def load(local_files_only):
+            calls.append(local_files_only)
+            if local_files_only:
+                raise FileNotFoundError("not cached")
+            return "downloaded"
+
+        self.assertEqual(load_pinned(self.config, load), "downloaded")
+        self.assertEqual(calls, [True, False])
+
+    def test_closed_client_error_offline_names_the_reason(self):
+        # What huggingface_hub 1.5 raises for an offline Transformers load: no
+        # transport error in the chain, so the Hub's reachability decides.
+        from worker import ModelUnavailable, load_pinned
+
+        def load(local_files_only):
+            if local_files_only:
+                raise OSError("We couldn't connect to 'https://huggingface.co' to load the files")
+            try:
+                raise RuntimeError("Cannot send a request, as the client has been closed.")
+            except RuntimeError:
+                raise OSError("Can't load image processor for 'hustvl/yolos-tiny'")
+
+        with self.assertRaisesRegex(ModelUnavailable, r"^model webnn/yolo11n@9c5acfd is not on this device and "
+                                    r"the network is unreachable \(huggingface.co: .*name resolution\)$"):
+            load_pinned(self.config, load)
+
+    def test_errors_while_the_hub_is_reachable_are_not_reworded(self):
+        from unittest import mock
+        from worker import load_pinned
+
+        def load(local_files_only):
+            if local_files_only:
+                raise FileNotFoundError("not cached")
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+
+        with mock.patch("socket.create_connection") as connect, \
+                self.assertRaisesRegex(RuntimeError, "client has been closed"):
+            load_pinned(self.config, load)
+        connect.assert_called_once_with(("huggingface.co", 443), timeout=5)
+
+    def test_unpinned_revision_keeps_asking_the_hub(self):
+        from worker import load_pinned
+        calls = []
+        load_pinned(dict(self.config, revision="main"), lambda local: calls.append(local))
+        self.assertEqual(calls, [False])
+
+    def test_worker_reports_the_reason_to_the_agent(self):
+        import json
+        import types
+        from unittest import mock
+        import worker
+
+        emitted = []
+        stdin = types.SimpleNamespace(buffer=types.SimpleNamespace(
+            readline=lambda: json.dumps(self.config).encode()))
+        with mock.patch("worker.emit", emitted.append), mock.patch("worker.sys.stdin", stdin), \
+                self.assertRaises(SystemExit) as exited:
+            worker.main()
+        self.assertEqual(exited.exception.code, 1)
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0]["type"], "error")
+        self.assertIn("is not on this device and the network is unreachable", emitted[0]["error"])
 
 
 if __name__ == "__main__":

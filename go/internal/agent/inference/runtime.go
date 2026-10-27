@@ -270,6 +270,9 @@ func (f *ManagedFactory) Start(ctx context.Context, config data.CampaignInferenc
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 4096), 1<<20)
 		initialized := false
+		// loadError is the worker's own reason it could not load the model,
+		// such as a model that is not on the device while the network is down.
+		loadError := ""
 		var dropped uint64
 		for scanner.Scan() {
 			var result Result
@@ -279,6 +282,9 @@ func (f *ManagedFactory) Start(ctx context.Context, config data.CampaignInferenc
 			}
 			if !initialized {
 				if result.Type != "ready" {
+					if result.Type == "error" {
+						loadError = result.Error
+					}
 					cancel()
 					break
 				}
@@ -308,7 +314,11 @@ func (f *ManagedFactory) Start(ctx context.Context, config data.CampaignInferenc
 		cancel()
 		waitErr := command.Wait()
 		if !initialized {
-			ready <- fmt.Errorf("loading campaign model: %v: %s", waitErr, stderr.String())
+			if loadError != "" {
+				ready <- fmt.Errorf("loading campaign model: %s", loadError)
+			} else {
+				ready <- fmt.Errorf("loading campaign model: %v: %s", waitErr, stderr.String())
+			}
 		}
 	}()
 	if err := json.NewEncoder(stdin).Encode(config); err != nil {

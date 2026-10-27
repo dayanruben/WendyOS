@@ -10,6 +10,8 @@ from collections import deque
 import io
 import json
 import os
+import re
+import socket
 import sys
 import threading
 import time
@@ -137,6 +139,63 @@ class Decoder:
             self.latest = None
 
 
+# A Hugging Face commit. The agent accepts no other revision (data/inference.go).
+COMMIT = re.compile(r"[0-9a-f]{40}")
+
+
+class ModelUnavailable(Exception):
+    """The pinned model is not on this device and the Hub cannot be reached."""
+
+
+def hub_unreachable(exc):
+    """Why the Hugging Face Hub cannot be reached, or None when it can.
+
+    The chain of exc does not always say: huggingface_hub 1.5 retries a failed
+    connection on the client it has just closed, so an offline Transformers
+    load ends in a RuntimeError. Then a connection to the Hub decides."""
+    import httpx
+    from urllib.parse import urlsplit
+    from huggingface_hub import constants
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, httpx.TransportError):
+            return f"{type(exc).__name__}: {exc}"
+        exc = exc.__cause__ or exc.__context__
+    hub = urlsplit(constants.ENDPOINT)
+    try:
+        socket.create_connection((hub.hostname, hub.port or 443), timeout=5).close()
+    except OSError as error:
+        return f"{hub.hostname}: {error}"
+    return None
+
+
+def load_pinned(config, load):
+    """Returns load(local_files_only): from the local Hugging Face cache alone
+    when the pinned revision is there, and from the Hub only when something is
+    missing.
+
+    A commit names immutable files, so a cached copy needs no freshness check.
+    Before, every start asked huggingface.co about the model, so a camera that
+    rebooted without internet stopped detecting, with the model on its disk."""
+    name = config["model"] + "@" + config["revision"][:7]
+    if COMMIT.fullmatch(config["revision"]):
+        try:
+            return load(True)
+        except OSError as exc:
+            # Hugging Face raises OSError for a file its cache lacks.
+            print(f"model {name} is not complete on this device ({type(exc).__name__}); "
+                  "fetching it from Hugging Face", file=sys.stderr, flush=True)
+    try:
+        return load(False)
+    except Exception as exc:
+        reason = hub_unreachable(exc)
+        if reason is None:
+            raise
+        raise ModelUnavailable(f"model {name} is not on this device and the network is "
+                               f"unreachable ({reason[:200]})") from exc
+
+
 class Detector:
     def __init__(self, config):
         import torch
@@ -145,13 +204,19 @@ class Detector:
         self.torch = torch
         self.threshold = config["threshold"]
         self.labels = set(config["labels"])
-        options = {"revision": config["revision"], "trust_remote_code": False}
-        self.processor = AutoImageProcessor.from_pretrained(config["model"], use_fast=False, **options)
-        model_config = AutoConfig.from_pretrained(config["model"], **options)
-        if hasattr(model_config, "use_pretrained_backbone"):
-            model_config.use_pretrained_backbone = False
-        self.model = AutoModelForObjectDetection.from_pretrained(
-            config["model"], config=model_config, use_safetensors=True, **options).eval()
+
+        def load(local_files_only):
+            options = {"revision": config["revision"], "trust_remote_code": False,
+                       "local_files_only": local_files_only}
+            processor = AutoImageProcessor.from_pretrained(config["model"], use_fast=False, **options)
+            model_config = AutoConfig.from_pretrained(config["model"], **options)
+            if hasattr(model_config, "use_pretrained_backbone"):
+                model_config.use_pretrained_backbone = False
+            model = AutoModelForObjectDetection.from_pretrained(
+                config["model"], config=model_config, use_safetensors=True, **options).eval()
+            return processor, model
+
+        self.processor, self.model = load_pinned(config, load)
         if not self.labels.issubset(set(self.model.config.id2label.values())):
             raise ValueError("inference.labels contains labels absent from the model")
         if not hasattr(self.processor, "post_process_object_detection"):
@@ -180,10 +245,17 @@ class YOLODetector:
 
         options = {"repo_id": config["model"], "filename": config["model_file"],
                    "revision": config["revision"]}
-        metadata = get_hf_file_metadata(hf_hub_url(**options), token=False)
-        if metadata.size is None or not 0 < metadata.size <= 512 << 20:
-            raise ValueError("ONNX model must be at most 512 MiB")
-        filename = hf_hub_download(**options, token=False)
+
+        def load(local_files_only):
+            if local_files_only:
+                return hf_hub_download(**options, token=False, local_files_only=True)
+            # Check the size before downloading. A cached file is checked below.
+            metadata = get_hf_file_metadata(hf_hub_url(**options), token=False)
+            if metadata.size is None or not 0 < metadata.size <= 512 << 20:
+                raise ValueError("ONNX model must be at most 512 MiB")
+            return hf_hub_download(**options, token=False)
+
+        filename = load_pinned(config, load)
         if not 0 < os.path.getsize(filename) <= 512 << 20:
             raise ValueError("ONNX model must be at most 512 MiB")
         # Inspect without loading external tensors. Reject references anywhere
@@ -381,7 +453,12 @@ def run(config, detector):
 
 def main():
     config = json.loads(sys.stdin.buffer.readline())
-    detector = YOLODetector(config) if config.get("backend") == "yolo_onnx" else Detector(config)
+    try:
+        detector = YOLODetector(config) if config.get("backend") == "yolo_onnx" else Detector(config)
+    except ModelUnavailable as exc:
+        # The agent shows this reason as the campaign's inference error.
+        emit({"type": "error", "error": str(exc)})
+        sys.exit(1)
     emit({"type": "ready"})
     run(config, detector)
 
