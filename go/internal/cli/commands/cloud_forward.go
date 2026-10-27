@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,15 +31,28 @@ func newCloudTunnelCmd() *cobra.Command {
 			"Without a port mapping, prompts for one interactively. Non-interactive and --json invocations require an explicit port mapping.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			arg, err := resolveCloudTunnelArg(cmd, args)
+			var localPort, remotePort uint32
+			var udp bool
+			if len(args) > 0 {
+				var err error
+				if localPort, remotePort, udp, err = parseTunnelArg(args[0]); err != nil {
+					return err
+				}
+			} else if jsonOutput || !isInteractiveTerminal() {
+				return usageErrorf("provide a port mapping: 'wendy cloud tunnel <local-port>:<remote-port>[/udp]'")
+			}
+			// Resolve the session before prompting, so a missing login is
+			// reported before the user types a mapping.
+			auth, err := pickAuthEntry(cloudGRPC)
 			if err != nil {
 				return err
 			}
-			localPort, remotePort, udp, err := parseTunnelArg(arg)
-			if err != nil {
-				return err
+			if len(args) == 0 {
+				if localPort, remotePort, udp, err = promptTunnelMapping(cmd); err != nil {
+					return err
+				}
 			}
-			return cloudTunnelCommand(cmd.Context(), cloudGRPC, effectiveDeviceName(deviceName), brokerURL, localPort, remotePort, udp)
+			return cloudTunnelCommand(cmd.Context(), auth, effectiveDeviceName(deviceName), brokerURL, localPort, remotePort, udp)
 		},
 	}
 
@@ -49,24 +63,36 @@ func newCloudTunnelCmd() *cobra.Command {
 	return cmd
 }
 
-func resolveCloudTunnelArg(cmd *cobra.Command, args []string) (string, error) {
-	if len(args) > 0 {
-		return args[0], nil
-	}
-	if jsonOutput || !isInteractiveTerminal() {
-		return "", fmt.Errorf("provide a port mapping: 'wendy cloud tunnel <local-port>:<remote-port>[/udp]'")
-	}
-	return tui.PromptText(
+// promptTunnelMapping asks for a port mapping until one parses. Ctrl+C, or a
+// signal while the prompt is open, cancels quietly, as the device picker and
+// the running tunnel do.
+func promptTunnelMapping(cmd *cobra.Command) (localPort, remotePort uint32, udp bool, err error) {
+	ctx := cmd.Context()
+	mapping, err := tui.PromptText(
 		"Port mapping",
 		"local:remote or port (e.g. 8080:3000); add /udp for UDP",
-		func(value string) error {
-			_, _, _, err := parseTunnelArg(value)
-			return err
-		},
-		tea.WithContext(cmd.Context()),
+		validateTunnelMapping,
+		tea.WithContext(ctx),
 		tea.WithInput(cmd.InOrStdin()),
 		tea.WithOutput(cmd.OutOrStdout()),
 	)
+	if ctx.Err() != nil || errors.Is(err, tui.ErrCancelled) || errors.Is(err, tea.ErrInterrupted) {
+		return 0, 0, false, ErrUserCancelled
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return parseTunnelArg(mapping)
+}
+
+// validateTunnelMapping is the prompt's validator. An empty submission asks
+// for a mapping rather than reporting an invalid empty port.
+func validateTunnelMapping(value string) error {
+	if value == "" {
+		return errors.New("enter a port mapping, e.g. 8080:3000")
+	}
+	_, _, _, err := parseTunnelArg(value)
+	return err
 }
 
 // parseTunnelArg parses "localPort:remotePort" or "port", with an optional
@@ -102,12 +128,7 @@ func parseTunnelArg(arg string) (localPort, remotePort uint32, udp bool, err err
 	return lp, rp, udp, e
 }
 
-func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL string, localPort, remotePort uint32, udp bool) error {
-	auth, err := pickAuthEntry(cloudGRPC)
-	if err != nil {
-		return err
-	}
-
+func cloudTunnelCommand(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string, localPort, remotePort uint32, udp bool) error {
 	cliLogln("Fetching device list from cloud...")
 	asset, err := pickCloudDiscoveryDevice(ctx, auth, deviceName, brokerURL)
 	if err != nil {
