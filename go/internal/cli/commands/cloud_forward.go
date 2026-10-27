@@ -134,11 +134,22 @@ func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL st
 	cliSuccess("Forwarding %s → %s:%d (via cloud)", listenAddr, asset.GetName(), remotePort)
 	cliLogln("Press Ctrl+C to stop.")
 
-	go func() {
-		<-ctx.Done()
-		ln.Close()
-	}()
+	return serveTCPForward(ctx, ln, func(ctx context.Context) (net.Conn, error) {
+		return asset.openTunnel(ctx, brokerConn, auth, remotePort)
+	}, func(err error) {
+		cliLogln("Cloud tunnel failed: %v", err)
+	})
+}
 
+// serveTCPForward accepts connections on ln until ctx ends and relays each one
+// through its own tunnel connection from dial. It closes ln when ctx ends and
+// then returns nil; any other accept failure is returned. A failed dial drops
+// that one local connection and is reported to dialFailed. `wendy cloud
+// tunnel` and the tunnel `wendy run` opens to a cloud app (cloudAppTunnel)
+// both forward through it.
+func serveTCPForward(ctx context.Context, ln net.Listener, dial func(context.Context) (net.Conn, error), dialFailed func(error)) error {
+	stop := context.AfterFunc(ctx, func() { ln.Close() })
+	defer stop()
 	for {
 		tcpConn, err := ln.Accept()
 		if err != nil {
@@ -147,15 +158,15 @@ func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL st
 			}
 			return fmt.Errorf("accepting connection: %w", err)
 		}
-		go serveSelectedTunnelConn(ctx, tcpConn, brokerConn, auth, asset, remotePort)
+		go serveForwardedConn(ctx, tcpConn, dial, dialFailed)
 	}
 }
 
-func serveSelectedTunnelConn(ctx context.Context, tcpConn net.Conn, brokerConn *grpc.ClientConn, auth *config.AuthConfig, asset cloudDiscoveryDevice, remotePort uint32) {
+func serveForwardedConn(ctx context.Context, tcpConn net.Conn, dial func(context.Context) (net.Conn, error), dialFailed func(error)) {
 	defer tcpConn.Close()
-	tunnel, err := asset.openTunnel(ctx, brokerConn, auth, remotePort)
+	tunnel, err := dial(ctx)
 	if err != nil {
-		cliLogln("Cloud tunnel failed: %v", err)
+		dialFailed(err)
 		return
 	}
 	relayTunnel(ctx, tcpConn, tunnel)
