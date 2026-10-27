@@ -305,8 +305,9 @@ The `upload` and `retention` blocks:
 An `inference` block runs object detection in the agent without a separate model
 application. The agent installs its managed Python runtime and downloads the
 pinned Hugging Face checkpoint on first use; this requires network access and
-disk space in the `inference` folder beside the episode store, outside its
-quota. Remote model code is disabled.
+disk space in the agent's `inference` folder, outside the episode quota. An
+agent update reuses what an earlier agent downloaded. Remote model code is
+disabled.
 
 | Field | Required | Description |
 |---|---|---|
@@ -541,12 +542,14 @@ filesystem and `WENDY_DATA_MAX_BYTES` (default 50 GiB), and eviction preserves
 by the agent from its environment file.
 
 On WendyOS the episode store is `/var/lib/wendy/wendy-data/episodes`, on the
-`/data` partition, with the inference runtime and model files beside it in
-`/var/lib/wendy/wendy-data/inference`. Where `/var/lib/wendy` is not a separate
-filesystem larger than `/`, the store stays on the root disk at
-`/var/lib/wendy-agent/data/episodes`. The agent logs `Wendy Data episode store`
-at startup with the path it chose and why. Set `WENDY_DATA_DIR` only to put the
-store somewhere else.
+`/data` partition. Where `/var/lib/wendy` is not a separate filesystem larger
+than `/`, the store stays on the root disk at
+`/var/lib/wendy-agent/data/episodes`. Campaign inference keeps its runtime and
+model files in an `inference` folder beside the store, except on a device that
+already ran campaign inference under an earlier agent: that device keeps using
+`/var/lib/wendy-agent/data/inference`, so the update downloads nothing. The
+agent logs `Wendy Data episode store` at startup with the paths it chose and
+why. Set `WENDY_DATA_DIR` only to put the store somewhere else.
 
 When there is no room, `wendy data record` and campaign triggers fail with a
 message that names the disk, its free space and the space Wendy Data keeps free:

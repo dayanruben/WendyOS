@@ -366,8 +366,8 @@ func NewManager(root string) (*Manager, error) {
 		if fallbackErr = os.MkdirAll(root, 0o750); fallbackErr != nil {
 			return nil, errors.Join(err, fallbackErr)
 		}
-		location = StoreLocation{Path: root, CampaignDir: filepath.Join(filepath.Dir(root), "campaigns"),
-			Reason: fmt.Sprintf("%s; %s is not writable by this user, so the store is in the user's config directory", location.Reason, location.Path)}
+		location = besideStore(StoreLocation{Path: root,
+			Reason: fmt.Sprintf("%s; %s is not writable by this user, so the store is in the user's config directory", location.Reason, location.Path)})
 	}
 	m := &Manager{root: root, downloads: make(map[string]int), active: make(map[string]*activeEpisode),
 		maxQuota: DefaultMaxQuotaBytes, reserve: DefaultReserveBytes, location: location}

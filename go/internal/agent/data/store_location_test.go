@@ -146,7 +146,140 @@ func TestDefaultStoreKeepsLegacyRootWhenDataDiskGainsNothing(t *testing.T) {
 			if got.LeftBehindMessage() != "" {
 				t.Fatalf("a store that did not move reported episodes left behind: %q", got.LeftBehindMessage())
 			}
+			if want := filepath.Join(filepath.Dir(l.legacy), "inference"); got.InferenceDir != want {
+				t.Fatalf("inference cache = %s, want it beside the store at %s, as before", got.InferenceDir, want)
+			}
 		})
+	}
+}
+
+// writeInferenceCache lays out an inference cache the way the agent's runtime
+// leaves it (Mesh 1, agent 2026.10.27): the pinned uv, uv's package cache, the
+// managed Python, a virtual environment and a Hugging Face model. It returns
+// each file with its contents.
+func writeInferenceCache(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	files := map[string]string{
+		"uv-0.10.9": "uv",
+		"cache/archive-v0/SIqgOXNS0cHwV4_3T6s34/setuptools/__init__.py":                                          "",
+		"cache/wheels-v6/index/e1d141a6ca947dff/torch/2.8.0+cpu-cp312-cp312-manylinux_2_28_aarch64.http":         "policy",
+		"python/cpython-3.12.13-linux-aarch64-gnu/bin/python3.12":                                                "python",
+		"runtime-fde4e167d62e7f28/.venv/pyvenv.cfg":                                                              "home = " + filepath.Join(dir, "python/cpython-3.12.13-linux-aarch64-gnu/bin") + "\n",
+		"runtime-fde4e167d62e7f28/uv.lock":                                                                       "version = 1\n",
+		"models/hub/models--webnn--yolo11n/snapshots/9c5acfdd74aaff2d0f47c51b878506361039a51f/onnx/yolo11n.onnx": "onnx",
+	}
+	for name, contents := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func TestInferenceCacheChoiceWhenTheStoreMovesToTheDataDisk(t *testing.T) {
+	cases := []struct {
+		name string
+		// setup prepares the inference caches and returns the one the agent
+		// must use.
+		setup func(t *testing.T, earlier, moved string) string
+	}{
+		{
+			name:  "fresh device",
+			setup: func(t *testing.T, earlier, moved string) string { return moved },
+		},
+		{
+			name: "an earlier agent downloaded it",
+			setup: func(t *testing.T, earlier, moved string) string {
+				writeInferenceCache(t, earlier)
+				return earlier
+			},
+		},
+		{
+			// The first download failed before uv arrived: an empty home and an
+			// interrupted temporary file are nothing to keep.
+			name: "an earlier agent downloaded nothing",
+			setup: func(t *testing.T, earlier, moved string) string {
+				if err := os.MkdirAll(filepath.Join(earlier, "home"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(earlier, ".uv-123456"), []byte("partial"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return moved
+			},
+		},
+		{
+			// For example after an OS update to the other slot downloaded it to
+			// the data disk, and the device then came back to this slot.
+			name: "both hold one",
+			setup: func(t *testing.T, earlier, moved string) string {
+				writeInferenceCache(t, earlier)
+				writeInferenceCache(t, moved)
+				return moved
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := testLayout(t)
+			meshFilesystems(t, l)
+			earlier := filepath.Join(filepath.Dir(l.legacy), "inference")
+			moved := filepath.Join(filepath.Dir(l.dataDisk), "inference")
+			want := tc.setup(t, earlier, moved)
+
+			got := l.choose()
+			if got.Path != l.dataDisk {
+				t.Fatalf("store = %s, want the data disk %s", got.Path, l.dataDisk)
+			}
+			if got.InferenceDir != want {
+				t.Fatalf("inference cache = %s, want %s (%s)", got.InferenceDir, want, got.InferenceReason)
+			}
+			if want == moved && got.InferenceReason != "beside the episode store" {
+				t.Fatalf("inference reason = %q", got.InferenceReason)
+			}
+			if want == earlier && !strings.Contains(got.InferenceReason, "move the folder to "+moved+" while the agent is stopped") {
+				t.Fatalf("inference reason %q does not say how to move it", got.InferenceReason)
+			}
+		})
+	}
+}
+
+// TestUpdateKeepsTheInferenceCacheAnEarlierAgentDownloaded drives the agent's
+// path, NewManager(""), on Mesh 1 updated from an agent that kept everything
+// on the root disk: the store moves, the inference cache does not, and
+// nothing in it is touched or copied.
+func TestUpdateKeepsTheInferenceCacheAnEarlierAgentDownloaded(t *testing.T) {
+	l := testLayout(t)
+	meshFilesystems(t, l)
+	useStoreLayout(t, l)
+	earlier := filepath.Join(filepath.Dir(l.legacy), "inference")
+	files := writeInferenceCache(t, earlier)
+
+	m, err := NewManager("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.StoreLocation().Path; got != l.dataDisk {
+		t.Fatalf("store = %s, want %s", got, l.dataDisk)
+	}
+	if got := m.InferenceDirectory(); got != earlier {
+		t.Fatalf("inference cache = %s, want the one already downloaded at %s", got, earlier)
+	}
+	for name, contents := range files {
+		b, err := os.ReadFile(filepath.Join(earlier, name))
+		if err != nil || string(b) != contents {
+			t.Fatalf("%s in the kept cache = %q, %v; want it untouched", name, b, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(l.dataDisk), "inference")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an inference cache was created on the data disk although the old one is in use: %v", err)
 	}
 }
 
@@ -189,6 +322,7 @@ func TestWendyDataDirOverridesDefaultStore(t *testing.T) {
 	meshFilesystems(t, l)
 	useStoreLayout(t, l)
 	explicit := filepath.Join(t.TempDir(), "custom", "episodes")
+	writeInferenceCache(t, filepath.Join(filepath.Dir(l.legacy), "inference"))
 
 	m, err := NewManager(explicit)
 	if err != nil {
@@ -203,6 +337,9 @@ func TestWendyDataDirOverridesDefaultStore(t *testing.T) {
 	}
 	if got.Reason != "WENDY_DATA_DIR names it" {
 		t.Fatalf("reason = %q", got.Reason)
+	}
+	if want := filepath.Join(filepath.Dir(explicit), "inference"); m.InferenceDirectory() != want {
+		t.Fatalf("inference cache = %s, want it beside WENDY_DATA_DIR at %s, as before", m.InferenceDirectory(), want)
 	}
 	if _, err := os.Stat(l.dataDisk); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("WENDY_DATA_DIR was set, yet the default store was created: %v", err)

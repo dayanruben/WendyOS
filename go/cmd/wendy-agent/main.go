@@ -358,7 +358,9 @@ func main() {
 	logger.Info("Wendy Data episode store",
 		zap.String("path", dataStore.Path),
 		zap.String("campaigns", dataStore.CampaignDir),
-		zap.String("reason", dataStore.Reason))
+		zap.String("inference", dataStore.InferenceDir),
+		zap.String("reason", dataStore.Reason),
+		zap.String("inferenceReason", dataStore.InferenceReason))
 	if msg := dataStore.LeftBehindMessage(); msg != "" {
 		logger.Warn(msg, zap.Int("episodes", dataStore.LeftBehind), zap.Int64("bytes", dataStore.LeftBehindBytes))
 	}

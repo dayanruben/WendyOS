@@ -127,10 +127,20 @@ It is only needed for a custom location. Without it, the agent uses
 filesystem larger than `/`, which on WendyOS is the persistent `/data`
 partition, and `/var/lib/wendy-agent/data/episodes` on the root filesystem
 otherwise. It logs `Wendy Data episode store` once at startup with the path, the
-campaign plan directory and the reason.
+campaign plan directory, the inference folder and why it chose them.
 
 The campaign inference runtime and model files live beside the store, in
-`inference/`. Campaign plans live beside it in `campaigns/` when
+`inference/`, with one exception. On a device where an earlier agent already
+downloaded them to `/var/lib/wendy-agent/data/inference` and the store moved to
+the data partition by default, the agent keeps using them there, so the update
+downloads nothing (about 1.1 GB of Python packages and models on a Jetson).
+To put them on the data partition, stop the agent, move that folder to
+`/var/lib/wendy/wendy-data/inference` and start it again: the first campaign
+inference rebuilds its Python environment from the moved files without
+downloading them. An OS update starts the other root slot without the old
+folder, so the runtime it downloads then goes to the data partition.
+
+Campaign plans live beside the store in `campaigns/` when
 `WENDY_DATA_DIR` is set, and in `/var/lib/wendy-agent/data/campaigns` otherwise.
 Point `WENDY_DATA_DIR` at a dedicated folder, never at a mount point such as
 `/data` itself:

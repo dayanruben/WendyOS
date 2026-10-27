@@ -21,6 +21,9 @@ import (
 // beside it, on a disk mounted at /data, would say nothing about what it holds.
 // Its episodes and inference children keep the shape of the old
 // /var/lib/wendy-agent/data.
+//
+// The inference cache does not follow the store on a device where an earlier
+// agent already downloaded it; see inferenceDir.
 const (
 	// DataDiskRoot is the default store on a device whose /var/lib/wendy is a
 	// separate filesystem larger than the root one, which is every WendyOS
@@ -42,8 +45,16 @@ type StoreLocation struct {
 	// leaving them where earlier agents wrote them keeps every deployed
 	// campaign armed across the agent update.
 	CampaignDir string
-	// Reason is the clause the agent logs to say why Path was chosen.
-	Reason string
+	// InferenceDir holds the campaign inference runtime and models: the
+	// pinned uv, its package cache, the managed Python, the virtual
+	// environments and the Hugging Face cache. It is beside Path, except on a
+	// device where the store moved to DataDiskRoot by default and an earlier
+	// agent already downloaded them beside LegacyRoot: they stay there.
+	InferenceDir string
+	// Reason is the clause the agent logs to say why Path was chosen, and
+	// InferenceReason the one for InferenceDir.
+	Reason          string
+	InferenceReason string
 	// LeftBehind and LeftBehindBytes describe the episodes still in LegacyRoot
 	// when the store moved to DataDiskRoot. Nothing moves or deletes them;
 	// they are only no longer listed.
@@ -70,8 +81,19 @@ func (l StoreLocation) LeftBehindMessage() string {
 // in the agent means WENDY_DATA_DIR. Everything stays beside it, exactly as it
 // did before the default moved.
 func explicitStoreLocation(root string) StoreLocation {
-	return StoreLocation{Path: root, CampaignDir: filepath.Join(filepath.Dir(root), "campaigns"), Reason: "WENDY_DATA_DIR names it"}
+	return besideStore(StoreLocation{Path: root, Reason: "WENDY_DATA_DIR names it"})
 }
+
+// besideStore puts campaign plans and the inference cache beside the store,
+// where every earlier agent kept them.
+func besideStore(l StoreLocation) StoreLocation {
+	l.CampaignDir = filepath.Join(filepath.Dir(l.Path), "campaigns")
+	l.InferenceDir = filepath.Join(filepath.Dir(l.Path), "inference")
+	l.InferenceReason = besideStoreReason
+	return l
+}
+
+const besideStoreReason = "beside the episode store"
 
 // fsIdentity is what the store choice compares: which filesystem holds a path,
 // and how big that filesystem is.
@@ -111,11 +133,7 @@ var defaultStoreLayout = storeLayout{
 // cannot be confirmed keeps LegacyRoot, which is what every earlier agent did.
 func (l storeLayout) choose() StoreLocation {
 	keep := func(why string) StoreLocation {
-		return StoreLocation{
-			Path:        l.legacy,
-			CampaignDir: filepath.Join(filepath.Dir(l.legacy), "campaigns"),
-			Reason:      "kept the root-disk default: " + why,
-		}
+		return besideStore(StoreLocation{Path: l.legacy, Reason: "kept the root-disk default: " + why})
 	}
 	if info, err := os.Stat(l.dataMount); err != nil || !info.IsDir() {
 		return keep(l.dataMount + " does not exist, so this is not a WendyOS device with a data partition")
@@ -143,8 +161,51 @@ func (l storeLayout) choose() StoreLocation {
 		Reason:      fmt.Sprintf("%s is on its own filesystem (%s), larger than the root filesystem (%s)", l.dataMount, humanBytes(data.size), humanBytes(system.size)),
 		LegacyPath:  l.legacy,
 	}
+	location.InferenceDir, location.InferenceReason = l.inferenceDir()
 	location.LeftBehind, location.LeftBehindBytes = countEpisodes(l.legacy)
 	return location
+}
+
+// inferenceDir chooses the inference cache for a store that moved to the data
+// disk. It goes beside the store, unless the data disk holds none yet and an
+// earlier agent already downloaded one beside LegacyRoot: then that one stays
+// in use where it is, so the update downloads nothing (about 1.1 GB on Mesh 1).
+// Nothing is copied, moved or deleted.
+//
+// Moving it would also work: a moved virtual environment names the old folder
+// in its interpreter link, pyvenv.cfg and every script's #! line, so uv
+// discards it, but it rebuilds it from the moved package cache without
+// downloading. It is not done because it means copying a gigabyte across
+// filesystems during startup to free root space the cache already fits in;
+// what fills the root disk is the episode store, and that moved. An OS update
+// starts the other A/B slot without /var/lib/wendy-agent/data/inference, so the
+// runtime it downloads, as every OS update already did, lands on the data disk
+// and stays there.
+func (l storeLayout) inferenceDir() (string, string) {
+	moved := filepath.Join(filepath.Dir(l.dataDisk), "inference")
+	earlier := filepath.Join(filepath.Dir(l.legacy), "inference")
+	if !holdsInferenceDownloads(moved) && holdsInferenceDownloads(earlier) {
+		return earlier, fmt.Sprintf("an earlier agent downloaded the inference runtime and models there, and they stay so that this update downloads nothing; to put them on the data disk, move the folder to %s while the agent is stopped", moved)
+	}
+	return moved, besideStoreReason
+}
+
+// holdsInferenceDownloads reports whether an inference cache directory holds
+// anything campaign inference downloaded: the pinned uv, its package cache,
+// the managed Python, a virtual environment or a model. home is the worker's
+// home directory, created empty, and hidden names are the temporary files of
+// an interrupted download.
+func holdsInferenceDownloads(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if name := e.Name(); name != "home" && !strings.HasPrefix(name, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 // suggestDataPartition reports whether a space error for the store at root
