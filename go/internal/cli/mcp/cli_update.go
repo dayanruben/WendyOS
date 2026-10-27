@@ -49,14 +49,24 @@ func (s *mcpServer) cliUpdateStatus() cliUpdateInfo {
 	info.LatestVersion = latest
 	info.UpdateCommand = cliupdate.Command(runtime.GOOS)
 	info.RestartRequired = true
-	info.Message = fmt.Sprintf("**WENDY CLI UPDATE AVAILABLE**: %s (running %s). Tell the user about this update now and offer to download it. Update with: %s. Then restart the Wendy MCP server to load the new version and tools. If they defer, remind them tomorrow.", info.LatestVersion, version.Version, info.UpdateCommand)
+	info.Message = fmt.Sprintf("A new Wendy CLI version is available: %s (running %s). Update with: %s. Then restart the Wendy MCP server to load the new version and tools.", info.LatestVersion, version.Version, info.UpdateCommand)
 	return info
 }
+
+// cliUpdateNotice asks the assistant to raise the update. Only the daily tool
+// result notice carries it; wendy_status returns the plain Message on every call.
+func cliUpdateNotice(info cliUpdateInfo) string {
+	return fmt.Sprintf("**WENDY CLI UPDATE AVAILABLE**: %s (running %s). Tell the user about this update now and offer to download it. Update with: %s. Then restart the Wendy MCP server to load the new version and tools. If they defer, remind them tomorrow.", info.LatestVersion, version.Version, info.UpdateCommand)
+}
+
+// wallClock drops the monotonic reading, which stops while the computer
+// sleeps and would stretch a daily reminder across several calendar days.
+func wallClock() time.Time { return time.Now().Round(0) }
 
 // Keep notice state separate from CLIUpdateNoticeShown: a terminal notice
 // cannot tell us whether this MCP client has received the release notice.
 func (s *mcpServer) cliUpdateMiddleware() server.ToolHandlerMiddleware {
-	return s.cliUpdateMiddlewareWithClock(time.Now)
+	return s.cliUpdateMiddlewareWithClock(wallClock)
 }
 
 func (s *mcpServer) cliUpdateMiddlewareWithClock(now func() time.Time) server.ToolHandlerMiddleware {
@@ -94,7 +104,7 @@ func (s *mcpServer) cliUpdateMiddlewareWithClock(now func() time.Time) server.To
 			// Preserve the handler's structured payload and error state, and
 			// avoid changing a result the handler may reuse on later calls.
 			withNotice := *result
-			withNotice.Content = append(append([]mcpgo.Content(nil), result.Content...), mcpgo.NewTextContent(info.Message))
+			withNotice.Content = append(append([]mcpgo.Content(nil), result.Content...), mcpgo.NewTextContent(cliUpdateNotice(info)))
 			return &withNotice, nil
 		}
 	}

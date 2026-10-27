@@ -92,7 +92,9 @@ func TestWendyStatusCLIUpdateReloadsCache(t *testing.T) {
 		if out.Connected != connected || !out.Update.Available || out.Update.LatestVersion != cfg.AvailableCLIUpdate || out.Update.LastCheckedAt != cfg.LastCLIUpdateCheck || !out.Update.RestartRequired {
 			t.Fatalf("status: %+v", out)
 		}
-		if out.Update.UpdateCommand != "wendy update" || !strings.Contains(out.Update.Message, "restart the Wendy MCP server") || strings.Contains(out.Update.Message, "brew trust") {
+		// The status field repeats on every call, so it informs without asking
+		// the assistant to raise the update again.
+		if out.Update.UpdateCommand != "wendy update" || !strings.Contains(out.Update.Message, "restart the Wendy MCP server") || strings.Contains(out.Update.Message, "brew trust") || strings.Contains(out.Update.Message, "Tell the user") {
 			t.Fatalf("update guidance: %+v", out.Update)
 		}
 		// A later successful check clears a stale release without restarting.
@@ -329,6 +331,13 @@ func TestCLIUpdateChecksRepeatAndStop(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("checks=%d", calls.Load())
+	}
+}
+
+// A monotonic reading would make Sub ignore time the computer spent asleep.
+func TestCLIUpdateNoticeClockIsWallTime(t *testing.T) {
+	if now := wallClock(); now.String() != now.Round(0).String() {
+		t.Fatalf("reminder clock keeps a monotonic reading: %s", now)
 	}
 }
 
