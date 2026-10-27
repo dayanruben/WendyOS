@@ -36,7 +36,7 @@ type Config struct {
 	// once per release instead of after every command.
 	CLIUpdateNoticeShown   string `json:"cliUpdateNoticeShown,omitempty"`
 	CLIUpdatePromptVersion string `json:"cliUpdatePromptVersion,omitempty"`
-	CLIUpdatePromptedAt    string `json:"cliUpdatePromptedAt,omitempty"` // interactive reminder snooze, RFC3339
+	CLIUpdatePromptedAt    string `json:"cliUpdatePromptedAt,omitempty"` // explicit deferral of all interactive update prompts for 24h, RFC3339
 	// LastMCPSetupVersion records the CLI version that last ran `wendy mcp
 	// setup`. It lets the root command detect when an upgrade should refresh
 	// the MCP server config and bundled skills. Empty means the user has never

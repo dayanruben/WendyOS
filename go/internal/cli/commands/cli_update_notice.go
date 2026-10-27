@@ -16,8 +16,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
-var confirmCLIUpdate = func(cmd *cobra.Command) (bool, error) {
-	return tui.ConfirmDefaultYes("Update now?", tea.WithOutput(cmd.ErrOrStderr()))
+var confirmCLIUpdate = func(cmd *cobra.Command, latest string) (bool, error) {
+	return tui.PromptCLIUpdate(version.Version, latest, tea.WithContext(cmd.Context()), tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.ErrOrStderr()))
 }
 var applyCLIUpdate = performCLIUpdate
 var detectCLIUpdate = cliupdate.Detect
@@ -88,7 +88,7 @@ func showCLIUpdateNotice(cmd *cobra.Command, allowPrompt bool) (bool, error) {
 	}
 
 	interactive := allowPrompt && !jsonOutput && isInteractiveTerminal()
-	if interactive && cfg.CLIUpdatePromptVersion == latest && timestampWithin(cfg.CLIUpdatePromptedAt, cliUpdateCheckInterval, time.Now()) {
+	if interactive && timestampWithin(cfg.CLIUpdatePromptedAt, cliUpdateCheckInterval, time.Now()) {
 		return false, nil
 	}
 	if !interactive && cfg.CLIUpdateNoticeShown == latest {
@@ -118,19 +118,23 @@ func showCLIUpdateNotice(cmd *cobra.Command, allowPrompt bool) (bool, error) {
 	}
 	cmd.PrintErrf("\nA new version of the Wendy CLI is available: %s (you have %s)\nUpdate with: %s\n", latest, version.Version, cliupdate.Command(runtime.GOOS))
 	trackCLIUpdate(cmd, "cli_update_offered", "completed", "", method)
-	_ = updateCLIState(cmd.Context(), func(current *config.Config) {
-		if interactive {
-			current.CLIUpdatePromptVersion = latest
-			current.CLIUpdatePromptedAt = time.Now().UTC().Format(time.RFC3339)
-		} else {
-			current.CLIUpdateNoticeShown = latest
-		}
-	})
 	if !interactive {
+		_ = updateCLIState(cmd.Context(), func(current *config.Config) {
+			current.CLIUpdateNoticeShown = latest
+		})
 		return true, nil
 	}
-	confirmed, promptErr := confirmCLIUpdate(cmd)
-	if promptErr != nil || !confirmed {
+	confirmed, promptErr := confirmCLIUpdate(cmd, latest)
+	if promptErr != nil {
+		// An interrupted or broken dialog is not an answer. Offer it again
+		// next time rather than silently snoozing for a day.
+		return true, nil
+	}
+	if !confirmed {
+		_ = updateCLIState(cmd.Context(), func(current *config.Config) {
+			current.CLIUpdatePromptVersion = latest
+			current.CLIUpdatePromptedAt = time.Now().UTC().Format(time.RFC3339)
+		})
 		trackCLIUpdate(cmd, "cli_update_deferred", "cancelled", "user_cancelled", method)
 		cmd.PrintErrln("Remind you tomorrow. Run `wendy update` whenever you are ready.")
 		return true, nil

@@ -49,15 +49,23 @@ func (s *mcpServer) cliUpdateStatus() cliUpdateInfo {
 	info.LatestVersion = latest
 	info.UpdateCommand = cliupdate.Command(runtime.GOOS)
 	info.RestartRequired = true
-	info.Message = fmt.Sprintf("A new Wendy CLI version is available: %s (running %s). Update with: %s. Then restart the Wendy MCP server to load the new version and tools.", info.LatestVersion, version.Version, info.UpdateCommand)
+	info.Message = fmt.Sprintf("**WENDY CLI UPDATE AVAILABLE**: %s (running %s). Tell the user about this update now and offer to download it. Update with: %s. Then restart the Wendy MCP server to load the new version and tools. If they defer, remind them tomorrow.", info.LatestVersion, version.Version, info.UpdateCommand)
 	return info
 }
 
 // Keep notice state separate from CLIUpdateNoticeShown: a terminal notice
 // cannot tell us whether this MCP client has received the release notice.
 func (s *mcpServer) cliUpdateMiddleware() server.ToolHandlerMiddleware {
+	return s.cliUpdateMiddlewareWithClock(time.Now)
+}
+
+func (s *mcpServer) cliUpdateMiddlewareWithClock(now func() time.Time) server.ToolHandlerMiddleware {
+	type notice struct {
+		version string
+		at      time.Time
+	}
 	var mu sync.Mutex
-	announced := make(map[string]map[string]bool)
+	announced := make(map[string]notice)
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 			result, err := next(ctx, req)
@@ -75,13 +83,11 @@ func (s *mcpServer) cliUpdateMiddleware() server.ToolHandlerMiddleware {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if announced[sessionID][info.LatestVersion] {
+			previous, current := announced[sessionID], now()
+			if previous.version == info.LatestVersion && !current.Before(previous.at) && current.Sub(previous.at) < 24*time.Hour {
 				return result, err
 			}
-			if announced[sessionID] == nil {
-				announced[sessionID] = make(map[string]bool)
-			}
-			announced[sessionID][info.LatestVersion] = true
+			announced[sessionID] = notice{version: info.LatestVersion, at: current}
 			analytics.TrackStage(analytics.WithEntrypoint(ctx, "mcp"), "cli_update_offered", "wendy update", "completed", "", map[string]string{
 				"stage": "cli_update", "install_method": "unknown",
 			})
