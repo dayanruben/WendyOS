@@ -303,6 +303,13 @@ func runOIDCLogin(ctx context.Context, opts oidcLoginOptions, hooks oidcLoginHoo
 		DPoPPrivateKey: privateKeyPEM,
 		Certificates:   []config.CertificateInfo{certInfo},
 	}
+	// Registering calls Cloud, so it runs on a snapshot outside the config lock.
+	prior, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	keepRegistryKey(prior, &authEntry)
+	registerRegistryKeyAfterMint(ctx, &authEntry)
 	// Update, not Load then Save: auth_login runs this inside the long-lived
 	// MCP server, which may persist a refreshed token while the browser is open.
 	if err := config.Update(func(cfg *config.Config) (bool, error) {
@@ -325,6 +332,16 @@ func runOIDCLogin(ctx context.Context, opts oidcLoginOptions, hooks oidcLoginHoo
 	hooks.print(sessionKeyLine(keyAlgorithmName(key.Public()), "OIDC"))
 	clitimesync.CacheProof(ctx)
 	return nil
+}
+
+// keepRegistryKey keeps this machine's registry key across sign-ins of the
+// same operator on the same session; another principal starts without one.
+func keepRegistryKey(cfg *config.Config, entry *config.AuthConfig) {
+	for _, prior := range cfg.Auth {
+		if sameOAuthSession(&prior, entry) && len(prior.Certificates) > 0 && prior.Certificates[0].PrincipalURI == entry.Certificates[0].PrincipalURI {
+			entry.RegistryPrivateKey, entry.RegistryKeyID = prior.RegistryPrivateKey, prior.RegistryKeyID
+		}
+	}
 }
 
 type oidcHTTPDoer interface {
