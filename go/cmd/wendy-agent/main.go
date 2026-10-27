@@ -194,6 +194,11 @@ func main() {
 	var networkMgr services.NetworkManager
 	if nm := agentnet.NewNMCLINetworkManager(logger); nm != nil {
 		networkMgr = nm
+		go func() {
+			rctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			nm.RepairForcedOpenAuthOnce(rctx)
+		}()
 	}
 	hwDiscoverer := hardware.NewSystemHardwareDiscoverer(logger)
 	linkWatcher := bluetooth.NewWatcher(logger)
