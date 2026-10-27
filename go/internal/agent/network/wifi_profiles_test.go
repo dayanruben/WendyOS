@@ -17,16 +17,16 @@ func TestParseWiFiProfile(t *testing.T) {
 	}{
 		{"open network", ssidField + ":Cafe\n", wifiProfile{SSID: "Cafe"}},
 		{"psk with forced open auth", profileOut("wpa-psk", "open", "Home"),
-			wifiProfile{SSID: "Home", KeyMgmt: "wpa-psk", AuthAlg: "open"}},
+			wifiProfile{Mode: "infrastructure", SSID: "Home", KeyMgmt: "wpa-psk", AuthAlg: "open"}},
 		{"colon and backslash kept raw", profileOut("wpa-psk", "", `a:b\c`),
-			wifiProfile{SSID: `a:b\c`, KeyMgmt: "wpa-psk"}},
+			wifiProfile{Mode: "infrastructure", SSID: `a:b\c`, KeyMgmt: "wpa-psk"}},
 		{"newline and blank line in ssid", profileOut("sae", "", "zz\n\nnl"),
-			wifiProfile{SSID: "zz\n\nnl", KeyMgmt: "sae"}},
+			wifiProfile{Mode: "infrastructure", SSID: "zz\n\nnl", KeyMgmt: "sae"}},
 		{"ssid that looks like a field", profileOut("sae", "", "x\n"+keyMgmtField+":wpa-psk"),
-			wifiProfile{SSID: "x\n" + keyMgmtField + ":wpa-psk", KeyMgmt: "sae"}},
+			wifiProfile{Mode: "infrastructure", SSID: "x\n" + keyMgmtField + ":wpa-psk", KeyMgmt: "sae"}},
 		{"surrounding spaces kept", profileOut("wpa-psk", "open", " zz psk "),
-			wifiProfile{SSID: " zz psk ", KeyMgmt: "wpa-psk", AuthAlg: "open"}},
-		{"trailing newline in ssid", profileOut("", "", "zz\n"), wifiProfile{SSID: "zz\n"}},
+			wifiProfile{Mode: "infrastructure", SSID: " zz psk ", KeyMgmt: "wpa-psk", AuthAlg: "open"}},
+		{"trailing newline in ssid", profileOut("", "", "zz\n"), wifiProfile{Mode: "infrastructure", SSID: "zz\n"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -65,9 +65,9 @@ func TestReadWiFiProfilesInOneCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]wifiProfile{
-		"u1": {SSID: odd, KeyMgmt: "wpa-psk", AuthAlg: "open"},
-		"u2": {SSID: "zz\n"},
-		"u3": {SSID: "Office", KeyMgmt: "sae"},
+		"u1": {Mode: "infrastructure", SSID: odd, KeyMgmt: "wpa-psk", AuthAlg: "open"},
+		"u2": {Mode: "infrastructure", SSID: "zz\n"},
+		"u3": {Mode: "infrastructure", SSID: "Office", KeyMgmt: "sae"},
 	}
 	for uuid, w := range want {
 		if got[uuid] != w {

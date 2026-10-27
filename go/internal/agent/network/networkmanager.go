@@ -4,6 +4,7 @@ package network
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -136,12 +137,14 @@ func (n *NMCLINetworkManager) listKnownProfiles(ctx context.Context) ([]knownPro
 
 const (
 	uuidField    = "connection.uuid"
+	ifaceField   = "connection.interface-name"
+	modeField    = "802-11-wireless.mode"
 	ssidField    = "802-11-wireless.ssid"
 	keyMgmtField = "802-11-wireless-security.key-mgmt"
 	authAlgField = "802-11-wireless-security.auth-alg"
 	// profileFields ends with the SSID: values come back raw, and the SSID is the
 	// only field that can span lines.
-	profileFields = keyMgmtField + "," + authAlgField + "," + ssidField
+	profileFields = ifaceField + "," + modeField + "," + keyMgmtField + "," + authAlgField + "," + ssidField
 
 	// nmcliNoSuchConnection is nmcli's exit status for a profile that doesn't exist.
 	nmcliNoSuchConnection = 10
@@ -152,6 +155,14 @@ type wifiProfile struct {
 	SSID    string
 	KeyMgmt string
 	AuthAlg string
+	Iface   string // the device the profile is bound to, if any
+	Mode    string
+}
+
+// joinsWithPassphrase reports whether p joins networks as a client with a WPA
+// passphrase.
+func (p wifiProfile) joinsWithPassphrase() bool {
+	return (p.Mode == "" || p.Mode == "infrastructure") && (p.KeyMgmt == "wpa-psk" || p.KeyMgmt == "sae")
 }
 
 // wifiProfileUUIDs lists the UUIDs of the saved WiFi profiles.
@@ -241,6 +252,8 @@ func readWiFiProfile(ctx context.Context, nmcliPath, uuid string) (wifiProfile, 
 // security setting has no security lines.
 func parseWiFiProfile(out string) (wifiProfile, error) {
 	var p wifiProfile
+	p.Iface, out = cutField(out, ifaceField)
+	p.Mode, out = cutField(out, modeField)
 	p.KeyMgmt, out = cutField(out, keyMgmtField)
 	p.AuthAlg, out = cutField(out, authAlgField)
 	ssid, ok := strings.CutPrefix(out, ssidField+":")
@@ -387,17 +400,6 @@ func parseWiFiList(scanOutput string, known []knownProfile) []*agentpb.ListWiFiN
 	return networks
 }
 
-// Connect connects to a WiFi network using nmcli, resolving the binary path
-// with the same fallback logic used by NewNMCLINetworkManager. Suitable for
-// callers that don't hold an NMCLINetworkManager instance.
-func Connect(ctx context.Context, ssid, password string) error {
-	path := resolveNMCLIPath()
-	if path == "" {
-		return fmt.Errorf("nmcli not found")
-	}
-	return runNMCLIConnect(ctx, path, ssid, password, false)
-}
-
 // SavedCredential describes a WiFi profile that the agent should persist via
 // nmcli without necessarily activating it. Used by the config-partition
 // provisioning path on first boot.
@@ -438,23 +440,39 @@ func saveProfile(ctx context.Context, nmcliPath, existing string, c SavedCredent
 	return addProfile(ctx, nmcliPath, c)
 }
 
-// existingProfileUUID returns the UUID of the saved profile for ssid, or "".
-// A read failure is an error, so a caller never takes a saved profile as absent.
-func existingProfileUUID(ctx context.Context, nmcliPath, ssid string) (string, error) {
+// savedProfile is a saved WiFi profile and its UUID.
+type savedProfile struct {
+	UUID string
+	wifiProfile
+}
+
+// ssidProfiles returns the saved profiles for ssid in nmcli's order. A read
+// failure is an error, so a caller never takes a saved profile as absent.
+func ssidProfiles(ctx context.Context, nmcliPath, ssid string) ([]savedProfile, error) {
 	uuids, err := wifiProfileUUIDs(ctx, nmcliPath)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	profiles, err := readWiFiProfiles(ctx, nmcliPath, uuids)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+	var matches []savedProfile
 	for _, uuid := range uuids {
 		if p, ok := profiles[uuid]; ok && p.SSID == ssid {
-			return uuid, nil
+			matches = append(matches, savedProfile{UUID: uuid, wifiProfile: p})
 		}
 	}
-	return "", nil
+	return matches, nil
+}
+
+// existingProfileUUID returns the UUID of the first saved profile for ssid, or "".
+func existingProfileUUID(ctx context.Context, nmcliPath, ssid string) (string, error) {
+	matches, err := ssidProfiles(ctx, nmcliPath, ssid)
+	if err != nil || len(matches) == 0 {
+		return "", err
+	}
+	return matches[0].UUID, nil
 }
 
 // addedUUIDRe matches the UUID in nmcli's "Connection 'NAME' (UUID) successfully
@@ -483,6 +501,8 @@ func addProfile(ctx context.Context, nmcliPath string, c SavedCredential) (strin
 		}
 	}
 	cmd := nmcli.Command(ctx, nmcliPath, args...)
+	// The reply is parsed, so keep it untranslated.
+	cmd.Env = append(cmd.Env, "LANGUAGE=")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("nmcli connection add %s: %s: %w", c.SSID, strings.TrimSpace(string(out)), err)
@@ -490,14 +510,15 @@ func addProfile(ctx context.Context, nmcliPath string, c SavedCredential) (strin
 	if m := addedUUIDRe.FindAllStringSubmatch(string(out), -1); len(m) > 0 {
 		return m[len(m)-1][1], nil
 	}
-	id, err := existingProfileUUID(ctx, nmcliPath, c.SSID)
-	if err == nil && id == "" {
-		err = fmt.Errorf("no saved profile for SSID %q", c.SSID)
+	// Only an SSID's sole profile can be told apart as the one just added.
+	matches, err := ssidProfiles(ctx, nmcliPath, c.SSID)
+	if err == nil && len(matches) != 1 {
+		err = fmt.Errorf("%d saved profiles for SSID %q", len(matches), c.SSID)
 	}
 	if err != nil {
 		return "", fmt.Errorf("finding the added profile: %w", err)
 	}
-	return id, nil
+	return matches[0].UUID, nil
 }
 
 func modifyProfile(ctx context.Context, nmcliPath, uuid string, c SavedCredential) error {
@@ -515,6 +536,10 @@ func modifyProfile(ctx context.Context, nmcliPath, uuid string, c SavedCredentia
 		}
 		args = append(args, "802-11-wireless-security.key-mgmt", km)
 		args = append(args, "802-11-wireless-security.psk", c.Password)
+		if km == "wpa-psk" || km == "sae" {
+			// WPA leaves the authentication algorithm to the supplicant.
+			args = append(args, authAlgField, "")
+		}
 	}
 	if len(args) == 3 {
 		// Nothing to change beyond the existing profile — still fine.
@@ -545,11 +570,16 @@ func activateProfile(ctx context.Context, nmcliPath, ssid string) error {
 	if uuid == "" {
 		return fmt.Errorf("no saved profile for SSID %q", ssid)
 	}
-	return upProfile(ctx, nmcliPath, ssid, uuid)
+	return upProfile(ctx, nmcliPath, ssid, uuid, "")
 }
 
-func upProfile(ctx context.Context, nmcliPath, ssid, uuid string) error {
-	cmd := nmcli.Command(ctx, nmcliPath, "connection", "up", uuid)
+// upProfile activates a profile, on device when one is given.
+func upProfile(ctx context.Context, nmcliPath, ssid, uuid, device string) error {
+	args := []string{"connection", "up", uuid}
+	if device != "" {
+		args = append(args, "ifname", device)
+	}
+	cmd := nmcli.Command(ctx, nmcliPath, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("nmcli connection up %s: %s: %w", ssid, strings.TrimSpace(string(out)), err)
 	}
@@ -578,17 +608,18 @@ func keyMgmtFromHint(hint, password string) string {
 	return ""
 }
 
-// ConnectToWiFi connects to a WiFi network.
-//
-// For visible networks we let `nmcli device wifi connect` auto-detect the
-// security from the scan. For hidden networks or when the caller supplied an
-// explicit security hint (both are cases where autodetection can't be trusted
-// — `device wifi connect` has no way to express key-mgmt), we create/update a
-// profile with the requested key-mgmt and activate it.
+// ConnectToWiFi connects through a profile it writes for hidden networks and
+// known key management, and through `nmcli device wifi connect` otherwise.
 func (n *NMCLINetworkManager) ConnectToWiFi(ctx context.Context, req *agentpb.ConnectToWiFiRequest) error {
 	ssid := req.GetSsid()
 	hidden := req.GetHidden()
-	secHint := securityHintFromProto(req.GetSecurity())
+	password := req.GetPassword()
+	security := securityHintFromProto(req.GetSecurity())
+	var network scannedNetwork
+	scanned := false
+	if security == "" && !hidden && password != "" {
+		network, scanned = scanNetwork(ctx, n.nmcliPath, ssid)
+	}
 
 	// Snapshot whether a saved profile exists *before* we touch nmcli so we
 	// can roll back any profile we (or `nmcli device wifi connect`) created
@@ -598,34 +629,41 @@ func (n *NMCLINetworkManager) ConnectToWiFi(ctx context.Context, req *agentpb.Co
 	// never actually succeeded. We deliberately do NOT touch a pre-existing
 	// profile, since that one holds credentials from a previously-working
 	// connection that a single mistyped retry shouldn't destroy.
-	preExistingUUID, err := existingProfileUUID(ctx, n.nmcliPath, ssid)
+	saved, err := ssidProfiles(ctx, n.nmcliPath, ssid)
 	if err != nil {
 		return fmt.Errorf("checking for existing WiFi profile: %w", err)
 	}
+	if scanned {
+		return n.connectScanned(ctx, ssid, password, network, saved)
+	}
+	preExistingUUID := ""
+	if len(saved) > 0 {
+		preExistingUUID = saved[0].UUID
+	}
 
-	if hidden || secHint != "" {
+	if hidden || security != "" {
 		cred := SavedCredential{
 			SSID:     ssid,
-			Password: req.GetPassword(),
+			Password: password,
 			Hidden:   hidden,
-			Security: secHint,
+			Security: security,
 		}
 		uuid, err := saveProfile(ctx, n.nmcliPath, preExistingUUID, cred)
 		if err != nil {
 			return fmt.Errorf("preparing WiFi profile: %w", err)
 		}
-		if err := upProfile(ctx, n.nmcliPath, ssid, uuid); err != nil {
+		if err := upProfile(ctx, n.nmcliPath, ssid, uuid, ""); err != nil {
 			n.cleanupTransientProfile(ctx, ssid, preExistingUUID, uuid)
 			return err
 		}
 		n.logger.Info("Connected to WiFi via profile",
 			zap.String("ssid", ssid),
 			zap.Bool("hidden", hidden),
-			zap.String("security", secHint))
+			zap.String("security", security))
 		return nil
 	}
 
-	if err := runNMCLIConnect(ctx, n.nmcliPath, ssid, req.GetPassword(), hidden); err != nil {
+	if err := runNMCLIConnect(ctx, n.nmcliPath, ssid, password, hidden); err != nil {
 		n.cleanupTransientProfile(ctx, ssid, preExistingUUID, "")
 		return err
 	}
@@ -633,9 +671,149 @@ func (n *NMCLINetworkManager) ConnectToWiFi(ctx context.Context, req *agentpb.Co
 	return nil
 }
 
+// connectScanned joins a passphrase network the scan shows. Like nmcli, it reuses
+// a saved profile the network accepts, or adds one, on a device that sees it.
+func (n *NMCLINetworkManager) connectScanned(ctx context.Context, ssid, password string, network scannedNetwork, saved []savedProfile) error {
+	device := network.devices[0]
+	reuse, keyMgmt := "", network.keyMgmt(device)
+	if p, dev, ok := reusableProfile(saved, network, activeDevices(ctx, n.nmcliPath)); ok {
+		reuse, keyMgmt, device = p.UUID, p.KeyMgmt, dev
+	}
+	cred := SavedCredential{SSID: ssid, Password: password, Security: keyMgmt}
+	uuid, err := saveProfile(ctx, n.nmcliPath, reuse, cred)
+	if err != nil {
+		return fmt.Errorf("preparing WiFi profile: %w", err)
+	}
+	if err := upProfile(ctx, n.nmcliPath, ssid, uuid, device); err != nil {
+		n.cleanupTransientProfile(ctx, ssid, reuse, uuid)
+		return err
+	}
+	n.logger.Info("Connected to WiFi via profile",
+		zap.String("ssid", ssid),
+		zap.String("security", keyMgmt),
+		zap.String("device", device))
+	return nil
+}
+
+// reusableProfile picks a saved profile and its device. An active WPA profile
+// comes first, since the cache can miss the BSSes it suits.
+func reusableProfile(saved []savedProfile, network scannedNetwork, active map[string]string) (savedProfile, string, bool) {
+	for _, p := range saved {
+		if dev := active[p.UUID]; dev != "" && p.joinsWithPassphrase() {
+			return p, dev, true
+		}
+	}
+	for _, p := range saved {
+		dev := network.devices[0]
+		if p.Iface != "" {
+			dev = p.Iface
+		}
+		if network.accepts(p.wifiProfile, dev) {
+			return p, dev, true
+		}
+	}
+	return savedProfile{}, "", false
+}
+
+// activeDevices maps each active connection's UUID to its device; nil when
+// nmcli can't be read.
+func activeDevices(ctx context.Context, nmcliPath string) map[string]string {
+	out, err := nmcli.Command(ctx, nmcliPath, "-t", "-f", "UUID,DEVICE", "connection", "show", "--active").Output()
+	if err != nil {
+		return nil
+	}
+	active := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if fields := splitNMCLI(line, 2); len(fields) == 2 {
+			active[fields[0]] = fields[1]
+		}
+	}
+	return active
+}
+
+// keyMgmts records which passphrase key managements a set of BSSes takes.
+type keyMgmts struct{ psk, sae bool }
+
+// scannedNetwork is a passphrase network as the cached scan shows it.
+type scannedNetwork struct {
+	devices []string            // the devices that see it, in nmcli's device order
+	takes   map[string]keyMgmts // what the BSSes each device sees take
+}
+
+// keyMgmt is the key-mgmt for a new profile on device, preferring wpa-psk as
+// NetworkManager does.
+func (s scannedNetwork) keyMgmt(device string) string {
+	if s.takes[device].psk {
+		return "wpa-psk"
+	}
+	return "sae"
+}
+
+// accepts reports whether p can join the network on device, as nmcli checks
+// before reusing a profile.
+func (s scannedNetwork) accepts(p wifiProfile, device string) bool {
+	t := s.takes[device]
+	return p.joinsWithPassphrase() && (p.KeyMgmt == "wpa-psk" && t.psk || p.KeyMgmt == "sae" && t.sae)
+}
+
+// scanNetwork reads ssid from the cached scan; ok is false when the network is
+// absent or uses anything but a passphrase, leaving nmcli to decide.
+func scanNetwork(ctx context.Context, nmcliPath, ssid string) (network scannedNetwork, ok bool) {
+	out, err := nmcli.Command(ctx, nmcliPath, "-t", "-f", "SSID,SSID-HEX,SECURITY,DEVICE",
+		"device", "wifi", "list", "--rescan", "no").Output()
+	if err != nil {
+		return scannedNetwork{}, false
+	}
+	rows := map[string][]string{}
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		fields := splitNMCLI(scanner.Text(), 4)
+		if len(fields) != 4 || fields[0] != ssid {
+			continue
+		}
+		// A profile stores the SSID as text, so it only matches a network whose
+		// raw SSID bytes are that text.
+		if raw, err := hex.DecodeString(fields[1]); err != nil || string(raw) != ssid {
+			return scannedNetwork{}, false
+		}
+		device := fields[3]
+		if _, seen := rows[device]; !seen {
+			network.devices = append(network.devices, device)
+		}
+		rows[device] = append(rows[device], fields[2])
+	}
+	network.takes = make(map[string]keyMgmts, len(rows))
+	for device, security := range rows {
+		psk, sae, passphrase := passphraseSecurity(security)
+		if !passphrase {
+			return scannedNetwork{}, false
+		}
+		network.takes[device] = keyMgmts{psk: psk, sae: sae}
+	}
+	return network, len(network.devices) > 0
+}
+
+// passphraseSecurity reports which passphrase key managements the scanned BSSes
+// of one network take; ok is false when none does or one needs anything else.
+func passphraseSecurity(rows []string) (psk, sae, ok bool) {
+	for _, row := range rows {
+		for _, tok := range strings.Fields(strings.ToUpper(row)) {
+			switch {
+			case tok == "WPA1" || tok == "WPA2":
+				psk = true
+			case tok == "WPA3":
+				sae = true
+			case tok == "802.1X" || tok == "WEP" || strings.HasPrefix(tok, "OWE"):
+				return false, false, false
+			}
+		}
+	}
+	return psk, sae, psk || sae
+}
+
 // cleanupTransientProfile removes a saved nmcli profile for ssid if and only
 // if it didn't already exist before the connect attempt. preExistingUUID is
-// what existingProfileUUID returned before activation: an empty value means
+// the saved profile the attempt used, if any: an empty value means
 // the profile we now see was created during the failed attempt itself, so
 // it's safe to delete. Cleanup is best-effort — if it fails we just log,
 // since the original connect error is what the caller actually needs.

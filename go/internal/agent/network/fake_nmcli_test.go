@@ -42,6 +42,21 @@ func writeFakeNMCLI(t *testing.T, replies ...reply) (path, callLog string) {
 	return path, callLog
 }
 
+// writeNMCLIScript writes an nmcli stand-in from shell case arms, which can use
+// $d for its directory; it logs calls like writeFakeNMCLI.
+func writeNMCLIScript(t *testing.T, arms string) (path, callLog string) {
+	t.Helper()
+	dir := t.TempDir()
+	path = filepath.Join(dir, "nmcli")
+	callLog = filepath.Join(dir, "calls.log")
+	script := "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$*\" >> " + shQuote(callLog) +
+		"\ncase \"$*\" in\n" + arms + "esac\necho \"unexpected nmcli call: $*\" >&2\nexit 1\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path, callLog
+}
+
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
@@ -79,12 +94,17 @@ func batchOut(records ...string) string {
 	return strings.Join(records, "\n")
 }
 
-// profileOut renders nmcli's output for one profile; an empty keyMgmt means
-// the profile has no security setting.
+// profileOut renders nmcli's output for one profile bound to no device; an
+// empty keyMgmt means the profile has no security setting.
 func profileOut(keyMgmt, authAlg, ssid string) string {
-	out := ""
+	return boundProfileOut("", keyMgmt, authAlg, ssid)
+}
+
+// boundProfileOut is profileOut for a profile bound to the device iface.
+func boundProfileOut(iface, keyMgmt, authAlg, ssid string) string {
+	out := ifaceField + ":" + iface + "\n" + modeField + ":infrastructure\n"
 	if keyMgmt != "" {
-		out = keyMgmtField + ":" + keyMgmt + "\n" + authAlgField + ":" + authAlg + "\n"
+		out += keyMgmtField + ":" + keyMgmt + "\n" + authAlgField + ":" + authAlg + "\n"
 	}
 	return out + ssidField + ":" + ssid + "\n"
 }
