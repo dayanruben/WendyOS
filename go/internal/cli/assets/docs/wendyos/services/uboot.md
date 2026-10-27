@@ -138,4 +138,4 @@ nano /boot/config.txt
 sync && reboot
 ```
 
-> Note: OTA updates on Jetson/Tegra machines use Mender and replace the entire rootfs, but the `/boot` partition and `/config` partition sit outside the update boundary and are not affected by updates.
+> Note: OTA updates use `wendyos-update`, which writes the new rootfs to the inactive A/B slot. On Raspberry Pi, the `/boot` and `/config` partitions sit outside the A/B slots, so an update does not replace your edits to them.
