@@ -64,7 +64,8 @@ func (j *campaignInferenceJob) predictionProvenance(attributes map[string]any, r
 }
 
 // acceleratorSnapshot copies a status for inspect. The worker reports when a
-// build started; its age is computed here, so it is current between reports.
+// build started, or a wait for memory or idle CPUs began; its age is computed
+// here, so it is current between reports.
 func acceleratorSnapshot(status *data.AcceleratorStatus, now time.Time) *data.AcceleratorStatus {
 	if status == nil {
 		return nil
@@ -78,7 +79,14 @@ func acceleratorSnapshot(status *data.AcceleratorStatus, now time.Time) *data.Ac
 	if status.Engine != nil {
 		engine := *status.Engine
 		engine.Warnings = append([]string(nil), status.Engine.Warnings...)
-		if started, err := time.Parse(time.RFC3339, engine.StartedAt); err == nil && engine.State == "building" {
+		since := ""
+		switch engine.State {
+		case "building":
+			since = engine.StartedAt
+		case "waiting_for_memory", "waiting_for_cpu":
+			since = engine.WaitingSince
+		}
+		if started, err := time.Parse(time.RFC3339, since); err == nil {
 			engine.ElapsedSeconds = math.Round(now.Sub(started).Seconds())
 		}
 		copied.Engine = &engine

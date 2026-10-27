@@ -10,7 +10,12 @@ engine is found in the cache or built by a child process in the background,
 compared with the CPU on the same frames, and only then swapped in. Every way
 of not getting there leaves the CPU running and says why.
 
-Run as a script with --build-engine, this module is that child process.
+TensorRT and CUDA cost a process about 500 MB once loaded, and it keeps them.
+So the worker loads them only when an engine is about to load: what the cache
+key needs from them is read by a short-lived child, and the build runs in
+another.
+
+Run as a script with --probe or --build-engine, this module is that child.
 """
 
 import ctypes
@@ -67,14 +72,33 @@ STATUS_SECONDS = 10
 # meanwhile, so the delay costs speed, never detections. A tensorrt campaign
 # scores nothing until its engine is ready, so it builds at once.
 BUILD_JITTER_SECONDS = 20 * 60
-# A build starts only while other processes use at most this fraction of the
-# device's CPU time, sampled over CPU_SAMPLE_SECONDS. The worker's own CPU
-# inference does not count: it is what the engine replaces, so counting it
-# would keep the busiest campaigns on the CPU for good.
-BUILD_MAX_CPU_BUSY = 0.5
+# A build then starts once at least this many CPUs' worth of the device's CPU
+# time is idle, sampled over CPU_SAMPLE_SECONDS. This worker's own CPU time
+# counts as idle: it is mostly the CPU inference that the engine replaces, so
+# counting it would keep the busiest campaigns on the CPU for good. A build is
+# expected to keep about one CPU busy, so two leave one for everything else.
+#
+# This replaced "other processes use at most half of the CPU", which never let
+# a build start on a Jetson Orin Nano (6 CPUs) running a camera campaign. The
+# campaign's own capture pipeline, a 720p x264 encode, took about 33% of the
+# CPU, the agent 6% and an unrelated app 14%: 60 to 62% in all, and the build
+# waited for good. That leaves about 2.3 CPUs idle, so that device builds at
+# once now, though only just; BUILD_MAX_CPU_WAIT_SECONDS covers the rest.
+BUILD_MIN_IDLE_CPUS = 2
 CPU_SAMPLE_SECONDS = 5
 # How long to wait before checking the CPU again.
 CPU_RETRY_SECONDS = 120
+# The longest a build waits for idle CPUs. The wait is for passing peaks, such
+# as an app's image being pulled; load that lasts longer, such as continuous
+# camera capture, does not go away by waiting. So the build then starts anyway,
+# at the lowest priority (BUILD_LOWEST_NICE and the idle I/O class), and runs
+# on what other processes leave. The CPU detects throughout, as in any build.
+BUILD_MAX_CPU_WAIT_SECONDS = 30 * 60
+# The niceness of a build, and of one that stopped waiting for idle CPUs.
+BUILD_NICE = 10
+BUILD_LOWEST_NICE = 19
+# How long the --probe child may take to load TensorRT and CUDA.
+PROBE_TIMEOUT_SECONDS = 120
 
 # Why an auto campaign is on the CPU while its engine is on its way. Not
 # degraded: the engine is coming.
@@ -92,7 +116,15 @@ TENSORRT_LOG_SEVERITY = 2
 
 # Engine status fields that describe one state only. They go when the state
 # changes, so a ready engine does not keep the start time of its build.
-TRANSIENT_ENGINE_FIELDS = ("error", "started_at", "started", "not_before")
+TRANSIENT_ENGINE_FIELDS = ("error", "started_at", "started", "not_before", "waiting_since", "build_by",
+                           "low_priority")
+
+# ioprio_set(2), to put a build in the idle I/O class. Its number depends on
+# the architecture; these are the two WendyOS runs on.
+IOPRIO_SET = {"aarch64": 30, "x86_64": 251}
+IOPRIO_WHO_PROCESS = 1
+IOPRIO_CLASS_IDLE = 3
+IOPRIO_CLASS_SHIFT = 13
 
 
 class EngineError(Exception):
@@ -130,26 +162,29 @@ def rss_mib():
 
 
 def cpu_times():
-    """(busy, total) clock ticks of all CPUs since boot, and this process's
-    own busy ticks, or None off Linux. /proc/stat and /proc/self/stat both
-    count in USER_HZ ticks."""
+    """(busy, total) clock ticks of all CPUs since boot, this process's own
+    busy ticks, and the number of online CPUs, or None off Linux. /proc/stat
+    and /proc/self/stat both count in USER_HZ ticks."""
     try:
         with open("/proc/stat") as stat:
-            fields = stat.readline().split()
+            lines = stat.read().splitlines()
         with open("/proc/self/stat") as stat:
             own = stat.read()
     except OSError:
         return None
+    fields = lines[0].split() if lines else []
     if not fields or fields[0] != "cpu":
         return None
     # user nice system idle iowait irq softirq steal; guest time is already
     # inside user and nice.
     values = [int(value) for value in fields[1:9]]
     idle = values[3] + values[4]
+    # The first line adds up one cpuN line per online CPU.
+    cpus = sum(1 for line in lines[1:] if line.startswith("cpu") and line[3:4].isdigit())
     # The process name, in parentheses, may hold spaces: fields count from the
     # last parenthesis. utime and stime are fields 14 and 15.
     after_name = own[own.rindex(")") + 2:].split()
-    return sum(values) - idle, sum(values), int(after_name[11]) + int(after_name[12])
+    return sum(values) - idle, sum(values), int(after_name[11]) + int(after_name[12]), cpus
 
 
 def short(text, limit=300):
@@ -447,6 +482,35 @@ class Cuda:
         self.lib.cudaDeviceReset()
 
 
+def import_tensorrt(bindings):
+    """The tensorrt module from the bindings directory the agent verified. The
+    directory is appended to sys.path, never prepended: nothing in it can
+    shadow a package of the worker's own locked environment."""
+    if bindings not in sys.path:
+        sys.path.append(bindings)
+    import tensorrt
+    return tensorrt
+
+
+def probe(bindings, cuda_runtime):
+    """What the engine cache key needs from TensorRT and the GPU, read by
+    loading them: TensorRT's version, the CUDA runtime's, and the GPU's compute
+    capability. Raises EngineError with the reason they did not load.
+
+    Only the --probe child calls this. A process that loads TensorRT and CUDA
+    keeps about 500 MB of them, and the worker would hold that through a build
+    delay and every wait for memory or CPU, scoring on the CPU all along."""
+    try:
+        version = import_tensorrt(bindings).__version__
+    except Exception as exc:
+        raise EngineError(f"the TensorRT Python bindings did not load ({type(exc).__name__}: {short(exc, 200)})")
+    try:
+        cuda = Cuda(cuda_runtime)
+        return {"tensorrt": version, "cuda": cuda.runtime_version(), "gpu_arch": cuda.gpu_arch()}
+    except Exception as exc:
+        raise EngineError(f"CUDA is unavailable ({short(exc, 200)})")
+
+
 class CpuEngine:
     """ONNX Runtime on the CPU: the engine every campaign could always use."""
 
@@ -643,7 +707,11 @@ class Accelerator:
         self.count = 0
         # Whether this worker already waited out its build delay.
         self.staggered = False
-        # What importing TensorRT and opening CUDA took, as a growth() pair.
+        # The build's waits for memory and the CPU, by gate: see wait_clock.
+        self.waits = {}
+        # The tensorrt module, once an engine is about to load; and what
+        # importing it took, as a growth() pair.
+        self.trt = None
         self.import_cost = (0.0, 0.0)
         self.state = plan_status(self.plan, cpu.runtime, cpu.precision)
         self.state["model_sha256"] = model["sha256"]
@@ -778,14 +846,48 @@ class Accelerator:
     # The steps that touch TensorRT, CUDA or the machine are methods, so tests
     # can replace them.
 
+    def probe(self):
+        """probe() in a --probe child, so that this process loads neither
+        TensorRT nor CUDA before an engine is about to load. Its fd 1 is
+        claimed like the builder's, and it stays in the worker's process group.
+        Raises EngineError with the reason."""
+        job = {"bindings": self.tensorrt_plan["bindings"], "cuda_runtime": self.tensorrt_plan["cuda_runtime"]}
+        child = subprocess.Popen([sys.executable, "-u", os.path.abspath(__file__), "--probe"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, close_fds=True)
+        try:
+            output, _ = child.communicate(json.dumps(job).encode(), timeout=PROBE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.communicate()
+            raise EngineError(f"loading TensorRT and CUDA took longer than {PROBE_TIMEOUT_SECONDS} s")
+        message = {}
+        for line in output.splitlines():
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                message = parsed
+        if child.returncode == 0 and all(isinstance(message.get(name), str) for name in ("tensorrt", "cuda", "gpu_arch")):
+            return message
+        if message.get("error"):
+            raise EngineError(short(message["error"], 500))
+        if child.returncode < 0:
+            raise EngineError(f"the process loading TensorRT and CUDA was killed by signal {-child.returncode}")
+        raise EngineError(f"the process loading TensorRT and CUDA exited with code {child.returncode}")
+
     def import_tensorrt(self):
-        bindings = self.tensorrt_plan["bindings"]
-        # Appended, never prepended: nothing in the bindings directory can
-        # shadow a package of the worker's own locked environment.
-        if bindings not in sys.path:
-            sys.path.append(bindings)
-        import tensorrt
-        return tensorrt
+        return import_tensorrt(self.tensorrt_plan["bindings"])
+
+    def tensorrt(self):
+        """The tensorrt module, imported on first use: when an engine is about
+        to load, never while a build is scheduled or waits. The import is the
+        first memory window (see memory_cost)."""
+        if self.trt is None:
+            before = self.memory_sample()
+            self.trt = self.import_tensorrt()
+            self.import_cost = self.growth(before, self.memory_sample())
+        return self.trt
 
     def open_cuda(self):
         return Cuda(self.tensorrt_plan["cuda_runtime"])
@@ -797,9 +899,10 @@ class Accelerator:
         """(MemAvailable, this process's RSS), in MiB, either None off Linux."""
         return available_mib(), rss_mib()
 
-    def cpu_busy(self):
-        """The fraction of all CPU time that other processes used over the
-        next CPU_SAMPLE_SECONDS, or None when unknown or stopping."""
+    def idle_cpus(self):
+        """(idle CPUs, online CPUs) over the next CPU_SAMPLE_SECONDS, with this
+        process's own CPU time counted as idle; None when unknown or stopping.
+        Idle CPUs is a fraction: 2.5 is two and a half CPUs' worth of time."""
         try:
             first = cpu_times()
             if first is None or not self.wait(CPU_SAMPLE_SECONDS):
@@ -807,10 +910,11 @@ class Accelerator:
             second = cpu_times()
         except (OSError, ValueError, IndexError):
             return None
-        if second is None or second[1] <= first[1]:
+        if second is None or second[1] <= first[1] or not second[3]:
             return None
-        others = (second[0] - first[0]) - (second[2] - first[2])
-        return max(0.0, others) / (second[1] - first[1])
+        total = second[1] - first[1]
+        others = max(0, (second[0] - first[0]) - (second[2] - first[2]))
+        return (total - others) / total * second[3], second[3]
 
     def build_delay(self):
         return random.uniform(0, BUILD_JITTER_SECONDS)
@@ -838,9 +942,10 @@ class Accelerator:
     #
     # The cost is the larger of the two, and never less than the engine's own
     # plan and activations. Both are measured over two short windows and
-    # added: importing TensorRT and opening CUDA, then loading the engine,
-    # with the CUDA context in it. A build can run between the two for many
-    # minutes, while other apps allocate and free, and it is not counted.
+    # added: importing TensorRT, then opening CUDA and loading the engine,
+    # with the CUDA context in it. Both come just before the engine loads,
+    # since this process loads neither earlier; the import comes only before
+    # the first load, so a rebuild between the two windows is not counted.
     #
     # Measuring the load alone, as before, left out the import and most of the
     # context. On a Jetson Orin Nano it reported 47 to 88 MiB, while the
@@ -864,29 +969,22 @@ class Accelerator:
         return max(drop, grew, engine_bytes / (1 << 20))
 
     def accelerate(self):
-        # Taken before TensorRT or CUDA is in the process: see memory_cost.
-        baseline = self.memory_sample()
+        # TensorRT and CUDA load in a child for the cache key, and in this
+        # process only in load(). Before, the worker loaded them here and kept
+        # about 500 MB of them through the build delay and every wait: 632 to
+        # 647 MB of RSS against 146 MB for a CPU-only worker.
         try:
-            trt = self.import_tensorrt()
-        except Exception as exc:
-            return self.fall_back(f"the TensorRT Python bindings did not load ({type(exc).__name__}: {short(exc, 200)})")
-        try:
-            cuda = self.open_cuda()
-            cuda_version, gpu_arch = cuda.runtime_version(), cuda.gpu_arch()
-            # Do not hold a CUDA context through a build that may take minutes;
-            # loading the engine creates a fresh one.
-            cuda.reset()
-        except Exception as exc:
-            return self.fall_back(f"CUDA is unavailable ({short(exc, 200)})")
-        # What stays after the reset: the libraries and the driver's state.
-        self.import_cost = self.growth(baseline, self.memory_sample())
+            found = self.probe()
+        except EngineError as exc:
+            return self.fall_back(str(exc))
         plan = self.tensorrt_plan
-        fields = key_fields(self.model["sha256"], trt.__version__, plan.get("library", ""), cuda_version,
-                            gpu_arch, self.model["input_shape"], self.model["output_shape"], plan["workspace_mib"])
+        fields = key_fields(self.model["sha256"], found["tensorrt"], plan.get("library", ""), found["cuda"],
+                            found["gpu_arch"], self.model["input_shape"], self.model["output_shape"],
+                            plan["workspace_mib"])
         key = cache_key(fields)
         cache = EngineCache(plan["engine_dir"])
         os.makedirs(cache.root, mode=0o700, exist_ok=True)
-        self.update(gpu_arch=gpu_arch, engine={"state": "checking", "key": key[:16]})
+        self.update(gpu_arch=found["gpu_arch"], engine={"state": "checking", "key": key[:16]})
         built = rebuilt = False
         while not self.stopped.is_set():
             engine_plan, record, problem = cache.lookup(key, fields)
@@ -900,7 +998,7 @@ class Accelerator:
             elif not self.admit_load():
                 continue
             else:
-                outcome = self.load(trt, engine_plan, record, cached=not built)
+                outcome = self.load(engine_plan, record, cached=not built)
                 if outcome != "retry":
                     return
                 # The plan matched its record and still did not deserialize.
@@ -921,28 +1019,39 @@ class Accelerator:
         budget = self.tensorrt_plan["gpu_budget_mib"]
         available = self.available_mib()
         if available is None or available >= budget:
+            self.waits.pop("load", None)
             return True
         # Degraded, since nothing says memory will ever free up. The reason
         # stays the same from one retry to the next, so it is logged once.
+        _, since, _ = self.wait_clock("load")
         self.update(degraded=True, reason=f"too little free memory to load the TensorRT engine (it needs {budget} MiB); "
                     f"retrying every {MEMORY_RETRY_SECONDS // 60 or 1} minutes",
-                    engine={"state": "waiting_for_memory",
+                    engine={"state": "waiting_for_memory", "waiting_since": since,
                             "error": f"{available} MiB of memory is available; loading the engine needs {budget} MiB"})
         self.wait(MEMORY_RETRY_SECONDS)
         return False
 
-    def load(self, trt, engine_plan, record, cached):
-        """Loads the engine, holds it to its memory budget and the CPU's
-        detections, and swaps it in. Returns ready, failed, stopped, or retry
-        when the plan would not deserialize."""
+    def load(self, engine_plan, record, cached):
+        """Imports TensorRT and opens CUDA, loads the engine, holds it to its
+        memory budget and the CPU's detections, and swaps it in. Returns
+        ready, failed, stopped, or retry when the plan would not deserialize."""
         budget = self.tensorrt_plan["gpu_budget_mib"]
         self.update(degraded=False, reason=NOT_READY,
                     engine={"state": "verifying", "cached": cached, "plan_bytes": record["plan_bytes"],
                             "build_seconds": record.get("build_seconds", 0)})
+        try:
+            trt = self.tensorrt()
+        except Exception as exc:
+            self.fall_back(f"the TensorRT Python bindings did not load ({type(exc).__name__}: {short(exc, 200)})")
+            return "failed"
         # The second memory window: the CUDA context and the engine.
         before = self.memory_sample()
         try:
             self.cuda = self.open_cuda()
+        except Exception as exc:
+            self.fall_back(f"CUDA is unavailable ({short(exc, 200)})")
+            return "failed"
+        try:
             gpu = self.load_engine(trt, self.cuda, engine_plan)
         except EngineError as exc:
             if "deserialize" in str(exc):
@@ -993,7 +1102,8 @@ class Accelerator:
 
         A build costs minutes and gigabytes, so it waits for its turn: after
         a random delay on auto (BUILD_JITTER_SECONDS), then until the device
-        has the memory and the CPU to spare. The CPU scores meanwhile."""
+        has the memory to spare, and the CPU, for at most
+        BUILD_MAX_CPU_WAIT_SECONDS. The CPU scores meanwhile."""
         plan = self.tensorrt_plan
         if not self.strict and not self.staggered:
             self.staggered = True
@@ -1007,34 +1117,61 @@ class Accelerator:
         available = self.available_mib()
         if available is not None and available < minimum:
             return self.wait_for_memory(available, minimum)
-        busy = self.cpu_busy()
+        sample = self.idle_cpus()
         if self.stopped.is_set():
             return "stopped", ""
-        if busy is not None and busy > BUILD_MAX_CPU_BUSY:
-            return self.wait_for_cpu(busy)
+        lowest = False
+        if sample is not None and sample[0] < BUILD_MIN_IDLE_CPUS:
+            started, since, build_by = self.wait_clock("cpu", BUILD_MAX_CPU_WAIT_SECONDS)
+            remaining = BUILD_MAX_CPU_WAIT_SECONDS - (time.monotonic() - started)
+            if remaining > 0:
+                return self.wait_for_cpu(*sample, since, build_by, remaining)
+            lowest = True
+            print(f"accelerator: the CPU stayed busy for {BUILD_MAX_CPU_WAIT_SECONDS // 60} minutes; "
+                  "building the TensorRT engine anyway, at the lowest priority", file=sys.stderr, flush=True)
+        # The next build, if there is one, waits afresh.
+        self.waits.clear()
         job = {"key": key, "fields": fields, "model_path": self.model["path"], "bindings": plan["bindings"],
                "engine_dir": plan["engine_dir"], "workspace_mib": plan["workspace_mib"],
-               "build_min_available_mib": minimum, "discard_plan_sha256": discard}
-        self.update(degraded=False, reason=NOT_READY, engine={"state": "queued"})
+               "build_min_available_mib": minimum, "discard_plan_sha256": discard, "lowest_priority": lowest}
+        self.update(degraded=False, reason=NOT_READY, engine=dict({"state": "queued"}, **self.priority(job)))
         return self.run_builder(job, plan.get("build_timeout_seconds", 1800))
 
+    @staticmethod
+    def priority(job):
+        """The engine status field that marks a build at the lowest priority."""
+        return {"low_priority": True} if job.get("lowest_priority") else {}
+
+    def wait_clock(self, gate, limit=None):
+        """(monotonic start, UTC start, UTC end or None) of a wait on gate:
+        cpu or memory before a build, load before an engine loads. It ends
+        limit seconds after it started, if there is a limit. A build's clocks
+        start at the gate's first refusal and run until a build is queued, so
+        a wait for memory in between does not restart the wait for the CPU."""
+        if gate not in self.waits:
+            self.waits[gate] = (time.monotonic(), utc_now(), utc_now(after=limit) if limit else None)
+        return self.waits[gate]
+
     def wait_for_memory(self, available, minimum):
+        _, since, _ = self.wait_clock("memory")
         self.update(degraded=True, reason=f"too little free memory to build the TensorRT engine (it needs {minimum} MiB); "
                     f"retrying every {MEMORY_RETRY_SECONDS // 60 or 1} minutes",
-                    engine={"state": "waiting_for_memory",
+                    engine={"state": "waiting_for_memory", "waiting_since": since,
                             "error": f"{available} MiB of memory is available; a build needs {minimum} MiB"})
         return ("waiting_for_memory", "") if self.wait(MEMORY_RETRY_SECONDS) else ("stopped", "")
 
-    def wait_for_cpu(self, busy):
-        # Degraded, like a wait for memory: a device that stays this busy never
-        # gets its engine. The reason stays the same from one retry to the
-        # next, so it is logged once.
-        self.update(degraded=True, reason=f"the CPU is too busy to build the TensorRT engine; "
-                    f"retrying every {CPU_RETRY_SECONDS // 60 or 1} minutes",
-                    engine={"state": "waiting_for_cpu",
-                            "error": f"other processes use {busy:.0%} of the CPU; "
-                                     f"a build starts at {BUILD_MAX_CPU_BUSY:.0%} or less"})
-        return ("waiting_for_cpu", "") if self.wait(CPU_RETRY_SECONDS) else ("stopped", "")
+    def wait_for_cpu(self, idle, cpus, since, build_by, remaining):
+        # Not degraded, unlike a wait for memory: the CPU detects meanwhile,
+        # and the engine is coming, at build_by at the latest. The reason
+        # names that time, so it stays the same from one retry to the next.
+        self.update(degraded=False,
+                    reason=f"the CPU is busy, so the TensorRT engine build waits for {BUILD_MIN_IDLE_CPUS} idle CPUs, "
+                           f"checking every {CPU_RETRY_SECONDS // 60 or 1} minutes; "
+                           f"at {build_by} it starts anyway, at the lowest priority",
+                    engine={"state": "waiting_for_cpu", "waiting_since": since, "build_by": build_by,
+                            "error": f"{idle:.1f} of {cpus} CPUs are idle, counting this campaign's own inference "
+                                     f"as idle; a build starts with {BUILD_MIN_IDLE_CPUS}"})
+        return ("waiting_for_cpu", "") if self.wait(min(CPU_RETRY_SECONDS, remaining)) else ("stopped", "")
 
     def run_builder(self, job, timeout):
         """Runs accelerator.py --build-engine. The child takes the device-wide
@@ -1054,8 +1191,8 @@ class Accelerator:
                 last.clear()
                 last.update(message)
                 if message.get("state") == "building":
-                    self.update(engine={"state": "building", "started_at": message.get("started_at") or utc_now(),
-                                        "started": time.monotonic()})
+                    self.update(engine=dict({"state": "building", "started_at": message.get("started_at") or utc_now(),
+                                             "started": time.monotonic()}, **self.priority(job)))
                 elif message.get("state") == "queued":
                     self.update(engine={"state": "queued", "error": "another campaign's engine is building"})
 
@@ -1089,15 +1226,61 @@ class Accelerator:
 
 
 # ---------------------------------------------------------------------------
-# The --build-engine child
+# The --probe and --build-engine children
 
 
 def _exit_with(parent):
-    """Ends the builder when the worker that started it is gone."""
+    """Ends the child when the worker that started it is gone."""
     while True:
         time.sleep(5)
         if os.getppid() != parent:
             os._exit(1)
+
+
+def probe_main(stdin=None, stdout=None):
+    """Writes one line: probe()'s versions, or the error that stopped it."""
+    stdin = stdin or sys.stdin.buffer
+    stdout = stdout or sys.stdout
+    threading.Thread(target=_exit_with, args=(os.getppid(),), daemon=True).start()
+    try:
+        job = json.loads(stdin.read(1 << 16))
+        message = probe(job["bindings"], job["cuda_runtime"])
+    except EngineError as exc:
+        message = {"error": str(exc)}
+    except Exception as exc:
+        message = {"error": short(f"loading TensorRT and CUDA failed ({type(exc).__name__}: {exc})", 400)}
+    print(json.dumps(message), file=stdout, flush=True)
+    return 1 if "error" in message else 0
+
+
+def idle_io_priority():
+    """Puts this process in the idle I/O class, so its disk I/O waits for
+    everyone else's. True when it is; off Linux, or on another architecture,
+    it is not."""
+    number = IOPRIO_SET.get(os.uname().machine) if sys.platform.startswith("linux") else None
+    if number is None:
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.syscall.restype = ctypes.c_long
+        result = libc.syscall(ctypes.c_long(number), ctypes.c_long(IOPRIO_WHO_PROCESS), ctypes.c_long(0),
+                              ctypes.c_long(IOPRIO_CLASS_IDLE << IOPRIO_CLASS_SHIFT))
+    except (OSError, AttributeError):
+        return False
+    return result == 0
+
+
+def lower_priority(lowest):
+    """Lowers this process's priority for a build: by BUILD_NICE, or, for a
+    build that stopped waiting for idle CPUs, to BUILD_LOWEST_NICE and the idle
+    I/O class, so it runs on what other processes leave. Best effort: what the
+    kernel refuses stays as it was."""
+    try:
+        os.nice(BUILD_LOWEST_NICE if lowest else BUILD_NICE)
+    except OSError:
+        pass
+    if lowest and not idle_io_priority():
+        print("accelerator: the build could not enter the idle I/O class", file=sys.stderr, flush=True)
 
 
 def build_plan(trt, model, workspace_mib):
@@ -1131,13 +1314,10 @@ def build_main(stdin=None, stdout=None):
     def say(**message):
         print(json.dumps(message), file=stdout, flush=True)
 
-    try:
-        os.nice(10)
-    except OSError:
-        pass
     threading.Thread(target=_exit_with, args=(os.getppid(),), daemon=True).start()
     try:
         job = json.loads(stdin.read(1 << 20))
+        lower_priority(bool(job.get("lowest_priority")))
         cache = EngineCache(job["engine_dir"])
         os.makedirs(cache.root, mode=0o700, exist_ok=True)
         lock = os.open(os.path.join(cache.root, ".build.lock"), os.O_RDWR | os.O_CREAT, 0o600)
@@ -1164,11 +1344,11 @@ def build_main(stdin=None, stdout=None):
             model = handle.read((512 << 20) + 1)
         if hashlib.sha256(model).hexdigest() != job["fields"]["model_sha256"]:
             raise EngineError("the model file changed since the worker loaded it")
-        if job["bindings"] not in sys.path:
-            sys.path.append(job["bindings"])
-        import tensorrt
+        # TensorRT and CUDA load here, once the build is sure to start.
+        tensorrt = import_tensorrt(job["bindings"])
         if tensorrt.__version__ != job["fields"]["tensorrt"]:
-            raise EngineError(f"TensorRT {tensorrt.__version__} loaded, the worker has {job['fields']['tensorrt']}")
+            raise EngineError(f"TensorRT {tensorrt.__version__} loaded, and the engine's key names "
+                              f"{job['fields']['tensorrt']}")
         plan = build_plan(tensorrt, model, job["workspace_mib"])
         record = cache.store(job["key"], job["fields"], plan, time.monotonic() - started)
         say(state="done", build_seconds=record["build_seconds"], plan_bytes=record["plan_bytes"])
@@ -1179,7 +1359,10 @@ def build_main(stdin=None, stdout=None):
 
 
 if __name__ == "__main__":
+    # The worker reads these processes' stdout as JSON too, so fd 1 is claimed
+    # before anything else, and before TensorRT or CUDA loads.
+    if sys.argv[1:] == ["--probe"]:
+        sys.exit(probe_main(stdout=claim_stdout()))
     if sys.argv[1:] == ["--build-engine"]:
-        # The worker reads this process's stdout as JSON too.
         sys.exit(build_main(stdout=claim_stdout()))
-    sys.exit("usage: accelerator.py --build-engine < job.json")
+    sys.exit("usage: accelerator.py --probe|--build-engine < job.json")

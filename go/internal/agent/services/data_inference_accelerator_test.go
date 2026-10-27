@@ -106,6 +106,24 @@ func TestPredictionRecordsNameTheEngine(t *testing.T) {
 	}
 }
 
+func TestSnapshotSaysHowLongTheBuildHasWaited(t *testing.T) {
+	now := time.Date(2026, 10, 27, 14, 0, 0, 0, time.UTC)
+	since := now.Add(-12 * time.Minute).Format(time.RFC3339)
+	for _, state := range []string{"waiting_for_cpu", "waiting_for_memory"} {
+		status := &data.AcceleratorStatus{Active: "cpu", Engine: &data.EngineStatus{State: state, WaitingSince: since,
+			BuildBy: now.Add(18 * time.Minute).Format(time.RFC3339)}}
+		engine := acceleratorSnapshot(status, now).Engine
+		if engine.ElapsedSeconds != 720 || engine.WaitingSince != since || engine.BuildBy != status.Engine.BuildBy {
+			t.Fatalf("%s: %+v", state, engine)
+		}
+	}
+	// A state that is neither a build nor a wait has no age.
+	queued := &data.AcceleratorStatus{Engine: &data.EngineStatus{State: "queued", WaitingSince: since, LowPriority: true}}
+	if engine := acceleratorSnapshot(queued, now).Engine; engine.ElapsedSeconds != 0 || !engine.LowPriority {
+		t.Fatalf("queued: %+v", engine)
+	}
+}
+
 func TestInferenceHardwareIsDeviceInfo(t *testing.T) {
 	hardware := InferenceHardware()
 	info := detectGPUInfo()

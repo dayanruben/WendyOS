@@ -414,11 +414,21 @@ never scores on the CPU: if TensorRT is unavailable the campaign reports
 - **When a build starts.** Under `auto`, the first build waits a random delay
   of up to 20 minutes (`engine.state: scheduled`, with `not_before`), so that
   devices updated together do not all build at once. Every build then waits
-  until 3 GiB of memory is available (`waiting_for_memory`) and other
-  processes use at most half of the CPU (`waiting_for_cpu`), checking again
-  every 2 minutes; the campaign reports itself degraded while it waits for
-  either. A `tensorrt` campaign scores nothing until its engine is ready, so
-  it skips the delay.
+  until 3 GiB of memory is available (`waiting_for_memory`), and until at
+  least 2 CPUs are idle (`waiting_for_cpu`), checking again every 2 minutes.
+  The campaign's own CPU inference counts as idle, since the engine replaces
+  it. The wait for memory has no limit, and the campaign reports itself
+  degraded while it lasts. The wait for the CPU lasts at most 30 minutes
+  (until `engine.build_by`) and is not degraded: after it, the build starts
+  anyway at the lowest priority (nice 19 and the idle I/O class,
+  `engine.low_priority: true`), so a device kept busy by continuous camera
+  capture still gets its engine. Either wait shows `waiting_since` and
+  `elapsed_seconds`. A `tensorrt` campaign scores nothing until its engine is
+  ready, so it skips the delay.
+- **Memory before the engine.** The model process loads TensorRT and CUDA
+  only when an engine is about to load. Until then, through the delay and the
+  waits, it uses about as much memory as one with no TensorRT; a short-lived
+  child process reads what the engine cache needs from TensorRT and the GPU.
 - **The switch.** Before replacing the CPU, the engine must find the same
   detections as the CPU on the same camera frames: same labels, IoU of at
   least 0.8, and scores within 0.05.
@@ -440,10 +450,12 @@ never scores on the CPU: if TensorRT is unavailable the campaign reports
 `inference_status.accelerator` reports what actually runs: `active` (`cpu` or
 `tensorrt`), `degraded` and `reason`, `runtime` and `precision`,
 `gpu_memory_mib` (what the accelerated path took, measured as described
-under Fallback), and `engine` with its `state` (`checking`, `scheduled`,
-`waiting_for_memory`, `waiting_for_cpu`, `queued`, `building` with
-`started_at` and `elapsed_seconds`, `verifying`, `ready` or `failed` with an
-`error`) and any `warnings` TensorRT printed while loading it.
+under Fallback), and `engine` with its `state` (`checking`, `scheduled` with
+`not_before`, `waiting_for_memory` with `waiting_since`, `waiting_for_cpu`
+with `waiting_since` and `build_by`, `queued`, `building` with `started_at`,
+`verifying`, `ready` or `failed` with an `error`) and any `warnings` TensorRT
+printed while loading it. A build or a wait also reports `elapsed_seconds`,
+and a build that stopped waiting for idle CPUs reports `low_priority: true`.
 `inference_status.stats` reports `fps`, inference latency (`infer_ms_p50`,
 `infer_ms_p95`) and `frames_scored`, the frames the model process has scored
 since it started. Each `prediction` record carries `accelerator`, `precision`,

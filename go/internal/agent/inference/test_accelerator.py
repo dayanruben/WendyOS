@@ -107,8 +107,29 @@ class CacheTests(unittest.TestCase):
 
 
 FAKE_TENSORRT = '''
-import os, time
+import os, sys, time
 __version__ = "10.16.2.10"
+if os.environ.get("FAKE_TENSORRT_IMPORT_NOISE"):
+    # What native code does while TensorRT loads: write to fd 1.
+    os.write(1, b"[TRT] [W] native output on fd 1 while importing\\n")
+if os.environ.get("FAKE_CUDA") and hasattr(sys.modules.get("__main__"), "Cuda"):
+    # In a child that runs accelerator.py: CUDA, on a machine with no GPU.
+    class _Cuda:
+        def __init__(self, library): pass
+        def runtime_version(self): return "13.2"
+        def gpu_arch(self): return "sm_87"
+    sys.modules["__main__"].Cuda = _Cuda
+def _priority():
+    # This process's niceness and I/O class (ioprio_get), as a build runs at.
+    import ctypes
+    number = {"aarch64": 31, "x86_64": 252}.get(os.uname().machine) if sys.platform.startswith("linux") else None
+    io = None
+    if number is not None:
+        libc = ctypes.CDLL(None)
+        libc.syscall.restype = ctypes.c_long
+        value = libc.syscall(ctypes.c_long(number), ctypes.c_long(1), ctypes.c_long(0))
+        io = value >> 13 if value >= 0 else None
+    return "nice %d, io class %s" % (os.nice(0), io)
 class ILogger:
     class Severity:
         INTERNAL_ERROR, ERROR, WARNING, INFO, VERBOSE = range(5)
@@ -129,6 +150,7 @@ class Builder:
     def create_network(self, flags): return object()
     def create_builder_config(self): return _Config()
     def build_serialized_network(self, network, config):
+        sys.stderr.write("fake builder priority: " + _priority() + "\\n")
         # What the real one does: talk through the logger, and print to fd 1
         # from native code.
         self.logger.log(ILogger.Severity.WARNING, "fake builder warning")
@@ -274,6 +296,76 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(code, accelerator.EXIT_WAITING_FOR_MEMORY)
         self.assertEqual(messages[-1]["state"], "waiting_for_memory")
 
+    def priority(self):
+        line = next(line for line in self.stderr.decode().splitlines() if line.startswith("fake builder priority: "))
+        nice, io = line.split(": ")[1].split(", ")
+        return int(nice.split()[1]), io.split()[2]
+
+    def test_build_runs_niced(self):
+        code, _ = self.finish(self.builder())
+        self.assertEqual(code, 0)
+        self.assertEqual(self.priority()[0], min(19, os.nice(0) + accelerator.BUILD_NICE))
+
+    def test_build_that_stopped_waiting_for_the_cpu_runs_at_the_lowest_priority(self):
+        code, messages = self.finish(self.builder(job=dict(self.job, lowest_priority=True)))
+        self.assertEqual(code, 0, messages)
+        nice, io = self.priority()
+        self.assertEqual(nice, 19)
+        if accelerator.IOPRIO_SET.get(os.uname().machine) and sys.platform.startswith("linux"):
+            self.assertEqual(io, str(accelerator.IOPRIO_CLASS_IDLE))
+
+
+@unittest.skipIf(np is None, "requires numpy")
+class ProbeTests(unittest.TestCase):
+    """The --probe child, as a real process with a fake TensorRT. It loads
+    TensorRT and CUDA for the cache key so that the worker does not."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.bindings = pathlib.Path(directory.name) / "bindings"
+        (self.bindings / "tensorrt").mkdir(parents=True)
+        self.package = self.bindings / "tensorrt" / "__init__.py"
+        self.package.write_text(FAKE_TENSORRT)
+        self.job = {"bindings": str(self.bindings), "cuda_runtime": "libcudart-not-on-this-machine.so.13"}
+
+    def probe(self, **env):
+        plan = {"requested": "auto", "candidates": ["tensorrt", "cpu"], "tensorrt": self.job}
+        subject = accelerator.Accelerator(plan, FakeEngine("cpu", None), {"sha256": "a" * 64}, lambda message: None)
+        with mock.patch.dict(os.environ, env):
+            return subject.probe()
+
+    def test_reads_the_versions_in_a_child(self):
+        self.assertNotIn("tensorrt", sys.modules)
+        self.assertEqual(self.probe(FAKE_CUDA="1"), {"tensorrt": "10.16.2.10", "cuda": "13.2", "gpu_arch": "sm_87"})
+        # Loaded there, never here.
+        self.assertNotIn("tensorrt", sys.modules)
+        self.assertNotIn(str(self.bindings), sys.path)
+
+    def test_bindings_that_do_not_load(self):
+        self.package.write_text("raise ImportError('libnvinfer.so.10: cannot open shared object file')")
+        with self.assertRaisesRegex(accelerator.EngineError,
+                                    r"^the TensorRT Python bindings did not load \(ImportError: libnvinfer.so.10"):
+            self.probe()
+
+    def test_no_cuda(self):
+        with self.assertRaisesRegex(accelerator.EngineError, r"^CUDA is unavailable \(.*libcudart-not-on-this-machine"):
+            self.probe()
+
+    def test_a_crash_while_loading_costs_the_probe_not_the_worker(self):
+        self.package.write_text("import os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n")
+        with self.assertRaisesRegex(accelerator.EngineError, "killed by signal 11"):
+            self.probe()
+
+    def test_native_output_while_loading_never_reaches_the_channel(self):
+        child = subprocess.run([sys.executable, "-u", accelerator.__file__, "--probe"],
+                               input=json.dumps(self.job).encode(), capture_output=True, timeout=60,
+                               env=dict(os.environ, FAKE_CUDA="1", FAKE_TENSORRT_IMPORT_NOISE="1"))
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertEqual([json.loads(line) for line in child.stdout.splitlines()],
+                         [{"tensorrt": "10.16.2.10", "cuda": "13.2", "gpu_arch": "sm_87"}])
+        self.assertIn(b"native output on fd 1 while importing", child.stderr)
+
 
 def yolo_output(*rows, anchors=8):
     """A raw [1, 4 + classes, anchors] output; rows are cx, cy, w, h, scores."""
@@ -365,7 +457,7 @@ class ParityTests(unittest.TestCase):
 
 
 class FakeCuda:
-    def __init__(self):
+    def __init__(self, library=None):
         self.resets = 0
 
     def runtime_version(self):
@@ -383,33 +475,40 @@ class ScriptedAccelerator(accelerator.Accelerator):
 
     memory is MemAvailable for the build and load gates. samples are the
     (MemAvailable, RSS) pairs memory_sample() reads, in order: before the
-    import, after it, before the load and after it. busy is the CPU use of
-    other processes, read once per build attempt; delay is the build delay."""
+    import, after it, before the load and after it. idle is the (idle CPUs,
+    online CPUs) pair, read once per build attempt; delay is the build delay.
+    import_error makes the probe report bindings that do not load."""
 
     def __init__(self, plan, cpu, model, gpu=None, memory=(8000,), build="done", import_error=None,
-                 samples=((None, None),), busy=(None,), delay=0):
+                 samples=((None, None),), idle=(None,), delay=0):
         self.emitted, self.exits = [], []
         super().__init__(plan, cpu, model, self.emitted.append, self.exits.append)
         self.gpu_engine, self.memory, self.build_outcome = gpu, list(memory), build
         self.import_error, self.jobs, self.loads, self.fake_cuda = import_error, [], [], FakeCuda()
-        self.samples, self.busy, self.delay, self.delays = list(samples), list(busy), delay, []
+        self.samples, self.idle, self.delay, self.delays = list(samples), list(idle), delay, []
+        self.imports = self.cuda_opens = 0
+
+    def probe(self):
+        if self.import_error:
+            raise accelerator.EngineError(f"the TensorRT Python bindings did not load (ImportError: {self.import_error})")
+        return {"tensorrt": "10.16.2.10", "cuda": "13.2", "gpu_arch": "sm_87"}
 
     def memory_sample(self):
         return self.samples.pop(0) if len(self.samples) > 1 else self.samples[0]
 
-    def cpu_busy(self):
-        return self.busy.pop(0) if len(self.busy) > 1 else self.busy[0]
+    def idle_cpus(self):
+        return self.idle.pop(0) if len(self.idle) > 1 else self.idle[0]
 
     def build_delay(self):
         self.delays.append(self.delay)
         return self.delay
 
     def import_tensorrt(self):
-        if self.import_error:
-            raise ImportError(self.import_error)
+        self.imports += 1
         return types.SimpleNamespace(__version__="10.16.2.10")
 
     def open_cuda(self):
+        self.cuda_opens += 1
         return self.fake_cuda
 
     def available_mib(self):
@@ -543,7 +642,8 @@ class AcceleratorTests(unittest.TestCase):
         self.assertEqual((status["active"], status["degraded"]), ("cpu", True))
         self.assertIn("could not build an engine", status["reason"])
         self.assertEqual(status["engine"]["state"], "failed")
-        self.assertEqual(subject.fake_cuda.resets, 1)
+        # The worker never loaded TensorRT or opened CUDA for a build that failed.
+        self.assertEqual((subject.imports, subject.cuda_opens, subject.fake_cuda.resets), (0, 0, 0))
         self.assertIs(subject.infer(self.tensor)[1], self.cpu)
         again = self.accelerator()
         again.accelerate()
@@ -556,7 +656,8 @@ class AcceleratorTests(unittest.TestCase):
         subject.accelerate()
         status = subject.status()
         self.assertEqual((status["active"], status["degraded"]), ("cpu", True))
-        self.assertIn("the TensorRT Python bindings did not load", status["reason"])
+        self.assertIn("the TensorRT Python bindings did not load (ImportError: No module named 'tensorrt')",
+                      status["reason"])
         self.assertEqual(subject.jobs, [])
 
     def test_build_waits_for_memory(self):
@@ -739,34 +840,163 @@ class AcceleratorTests(unittest.TestCase):
         self.assertEqual(subject.delays, [])
         self.assertEqual(subject.status()["active"], "tensorrt")
 
-    def test_build_waits_for_the_cpu(self):
-        subject = self.accelerator(busy=(0.9, 0.2))
+    def cpu_waits(self, subject):
+        return [m["accelerator"] for m in subject.emitted
+                if m["accelerator"].get("engine", {}).get("state") == "waiting_for_cpu"]
+
+    def test_build_waits_for_idle_cpus(self):
+        subject = self.accelerator(idle=((0.6, 6), (1.2, 6), (2.4, 6)))
         subject.accelerate()
-        waiting = [m["accelerator"] for m in subject.emitted
-                   if m["accelerator"].get("engine", {}).get("state") == "waiting_for_cpu"]
-        self.assertTrue(waiting)
-        self.assertEqual(waiting[0]["engine"]["error"], "other processes use 90% of the CPU; a build starts at 50% or less")
-        self.assertTrue(waiting[0]["degraded"])
-        # Worded the same every retry, so the agent logs it once.
-        self.assertIn("the CPU is too busy to build the TensorRT engine", waiting[0]["reason"])
+        waiting = self.cpu_waits(subject)
+        self.assertEqual(len(waiting), 2)
+        self.assertEqual(waiting[0]["engine"]["error"],
+                         "0.6 of 6 CPUs are idle, counting this campaign's own inference as idle; a build starts with 2")
+        # What the build waits for, since when, and when it stops waiting.
+        engine = waiting[0]["engine"]
+        self.assertRegex(engine["waiting_since"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertRegex(engine["build_by"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertIn(f"at {engine['build_by']} it starts anyway, at the lowest priority", waiting[0]["reason"])
+        self.assertIn("waits for 2 idle CPUs", waiting[0]["reason"])
+        # Not degraded: the engine comes by build_by at the latest. And the
+        # reason is the same every retry.
+        self.assertFalse(any(w["degraded"] for w in waiting))
         self.assertEqual(len({w["reason"] for w in waiting}), 1)
         self.assertEqual(waiting[0]["active"], "cpu")
+        # 2.4 idle CPUs: an ordinary build, not at the lowest priority.
         self.assertEqual(len(subject.jobs), 1)
+        self.assertFalse(subject.jobs[0]["lowest_priority"])
+        self.assertFalse(any("low_priority" in e for e in self.engine_states(subject)))
         status = subject.status()
         self.assertEqual((status["active"], status["degraded"]), ("tensorrt", False))
+        self.assertNotIn("waiting_since", status["engine"])
+        self.assertNotIn("build_by", status["engine"])
 
-    def test_cpu_busy_leaves_out_the_worker_itself(self):
+    def test_a_busy_cpu_delays_the_build_at_most_the_maximum_wait(self):
+        # A continuous camera campaign keeps the CPU busy for good. Before, the
+        # build waited for ever and auto stayed degraded on the CPU.
+        with mock.patch.object(accelerator, "BUILD_MAX_CPU_WAIT_SECONDS", 0.2), \
+                mock.patch.object(accelerator, "CPU_RETRY_SECONDS", 0.05):
+            subject = self.accelerator(idle=((0.5, 6),))
+            started = time.monotonic()
+            subject.accelerate()
+        self.assertGreaterEqual(time.monotonic() - started, 0.2)
+        waiting = self.cpu_waits(subject)
+        self.assertTrue(waiting)
+        self.assertFalse(any(w["degraded"] for w in waiting))
+        # Then the build ran anyway, at the lowest priority, and said so.
+        self.assertEqual(len(subject.jobs), 1)
+        self.assertTrue(subject.jobs[0]["lowest_priority"])
+        queued = [e for e in self.engine_states(subject) if e["state"] == "queued"]
+        self.assertEqual(queued[0].get("low_priority"), True)
+        status = subject.status()
+        self.assertEqual((status["active"], status["degraded"]), ("tensorrt", False))
+        self.assertNotIn("low_priority", status["engine"])
+
+    def test_a_wait_for_memory_does_not_restart_the_wait_for_the_cpu(self):
+        subject = self.accelerator(idle=((0.5, 6),), memory=(8000, 2048, 8000))
+        key, fields = "k" * 64, {}
+        self.assertEqual(subject.build(key, fields)[0], "waiting_for_cpu")
+        clock = subject.waits["cpu"]
+        self.assertEqual(subject.build(key, fields)[0], "waiting_for_memory")
+        self.assertEqual(subject.build(key, fields)[0], "waiting_for_cpu")
+        self.assertIs(subject.waits["cpu"], clock)
+        reasons = [w["reason"] for w in self.cpu_waits(subject)]
+        self.assertEqual(reasons[0], reasons[-1])
+        # A build that starts ends the waits; the next build waits afresh.
+        subject.idle = [(4.0, 6)]
+        subject.build_outcome = "failed"
+        self.assertEqual(subject.build(key, fields)[0], "failed")
+        self.assertEqual(subject.waits, {})
+
+    def test_idle_cpus_count_the_worker_as_idle(self):
         subject = accelerator.Accelerator(self.plan(), self.cpu, self.model, lambda message: None)
         subject.wait = lambda seconds: True
-        # Over the sample: 1000 ticks in all, 600 of them busy, 400 of those
-        # this worker's own inference.
-        with mock.patch.object(accelerator, "cpu_times", side_effect=[(1000, 4000, 100), (1600, 5000, 500)]):
-            self.assertAlmostEqual(subject.cpu_busy(), 0.2)
+        # Over the sample, on 6 CPUs: 1000 ticks in all, 600 of them busy, 400
+        # of those this worker's own inference. Others kept 1.2 CPUs busy.
+        with mock.patch.object(accelerator, "cpu_times", side_effect=[(1000, 4000, 100, 6), (1600, 5000, 500, 6)]):
+            idle, cpus = subject.idle_cpus()
+        self.assertAlmostEqual(idle, 4.8)
+        self.assertEqual(cpus, 6)
         with mock.patch.object(accelerator, "cpu_times", return_value=None):
-            self.assertIsNone(subject.cpu_busy())
+            self.assertIsNone(subject.idle_cpus())
         if accelerator.cpu_times() is not None:
-            busy, total, own = accelerator.cpu_times()
+            busy, total, own, cpus = accelerator.cpu_times()
             self.assertTrue(0 <= own and 0 <= busy <= total)
+            self.assertTrue(1 <= cpus <= os.cpu_count())
+
+
+@unittest.skipIf(np is None, "requires numpy")
+class LazyLoadTests(unittest.TestCase):
+    """A process that loads TensorRT and CUDA keeps about 500 MB of them. On a
+    Jetson Orin Nano the worker held 632 to 647 MB of RSS, against 146 MB for
+    a worker with no TensorRT, through its build delay and its waits for
+    memory and CPU, all the while scoring on the CPU. The worker now loads
+    them only when an engine is about to load."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = pathlib.Path(directory.name)
+        (self.root / "bindings" / "tensorrt").mkdir(parents=True)
+        (self.root / "bindings" / "tensorrt" / "__init__.py").write_text(FAKE_TENSORRT)
+        self.assertNotIn("tensorrt", sys.modules)
+        self.addCleanup(sys.modules.pop, "tensorrt", None)
+        bindings = str(self.root / "bindings")
+        self.addCleanup(lambda: bindings in sys.path and sys.path.remove(bindings))
+
+    def test_nothing_loads_while_the_build_is_scheduled_or_waits(self):
+        seen = []
+
+        def engine_state(subject):
+            return subject.state.get("engine", {}).get("state")
+
+        class Worker(ScriptedAccelerator):
+            # The real probe, in a child, and the real import of the fake
+            # tensorrt package. The rest is scripted.
+            probe = accelerator.Accelerator.probe
+            import_tensorrt = accelerator.Accelerator.import_tensorrt
+
+            def wait(self, seconds):
+                seen.append((engine_state(self), "tensorrt" in sys.modules))
+                return super().wait(0)
+
+            def run_builder(self, job, timeout):
+                seen.append(("builder", "tensorrt" in sys.modules))
+                return super().run_builder(job, timeout)
+
+            def open_cuda(self):
+                seen.append(("cuda", engine_state(self)))
+                return super().open_cuda()
+
+            def memory_sample(self):
+                seen.append(("memory", engine_state(self)))
+                return None, None
+
+        output = yolo_output([100, 100, 50, 80, 0.9, 0.0])
+        model = {"path": "/models/yolo11n.onnx", "sha256": "a" * 64, "input_shape": [1, 3, 64, 64],
+                 "output_shape": [1, 6, 8], "threshold": 0.5, "decode": decode}
+        plan = {"requested": "auto", "candidates": ["tensorrt", "cpu"],
+                "tensorrt": {"library": "10.16.2", "bindings": str(self.root / "bindings"),
+                             "engine_dir": str(self.root / "engines"), "cuda_runtime": "libcudart.so.13",
+                             "workspace_mib": 1024, "build_min_available_mib": 3072, "gpu_budget_mib": 1536,
+                             "build_timeout_seconds": 1800}}
+        with mock.patch.dict(os.environ, {"FAKE_CUDA": "1"}):
+            subject = Worker(plan, FakeEngine("cpu", output), model, gpu=FakeEngine("tensorrt", output, "fp16"),
+                             delay=0.01, memory=(2048, 8000), idle=((0.5, 6), (3.0, 6)))
+            subject.infer(np.zeros((1, 3, 64, 64), np.float32))
+            subject.accelerate()
+        self.assertEqual(subject.status()["active"], "tensorrt")
+        waits = [entry for entry in seen if entry[0] in ("scheduled", "waiting_for_memory", "waiting_for_cpu")]
+        self.assertEqual([state for state, _ in waits], ["scheduled", "waiting_for_memory", "waiting_for_cpu"])
+        self.assertEqual([loaded for _, loaded in waits], [False, False, False])
+        self.assertIn(("builder", False), seen)
+        # Then the engine loaded: TensorRT was imported here, from the
+        # bindings, and CUDA opened, once each. The memory windows sit around
+        # them, in the moments before the engine loaded: see memory_cost.
+        self.assertEqual(sys.modules["tensorrt"].__file__, str(self.root / "bindings" / "tensorrt" / "__init__.py"))
+        self.assertEqual([entry for entry in seen if entry[0] in ("memory", "cuda")],
+                         [("memory", "verifying")] * 3 + [("cuda", "verifying"), ("memory", "verifying")])
+        self.assertEqual(subject.cuda_opens, 1)
 
 
 @unittest.skipIf(np is None, "requires numpy")

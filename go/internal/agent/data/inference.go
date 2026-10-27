@@ -187,9 +187,11 @@ type EngineStatus struct {
 	Key string `json:"key,omitempty"`
 	// Cached is true when the engine came from the cache, with no build.
 	Cached bool `json:"cached,omitempty"`
-	// StartedAt is when the current build started; ElapsedSeconds is how long
-	// it has run, as of this status.
+	// StartedAt is when the current build started, and WaitingSince when
+	// the current wait for memory or idle CPUs began. ElapsedSeconds is how
+	// long the build has run, or the wait lasted, as of this status.
 	StartedAt      string  `json:"started_at,omitempty"`
+	WaitingSince   string  `json:"waiting_since,omitempty"`
 	ElapsedSeconds float64 `json:"elapsed_seconds,omitempty"`
 	BuildSeconds   float64 `json:"build_seconds,omitempty"`
 	PlanBytes      int64   `json:"plan_bytes,omitempty"`
@@ -197,6 +199,10 @@ type EngineStatus struct {
 	// NotBefore is when a scheduled build may start: an auto campaign's
 	// first build waits a random delay, so a fleet does not build at once.
 	NotBefore string `json:"not_before,omitempty"`
+	// BuildBy is when a build waiting for idle CPUs starts anyway, at the
+	// lowest priority; LowPriority marks such a build while it runs.
+	BuildBy     string `json:"build_by,omitempty"`
+	LowPriority bool   `json:"low_priority,omitempty"`
 	// Warnings are what TensorRT warned about while loading the engine.
 	Warnings []string `json:"warnings,omitempty"`
 }

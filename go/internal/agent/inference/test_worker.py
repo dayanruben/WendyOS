@@ -624,6 +624,115 @@ worker.main()
             self.assertIn("[TRT] [W] C stdio to stdout " + when, stderr)
             self.assertIn("python print " + when, stderr)
 
+    # The real worker.main() and the real accelerator, which imports TensorRT
+    # only when an engine is about to load, after ready. The TensorRT it
+    # imports is a package that writes to fd 1 while it loads, as native code
+    # does; the GPU steps around it are scripted.
+    LAZY_SCRIPT = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+import numpy as np
+import accelerator, worker
+
+class Engine:
+    def __init__(self, name, precision):
+        self.name, self.precision, self.runtime = name, precision, name
+
+    def infer(self, tensor):
+        return np.zeros((1, 6, 8), np.float32)
+
+    def device_bytes(self):
+        return 0
+
+    def close(self):
+        pass
+
+class Cuda:
+    def reset(self):
+        pass
+
+class Accelerator(accelerator.Accelerator):
+    def probe(self):
+        return {"tensorrt": "10.16.2.10", "cuda": "13.2", "gpu_arch": "sm_87"}
+
+    def build_delay(self):
+        return 0
+
+    def available_mib(self):
+        return None
+
+    def idle_cpus(self):
+        return None
+
+    def run_builder(self, job, timeout):
+        accelerator.EngineCache(job["engine_dir"]).store(job["key"], job["fields"], b"plan", 1)
+        return "done", ""
+
+    def open_cuda(self):
+        return Cuda()
+
+    def load_engine(self, trt, cuda, plan):
+        return Engine("tensorrt", "fp16")
+
+    def start(self):
+        # In the foreground, so that the worker cannot exit before it loads.
+        assert "tensorrt" not in sys.modules
+        self.accelerate()
+        assert "tensorrt" in sys.modules
+
+class Detector:
+    def __init__(self, config):
+        plan = {"requested": "auto", "candidates": ["tensorrt", "cpu"],
+                "tensorrt": {"library": "10.16.2", "bindings": sys.argv[2], "engine_dir": sys.argv[3],
+                             "cuda_runtime": "libcudart.so.13", "workspace_mib": 1024,
+                             "build_min_available_mib": 3072, "gpu_budget_mib": 1536}}
+        model = {"path": "model.onnx", "sha256": "a" * 64, "input_shape": [1, 3, 4, 4],
+                 "output_shape": [1, 6, 8], "threshold": 0.5, "decode": lambda output: []}
+        self.accelerator = Accelerator(plan, Engine("cpu", "fp32"), model, worker.emit)
+        # A camera frame to compare the engines on.
+        self.accelerator.infer(np.zeros((1, 3, 4, 4), np.float32))
+        self.accelerator_status = self.accelerator.status()
+
+worker.YOLODetector = Detector
+worker.main()
+'''
+
+    NOISY_TENSORRT = r'''
+import ctypes, os
+__version__ = "10.16.2.10"
+os.write(1, b"[TRT] [W] write(2) to fd 1 while importing\n")
+libc = ctypes.CDLL(None)
+libc.puts(b"[TRT] [W] C stdio to stdout while importing")
+libc.fflush(None)
+print("python print while importing")
+'''
+
+    def test_tensorrt_loaded_after_ready_writes_to_stderr(self):
+        import json
+        import os
+        import pathlib
+        import subprocess
+        import sys
+        import tempfile
+        here = os.path.dirname(os.path.abspath(__file__))
+        with tempfile.TemporaryDirectory() as directory:
+            package = pathlib.Path(directory) / "bindings" / "tensorrt"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text(self.NOISY_TENSORRT)
+            config = {"backend": "yolo_onnx", "rate": 2}
+            worker = subprocess.run([sys.executable, "-u", "-c", self.LAZY_SCRIPT, here,
+                                     str(package.parent), os.path.join(directory, "engines")],
+                                    input=json.dumps(config).encode() + b"\n", capture_output=True, timeout=60)
+        self.assertEqual(worker.returncode, 0, worker.stderr.decode(errors="replace"))
+        messages = [json.loads(line) for line in worker.stdout.decode().splitlines()]
+        self.assertEqual(messages[0]["type"], "ready")
+        self.assertEqual({message["type"] for message in messages[1:]}, {"accelerator"})
+        self.assertEqual(messages[-1]["accelerator"]["active"], "tensorrt")
+        stderr = worker.stderr.decode()
+        self.assertIn("[TRT] [W] write(2) to fd 1 while importing", stderr)
+        self.assertIn("[TRT] [W] C stdio to stdout while importing", stderr)
+        self.assertIn("python print while importing", stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

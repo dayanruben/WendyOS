@@ -540,6 +540,8 @@ def run(config, detector):
 def main():
     # First of all, before onnxruntime, PyTorch, TensorRT or CUDA is loaded:
     # from here on, whatever native code prints to stdout lands on stderr.
+    # That includes TensorRT and CUDA, which the accelerator loads in the
+    # background long after ready, and only when an engine is about to load.
     import accelerator
     global protocol
     protocol = accelerator.claim_stdout()
