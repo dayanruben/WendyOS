@@ -768,7 +768,11 @@ func TestTunnelReadinessRelaysOverSlowStart(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newScenario()
-			r := newTunnelReadiness(s.clock.now, agent(s, tc.reports, tc.agentErr), relay(s))
+			var replies []bool
+			r := newTunnelReadiness(s.clock.now, agent(s, tc.reports, tc.agentErr), func(ctx context.Context, reply bool) error {
+				replies = append(replies, reply)
+				return relay(s)(ctx)
+			})
 			readyAt := run(t, s, r.attempt)
 			t.Logf("after: %d relays (before %d), %d agent calls, ready at %s", s.relays, before.relays, s.calls, readyAt)
 			if s.relays > tc.maxRelays {
@@ -783,6 +787,11 @@ func TestTunnelReadinessRelaysOverSlowStart(t *testing.T) {
 			if tc.agentErr == nil && s.calls > int(appUp/devicePortsPollInterval)+30 {
 				t.Fatalf("asked the agent %d times, want at most one call per %s", s.calls, devicePortsPollInterval)
 			}
+			// A relay needs the app to answer unless the agent has seen the
+			// socket.
+			if last := replies[len(replies)-1]; last != !tc.reports {
+				t.Fatalf("the passing relay asked for a reply = %v, want %v", last, !tc.reports)
+			}
 		})
 	}
 }
@@ -793,7 +802,7 @@ func TestTunnelReadinessBackoffGrowsToCap(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 	var at []time.Duration
 	start := clock.now()
-	r := newTunnelReadiness(clock.now, nil, func(context.Context) error {
+	r := newTunnelReadiness(clock.now, nil, func(context.Context, bool) error {
 		at = append(at, clock.now().Sub(start))
 		return errors.New("no reply")
 	})
@@ -867,9 +876,9 @@ func TestCloudAppTunnelProbeRelayHoldsOneRelayAndClosesIt(t *testing.T) {
 	}
 
 	first := make(chan error, 1)
-	go func() { first <- tunnel.probeRelay(context.Background()) }()
+	go func() { first <- tunnel.probeRelay(context.Background(), true) }()
 	<-requested
-	if err := tunnel.probeRelay(context.Background()); err == nil {
+	if err := tunnel.probeRelay(context.Background(), true); err == nil {
 		t.Fatal("a second probe passed while the first held the tunnel's probe relay")
 	}
 	if _, _, opened := counts(); opened != 1 {
@@ -890,7 +899,7 @@ func TestCloudAppTunnelProbeRelayHoldsOneRelayAndClosesIt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	began := time.Now()
-	if err := tunnel.probeRelay(ctx); err == nil {
+	if err := tunnel.probeRelay(ctx, true); err == nil {
 		t.Fatal("probe passed with no reply")
 	}
 	if elapsed := time.Since(began); elapsed > 2*time.Second {
@@ -903,7 +912,8 @@ func TestCloudAppTunnelProbeRelayHoldsOneRelayAndClosesIt(t *testing.T) {
 
 // End to end on a real tunnel: while the agent reports the app is not
 // listening yet, readiness opens no relay; once it reports the forwarded
-// port, one relay confirms the app answers.
+// port, one relay confirms Wendy Cloud forwards it, with no request to the
+// app.
 func TestWaitForTunneledReadinessWaitsOnAgentThenConfirmsOnce(t *testing.T) {
 	appPort, heads := headServer(t)
 	port := freeLoopbackPort(t)
@@ -943,13 +953,71 @@ func TestWaitForTunneledReadinessWaitsOnAgentThenConfirmsOnce(t *testing.T) {
 	if len(dialed) != 1 || dialed[0] != port {
 		t.Fatalf("relays opened to %v, want one to port %d after the agent reported it", dialed, port)
 	}
-	if heads() != 1 {
-		t.Fatalf("app got %d HEAD requests, want 1", heads())
+	if heads() != 0 {
+		t.Fatalf("app got %d HEAD requests, want none once the agent saw its socket", heads())
 	}
 	if agent.portCalls() != 3 || asked[0] != "camera-feed-yolo" {
 		t.Fatalf("asked the agent %d times for %v, want 3 for camera-feed-yolo", agent.portCalls(), asked)
 	}
 	if !strings.Contains(out, fmt.Sprintf("Waiting for localhost:%d to be ready", port)) || !strings.Contains(out, "Ready.") {
 		t.Fatalf("readiness output changed:\n%s", out)
+	}
+}
+
+// An app that does not speak HTTP (an MQTT broker, say) closes a relay that
+// sends it a request without answering. Once the agent reports its port, it
+// is ready as a TCP readiness check on the device's network would find it.
+func TestWaitForTunneledReadinessPassesAppThatDoesNotAnswerHTTP(t *testing.T) {
+	app, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	go func() {
+		for {
+			c, err := app.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				// Read whatever arrives, never answer, close on input.
+				defer c.Close()
+				_, _ = c.Read(make([]byte, 512))
+			}()
+		}
+	}()
+	port := freeLoopbackPort(t)
+	var mu sync.Mutex
+	var dialed []int
+	conn := offNetworkCloudConn(t)
+	conn.RegistryDialer = appBehindCloud(app.Addr().String(), &dialed, &mu)
+	conn.ContainerService.(*tunnelFakeContainerClient).ports = func(*agentpb.GetContainerPortsRequest) []*agentpb.PortEntry {
+		return []*agentpb.PortEntry{{Protocol: "tcp", Port: uint32(port), Address: "0.0.0.0"}}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tunnel, err := openCloudAppTunnel(ctx, conn, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tunnel.Close()
+	cfg := &appconfig.AppConfig{
+		AppID:     "mqtt-broker",
+		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 5},
+	}
+
+	start := time.Now()
+	captureStderr(t, func() {
+		if err := waitForTunneledReadiness(ctx, conn, cfg, tunnel, 0); err != nil {
+			t.Errorf("readiness: %v", err)
+		}
+	})
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("ready after %s, want the first attempt", elapsed)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dialed) != 1 {
+		t.Fatalf("opened %d relays, want 1", len(dialed))
 	}
 }

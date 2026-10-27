@@ -423,15 +423,18 @@ func doubleQuoteArg(s string) string {
 // Wendy Cloud: opening one per attempt cost an app that loads a model for two
 // minutes over a hundred of them. So the wait first asks the agent, over the
 // run's existing connection, whether the app listens on the forwarded port
-// (devicePortListening), and opens a relay to confirm once it does. When the
-// agent cannot say, relays are spaced by a backoff instead.
+// (devicePortListening). Once it does, the app is ready as a TCP readiness
+// check on the device's network would find it, and one relay that opens
+// confirms Wendy Cloud forwards the port. Only when the agent cannot see the
+// socket does a relay have to carry a request the app answers, spaced by a
+// backoff.
 const (
 	// tunnelReadinessAttemptTimeout bounds one readiness relay: the relay
 	// setup plus the device's dial to the app.
 	tunnelReadinessAttemptTimeout = 5 * time.Second
 	// tunnelRelayBackoff and tunnelRelayBackoffMax space the readiness relays
 	// when the agent cannot say whether the port listens, or says it does and
-	// the relay got no reply: the first at once, the next 1 s after it, the
+	// the relay did not open: the first at once, the next 1 s after it, the
 	// gap doubling to 5 s. A failure never shortens the gap.
 	tunnelRelayBackoff    = time.Second
 	tunnelRelayBackoffMax = 5 * time.Second
@@ -517,7 +520,9 @@ type tunnelReadiness struct {
 	// (devicePortListening): nil when the connection cannot ask, or once the
 	// agent answered Unimplemented.
 	listening func(context.Context) (bool, error)
-	relay     func(context.Context) error // one relay attempt: cloudAppTunnel.probeRelay
+	// relay is one relay attempt (cloudAppTunnel.probeRelay): with reply it
+	// passes when the app answers a request, otherwise once the relay opens.
+	relay func(ctx context.Context, reply bool) error
 
 	started  bool
 	polled   time.Time // the last call to listening
@@ -528,7 +533,7 @@ type tunnelReadiness struct {
 	safety   relaySchedule
 }
 
-func newTunnelReadiness(now func() time.Time, listening func(context.Context) (bool, error), relay func(context.Context) error) *tunnelReadiness {
+func newTunnelReadiness(now func() time.Time, listening func(context.Context) (bool, error), relay func(ctx context.Context, reply bool) error) *tunnelReadiness {
 	return &tunnelReadiness{
 		now:       now,
 		listening: listening,
@@ -555,9 +560,11 @@ func (s *relaySchedule) opened(now time.Time) {
 
 // attempt is one readiness attempt. It asks the agent first, at most once per
 // devicePortsPollInterval. While the agent reports the port is not listening,
-// only the spaced safety relays open; the first time it reports the port
-// listening, a relay opens at once to confirm the app answers, and later ones
-// follow the backoff; when the agent cannot answer, relays follow the backoff.
+// only the spaced safety relays open, and they pass only when the app answers
+// a request. The first time it reports the port listening, a relay opens at
+// once and passes when it opens: the agent has seen the socket, and the app
+// need not speak HTTP. Later ones follow the backoff. When the agent cannot
+// answer, relays follow the backoff and need the app to answer.
 func (r *tunnelReadiness) attempt(ctx context.Context) error {
 	now := r.now()
 	if !r.started {
@@ -593,19 +600,22 @@ func (r *tunnelReadiness) attempt(ctx context.Context) error {
 		}
 		return errTunnelRelayDeferred
 	}
-	err := r.relay(ctx)
+	err := r.relay(ctx, !(r.answered && r.listens))
 	schedule.opened(r.now())
 	return err
 }
 
 // probeRelay is one readiness attempt through t: it opens a relay to the
-// app's port, sends an HTTP HEAD request and passes on any reply, an HTTP
-// response or the bytes a TLS or banner-first server sends back. When the
-// device cannot reach the app's port the relay fails or closes and nothing
+// app's port and, with reply, sends an HTTP HEAD request and passes on any
+// reply, an HTTP response or the bytes a TLS or banner-first server sends
+// back. Without reply it passes once the relay opens; the device joins a relay
+// before it dials the app, so that alone does not show the app listens, and
+// callers pass reply=false only once the agent has reported the socket. When
+// the device cannot reach the app's port the relay fails or closes and nothing
 // comes back. It opens the relay itself, not through the local listener, so
 // the relay closes when the attempt ends, answered, refused or timed out, and
 // only one probe relay is open on t at a time.
-func (t *cloudAppTunnel) probeRelay(ctx context.Context) error {
+func (t *cloudAppTunnel) probeRelay(ctx context.Context, reply bool) error {
 	if !t.open() {
 		return errors.New("the Wendy Cloud tunnel has closed")
 	}
@@ -626,6 +636,9 @@ func (t *cloudAppTunnel) probeRelay(ctx context.Context) error {
 		return err
 	}
 	defer c.Close()
+	if !reply {
+		return nil
+	}
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	defer stop()
 	host := net.JoinHostPort(cloudAppTunnelHost, strconv.Itoa(t.LocalPort))
