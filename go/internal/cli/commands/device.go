@@ -28,6 +28,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -1250,8 +1251,10 @@ func newDeviceUnenrollCmd() *cobra.Command {
 			}
 
 			// Determine the device's current enrollment so we know which cloud
-			// asset to clean up afterwards.
-			provResp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
+			// asset to clean up afterwards. The peer is the certificate a numeric
+			// legacy reset forgets the pins of.
+			var provPeer grpcpeer.Peer
+			provResp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{}, grpc.Peer(&provPeer))
 			if err != nil {
 				return fmt.Errorf("checking provisioning status: %w", err)
 			}
@@ -1294,7 +1297,7 @@ func newDeviceUnenrollCmd() *cobra.Command {
 				}
 			}
 
-			cloudConn, cloudCtx, cloudAuth, err := dialCloud(ctx, cloudGRPC, cloudHost)
+			cloudConn, cloudCtx, cloudAuth, err := dialLegacyUnenrollCloudFn(ctx, cloudGRPC, cloudHost)
 			if err != nil {
 				return fmt.Errorf("cloud cleanup preflight failed; device was not reset: %w", err)
 			}
@@ -1306,6 +1309,15 @@ func newDeviceUnenrollCmd() *cobra.Command {
 			})
 			if !result.DeviceReset {
 				return cloudErr
+			}
+			// The reset erased the device's enrolled identity whether or not
+			// Cloud cleanup then succeeded, so forget it now: a pin left behind
+			// refuses every later connection to the unprovisioned device
+			// (WDY-3974). The Cloud retry below never contacts the device.
+			identityKeys := legacyResetIdentityKeys(conn, &provPeer, orgID, assetID)
+			pinErr := forgetResetDeviceIdentity(identityKeys...)
+			if pinErr != nil {
+				pinErr = fmt.Errorf("device reset, but clearing this CLI's saved identity for it failed: %w; run %s", pinErr, unpinCommandsFor(identityKeys))
 			}
 			retrySelector := (cloudDeviceSelector{Endpoint: cloudConn.Target(), OrgID: orgID, AssetID: assetID}).String()
 			retryCommand := "wendy cloud device unenroll --device " + shellQuoteArg(retrySelector)
@@ -1323,6 +1335,9 @@ func newDeviceUnenrollCmd() *cobra.Command {
 					out["cloudError"] = cloudErr.Error()
 					out["retryCommand"] = retryCommand
 				}
+				if pinErr != nil {
+					out["pinError"] = pinErr.Error()
+				}
 				data, marshalErr := json.MarshalIndent(out, "", "  ")
 				if marshalErr != nil {
 					return marshalErr
@@ -1334,15 +1349,19 @@ func newDeviceUnenrollCmd() *cobra.Command {
 					fmt.Printf("Cloud cleanup is incomplete for org %d, asset %d in %s.\n", orgID, assetID, cloudConn.Target())
 					fmt.Printf("Retry cloud cleanup: %s\n", retryCommand)
 					fmt.Printf("If the legacy Cloud API remains unavailable, remove asset %d from organization %d in that Cloud dashboard.\n", assetID, orgID)
+					// The pins just cleared come back while the asset is listed:
+					// Cloud's roster is authority for seedPinsFromCloudAssets, and
+					// the Cloud-only retry deliberately keeps pins.
+					fmt.Printf("Until then, commands that read Cloud's device list, such as 'wendy cloud discover', pin this device again; if a later connection is refused, run 'wendy device unpin %s'.\n", shellQuoteArg(certs.AssetURN(orgID, assetID)))
 				} else {
 					fmt.Printf("Revoked %d certificate(s) and deleted asset %d from Wendy Cloud.\n", result.CertificatesRevoked, assetID)
 				}
 			}
 
-			if cloudErr != nil {
-				return cloudErr
+			if pinErr != nil {
+				return errors.Join(cloudErr, pinErr)
 			}
-			return nil
+			return cloudErr
 		},
 	}
 
