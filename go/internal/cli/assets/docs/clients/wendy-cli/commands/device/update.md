@@ -1,7 +1,5 @@
 Updates the wendy-agent installation on the remote device, then checks for a newer WendyOS image. By default downloads the latest release binary from GitHub matching the device's CPU architecture. Pass `--binary <path>` to upload a locally built binary instead (e.g. a cross-compiled development build). When an upload is performed, the command waits for the restarted agent to become reachable, [confirms what the device is actually running](#verification), then checks the OS update outcome. The command exits non-zero if the update was rolled back.
 
-Through Wendy Cloud (`wendy cloud device update`, or any device reached over a cloud tunnel), the command waits up to 60 seconds for the restarted agent. The agent has to reconnect to Cloud before a new tunnel can reach it, which takes longer than a restart on the local network.
-
 If the device responds with "an update is already in progress" (a `FailedPrecondition` error), a previous upload likely committed without the agent restarting — a bug fixed in this release. Reboot the device to clear the stale lock, then retry.
 
 On the auto-download path, if the device already runs the resolved release version, the upload and agent restart are skipped and the command reports that it is already up to date. The OS update step below still runs afterward — except in `--json` mode, where the command returns immediately and the OS update step is not run. Because `--json` skips the OS step, combining it with `--pr` is refused outright rather than silently ignoring the requested PR image.
