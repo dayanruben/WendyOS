@@ -4,6 +4,7 @@ package network
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -83,8 +84,6 @@ type knownProfile struct {
 }
 
 // listKnownProfiles returns one entry per saved 802-11-wireless connection.
-// It fetches per-profile SSID + key-mgmt details in a single nmcli invocation
-// so the cost is O(1) exec calls regardless of how many profiles exist.
 func (n *NMCLINetworkManager) listKnownProfiles(ctx context.Context) ([]knownProfile, error) {
 	// First pass: list wifi connections and their priorities.
 	cmd := nmcli.Command(ctx, n.nmcliPath, "-t",
@@ -112,50 +111,159 @@ func (n *NMCLINetworkManager) listKnownProfiles(ctx context.Context) ([]knownPro
 		result = append(result, knownProfile{Name: fields[0], UUID: fields[1], Priority: prio})
 	}
 
-	if len(result) == 0 {
-		return result, nil
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading nmcli connection list: %w", err)
 	}
 
-	// Second pass: fetch ssid + key-mgmt for every wifi profile in a single
-	// `nmcli connection show UUID1 UUID2 ...` call. With `-g`, nmcli prints
-	// one field value per line per connection in the order it received the
-	// UUIDs, so 2 lines per profile (ssid, key-mgmt).
-	args := []string{"-t", "-g",
-		"802-11-wireless.ssid,802-11-wireless-security.key-mgmt",
-		"connection", "show"}
-	for _, p := range result {
-		args = append(args, p.UUID)
-	}
-	dcmd := nmcli.Command(ctx, n.nmcliPath, args...)
-	dout, derr := dcmd.Output()
-	if derr != nil {
-		// Fall back to name-as-ssid if the detail fetch fails so callers
-		// still get a usable list.
-		for i := range result {
-			if result[i].SSID == "" {
-				result[i].SSID = result[i].Name
-			}
-		}
-		return result, nil
-	}
-	lines := strings.Split(strings.TrimRight(string(dout), "\n"), "\n")
+	uuids := make([]string, len(result))
 	for i := range result {
-		base := i * 2
-		if base < len(lines) {
-			result[i].SSID = unescapeNMCLI(lines[base])
-		}
-		if base+1 < len(lines) {
-			result[i].Security = classifyKeyMgmt(lines[base+1])
-		}
-		if result[i].SSID == "" {
+		uuids[i] = result[i].UUID
+	}
+	profiles, _ := readWiFiProfiles(ctx, n.nmcliPath, uuids)
+	for i := range result {
+		p, ok := profiles[result[i].UUID]
+		if !ok || p.SSID == "" {
+			// The name still identifies the profile when its details can't be read.
 			result[i].SSID = result[i].Name
+			continue
 		}
+		result[i].SSID = p.SSID
+		result[i].Security = classifyKeyMgmt(p.KeyMgmt)
 	}
 	return result, nil
 }
 
-func unescapeNMCLI(s string) string {
-	return nmcli.Unescape(s)
+const (
+	uuidField    = "connection.uuid"
+	ssidField    = "802-11-wireless.ssid"
+	keyMgmtField = "802-11-wireless-security.key-mgmt"
+	authAlgField = "802-11-wireless-security.auth-alg"
+	// profileFields ends with the SSID: values come back raw, and the SSID is the
+	// only field that can span lines.
+	profileFields = keyMgmtField + "," + authAlgField + "," + ssidField
+
+	// nmcliNoSuchConnection is nmcli's exit status for a profile that doesn't exist.
+	nmcliNoSuchConnection = 10
+)
+
+// wifiProfile holds the fields read back from one saved WiFi profile.
+type wifiProfile struct {
+	SSID    string
+	KeyMgmt string
+	AuthAlg string
+}
+
+// wifiProfileUUIDs lists the UUIDs of the saved WiFi profiles.
+func wifiProfileUUIDs(ctx context.Context, nmcliPath string) ([]string, error) {
+	out, err := nmcli.Command(ctx, nmcliPath, "-t", "-f", "UUID,TYPE", "connection", "show").Output()
+	if err != nil {
+		return nil, fmt.Errorf("nmcli connection show: %w", err)
+	}
+	var uuids []string
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		fields := splitNMCLI(scanner.Text(), 2)
+		if len(fields) == 2 && fields[1] == "802-11-wireless" {
+			uuids = append(uuids, fields[0])
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading nmcli connection list: %w", err)
+	}
+	return uuids, nil
+}
+
+// readWiFiProfiles reads the given profiles in one nmcli call, or one call each
+// when that output can't be split. Profiles that no longer exist are left out.
+func readWiFiProfiles(ctx context.Context, nmcliPath string, uuids []string) (map[string]wifiProfile, error) {
+	if len(uuids) == 0 {
+		return map[string]wifiProfile{}, nil
+	}
+	args := append([]string{"--escape", "no", "-t", "-f", uuidField + "," + profileFields,
+		"connection", "show"}, uuids...)
+	if out, err := nmcli.Command(ctx, nmcliPath, args...).Output(); err == nil {
+		if profiles, ok := splitWiFiProfiles(string(out), uuids); ok {
+			return profiles, nil
+		}
+	}
+	profiles := make(map[string]wifiProfile, len(uuids))
+	for _, uuid := range uuids {
+		p, err := readWiFiProfile(ctx, nmcliPath, uuid)
+		if profileGone(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		profiles[uuid] = p
+	}
+	return profiles, nil
+}
+
+// splitWiFiProfiles splits batched output at each record's own uuid line, which
+// is longer than any SSID can be, so an SSID can never fake a boundary.
+func splitWiFiProfiles(out string, uuids []string) (map[string]wifiProfile, bool) {
+	profiles := make(map[string]wifiProfile, len(uuids))
+	for i, uuid := range uuids {
+		rest, ok := strings.CutPrefix(out, uuidField+":"+uuid+"\n")
+		if !ok {
+			return nil, false
+		}
+		record := rest
+		if i+1 < len(uuids) {
+			end := strings.Index(rest, "\n\n"+uuidField+":"+uuids[i+1]+"\n")
+			if end < 0 {
+				return nil, false
+			}
+			record, out = rest[:end+1], rest[end+2:]
+		}
+		p, err := parseWiFiProfile(record)
+		if err != nil {
+			return nil, false
+		}
+		profiles[uuid] = p
+	}
+	return profiles, true
+}
+
+// readWiFiProfile reads one profile on its own.
+func readWiFiProfile(ctx context.Context, nmcliPath, uuid string) (wifiProfile, error) {
+	out, err := nmcli.Command(ctx, nmcliPath, "--escape", "no", "-t", "-f", profileFields,
+		"connection", "show", uuid).Output()
+	if err != nil {
+		return wifiProfile{}, fmt.Errorf("nmcli connection show %s: %w", uuid, err)
+	}
+	return parseWiFiProfile(string(out))
+}
+
+// parseWiFiProfile parses readWiFiProfile's output; a profile without a
+// security setting has no security lines.
+func parseWiFiProfile(out string) (wifiProfile, error) {
+	var p wifiProfile
+	p.KeyMgmt, out = cutField(out, keyMgmtField)
+	p.AuthAlg, out = cutField(out, authAlgField)
+	ssid, ok := strings.CutPrefix(out, ssidField+":")
+	if !ok {
+		return wifiProfile{}, fmt.Errorf("unexpected nmcli profile output %q", out)
+	}
+	p.SSID = strings.TrimSuffix(ssid, "\n")
+	return p, nil
+}
+
+// cutField splits a leading "field:value" line off out, if out starts with one.
+func cutField(out, field string) (value, rest string) {
+	line, ok := strings.CutPrefix(out, field+":")
+	if !ok {
+		return "", out
+	}
+	value, rest, _ = strings.Cut(line, "\n")
+	return value, rest
+}
+
+// profileGone reports whether err means the profile no longer exists.
+func profileGone(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == nmcliNoSuchConnection
 }
 
 func classifyKeyMgmt(k string) agentpb.WiFiSecurityType {
@@ -322,32 +430,19 @@ func addOrUpdateProfile(ctx context.Context, nmcliPath string, c SavedCredential
 	return addProfile(ctx, nmcliPath, c)
 }
 
+// existingProfileUUID returns the UUID of the saved profile for ssid, or "".
+// A read failure is an error, so a caller never takes a saved profile as absent.
 func existingProfileUUID(ctx context.Context, nmcliPath, ssid string) (string, error) {
-	out, err := nmcli.Command(ctx, nmcliPath, "-t",
-		"-f", "NAME,UUID,TYPE", "connection", "show").Output()
+	uuids, err := wifiProfileUUIDs(ctx, nmcliPath)
 	if err != nil {
-		return "", fmt.Errorf("nmcli connection show: %w", err)
+		return "", err
 	}
-	var uuids []string
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	for scanner.Scan() {
-		fields := splitNMCLI(scanner.Text(), 3)
-		if len(fields) < 3 || fields[2] != "802-11-wireless" {
-			continue
-		}
-		uuids = append(uuids, fields[1])
+	profiles, err := readWiFiProfiles(ctx, nmcliPath, uuids)
+	if err != nil {
+		return "", err
 	}
-	if len(uuids) == 0 {
-		return "", nil
-	}
-	args := append([]string{"-t", "-g", "802-11-wireless.ssid", "connection", "show"}, uuids...)
-	dout, derr := nmcli.Command(ctx, nmcliPath, args...).Output()
-	if derr != nil {
-		return "", fmt.Errorf("nmcli connection show (ssids): %w", derr)
-	}
-	lines := strings.Split(strings.TrimRight(string(dout), "\n"), "\n")
-	for i, uuid := range uuids {
-		if i < len(lines) && unescapeNMCLI(lines[i]) == ssid {
+	for _, uuid := range uuids {
+		if p, ok := profiles[uuid]; ok && p.SSID == ssid {
 			return uuid, nil
 		}
 	}
