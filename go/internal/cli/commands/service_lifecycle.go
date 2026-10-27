@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"sync"
 
@@ -103,7 +104,9 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 
 	if !r.opts.hostReadinessConfirmed {
 		if err := route.waitForReadiness(ctx, r.conn, cfg, r.opts.readinessTimeout); err != nil {
-			if ctx.Err() == nil {
+			// A relay Wendy Cloud refused is no readiness failure;
+			// waitForReadiness has said what is skipped.
+			if ctx.Err() == nil && !errors.Is(err, errCloudRelayRefused) {
 				warnReadiness(ctx, r.conn, cfg.AppID, err)
 			}
 			return

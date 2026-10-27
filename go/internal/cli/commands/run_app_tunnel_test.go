@@ -1021,3 +1021,157 @@ func TestWaitForTunneledReadinessPassesAppThatDoesNotAnswerHTTP(t *testing.T) {
 		t.Fatalf("opened %d relays, want 1", len(dialed))
 	}
 }
+
+// Only a relay Cloud would not authorize, or a service it does not offer,
+// fails the same way every time. Transport trouble and an app that is not
+// up yet are retried.
+func TestPermanentRelayError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"authorization denied", fmt.Errorf("authorizing Cloud tunnel (RequestTunnel): %w", status.Error(codes.PermissionDenied, "no tunnel access")), true},
+		{"signed out", status.Error(codes.Unauthenticated, "token expired"), true},
+		{"port tunnels not offered", fmt.Errorf("Cloud does not offer tunnel service %q: %w", "tcp-3005", status.Error(codes.NotFound, "unknown service")), true},
+		{"Cloud unavailable", fmt.Errorf("joining Cloud relay: %w", status.Error(codes.Unavailable, "connection reset")), false},
+		{"relay deadline", status.Error(codes.DeadlineExceeded, "context deadline exceeded"), false},
+		{"device closed the relay", io.EOF, false},
+		{"canceled", context.Canceled, false},
+		{"plain error", errors.New("dial tcp: connection refused"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := permanentRelayError(tc.err); got != tc.want {
+				t.Fatalf("permanentRelayError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// When Wendy Cloud refuses the readiness relay, the wait stops at once
+// instead of retrying through the timeout and the slow-start observation:
+// the tunnel closes and the host-side lifecycle is skipped with the reason,
+// not reported as an app that is not ready.
+func TestCloudRelayRefusedSkipsHostLifecycle(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T, conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, port int)
+	}{
+		{"attached run", func(t *testing.T, conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, _ int) {
+			if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, cfg, runOptions{}); cmd != nil {
+				t.Errorf("started a hook after Cloud refused the relay: %v", cmd)
+			}
+		}},
+		{"service hook runner", func(t *testing.T, conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, port int) {
+			r := &serviceHookRunner{conn: conn}
+			r.runOne(context.Background(), context.Background(), cfg)
+			// Closed by the refusal, before reap closes the run's tunnels.
+			if c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second); err == nil {
+				c.Close()
+				t.Errorf("localhost:%d still accepts connections after Cloud refused the relay", port)
+			}
+			r.reap()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opened := swapBrowserOpen(t)
+			execs := swapPostStartExec(t)
+			port := freeLoopbackPort(t)
+			var mu sync.Mutex
+			relays := 0
+			conn := offNetworkCloudConn(t)
+			conn.RegistryDialer = func(context.Context, int) (net.Conn, error) {
+				mu.Lock()
+				relays++
+				mu.Unlock()
+				return nil, fmt.Errorf("authorizing Cloud tunnel (RequestTunnel): %w", status.Error(codes.PermissionDenied, "no tunnel access for this device"))
+			}
+			cfg := &appconfig.AppConfig{
+				AppID:     "camera-feed-yolo",
+				Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 5},
+				Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{
+					OpenURL: fmt.Sprintf("http://${WENDY_HOSTNAME}:%d", port),
+					CLI:     fmt.Sprintf("echo http://${WENDY_HOSTNAME}:%d", port),
+				}},
+			}
+
+			start := time.Now()
+			out := captureStderr(t, func() { tc.run(t, conn, cfg, port) })
+			if elapsed := time.Since(start); elapsed > 3*time.Second {
+				t.Errorf("took %s; a refused relay must end the readiness wait", elapsed)
+			}
+			mu.Lock()
+			if relays != 1 {
+				t.Errorf("opened %d relays, want 1", relays)
+			}
+			mu.Unlock()
+			if len(*opened) != 0 || len(*execs) != 0 {
+				t.Fatalf("ran hooks after Cloud refused the relay: browser=%v cli=%v", *opened, *execs)
+			}
+			if c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second); err == nil {
+				c.Close()
+				t.Errorf("localhost:%d still accepts connections after Cloud refused the relay", port)
+			}
+			for _, line := range []string{
+				fmt.Sprintf("Could not forward port %d to camera-feed-yolo: Wendy Cloud refused the relay", port),
+				"no tunnel access for this device",
+				"Connect the desktop VPN to reach this cloud device.",
+			} {
+				if !strings.Contains(out, line) {
+					t.Errorf("missing %q in output:\n%s", line, out)
+				}
+			}
+			for _, line := range []string{"Warning:", "is not ready", "still starting", "Wendy Cloud tunnel to port"} {
+				if strings.Contains(out, line) {
+					t.Errorf("unexpected %q in output:\n%s", line, out)
+				}
+			}
+		})
+	}
+}
+
+// A relay that fails for a reason that can pass (Cloud briefly unavailable)
+// is reported once and retried on the backoff.
+func TestWaitForTunneledReadinessRetriesTransientRelayFailure(t *testing.T) {
+	appPort, heads := headServer(t)
+	port := freeLoopbackPort(t)
+	var mu sync.Mutex
+	relays := 0
+	conn := offNetworkCloudConn(t)
+	conn.RegistryDialer = func(ctx context.Context, _ int) (net.Conn, error) {
+		mu.Lock()
+		relays++
+		first := relays == 1
+		mu.Unlock()
+		if first {
+			return nil, fmt.Errorf("joining Cloud relay: %w", status.Error(codes.Unavailable, "connection reset"))
+		}
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(appPort)))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tunnel, err := openCloudAppTunnel(ctx, conn, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tunnel.Close()
+	cfg := &appconfig.AppConfig{
+		AppID:     "web",
+		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 10},
+	}
+
+	out := captureStderr(t, func() {
+		if err := waitForTunneledReadiness(ctx, conn, cfg, tunnel, 0); err != nil {
+			t.Errorf("readiness: %v", err)
+		}
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if relays != 2 || heads() != 1 {
+		t.Fatalf("relays=%d HEADs=%d, want 2 and 1", relays, heads())
+	}
+	if !strings.Contains(out, fmt.Sprintf("Wendy Cloud tunnel to port %d on Dev Kit failed", port)) || !strings.Contains(out, "Ready.") {
+		t.Fatalf("output:\n%s", out)
+	}
+}

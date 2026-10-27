@@ -315,12 +315,21 @@ func (r hookRoute) appURL(appCfg *appconfig.AppConfig) string {
 	return r.tunnel.rootURL(scheme)
 }
 
-// waitForReadiness is waitForAttachedReadiness on this route.
+// waitForReadiness is waitForAttachedReadiness on this route. When Wendy
+// Cloud refuses the tunnel's relays (errCloudRelayRefused), it closes the
+// tunnel, whose URL cannot reach the app, and says the host-side lifecycle is
+// skipped; callers then skip it without a readiness warning.
 func (r hookRoute) waitForReadiness(ctx context.Context, conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, timeoutOverride time.Duration) error {
 	if r.tunnel == nil {
 		return waitForAttachedReadiness(ctx, conn, cfg, r.host, timeoutOverride)
 	}
-	return waitForTunneledReadiness(ctx, conn, cfg, r.tunnel, timeoutOverride)
+	err := waitForTunneledReadiness(ctx, conn, cfg, r.tunnel, timeoutOverride)
+	if errors.Is(err, errCloudRelayRefused) {
+		r.tunnel.Close()
+		cliNotice("Could not forward port %d to %s: %v", r.tunnel.RemotePort, containerDisplayName(cfg), err)
+		cliNotice("%s", cloudHostSkipNotice(cfg))
+	}
+	return err
 }
 
 // resolveHookRoute is resolveHookHost for the attached hook paths
@@ -457,7 +466,8 @@ const (
 // browser reaches, even when the app's readiness tcpSocket names another
 // device port, which the tunnel does not carry. The readiness timeout and the
 // slow-start observation are unchanged; tunnelReadiness decides which attempts
-// open a relay.
+// open a relay. A relay Wendy Cloud refuses (errCloudRelayRefused) ends the
+// wait at once with that error, since no later attempt can pass.
 func waitForTunneledReadiness(ctx context.Context, conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, t *cloudAppTunnel, timeoutOverride time.Duration) error {
 	readiness := effectiveReadiness(cfg)
 	if readiness == nil || readiness.TCPSocket == nil {
@@ -467,17 +477,31 @@ func waitForTunneledReadiness(ctx context.Context, conn *grpcclient.AgentConnect
 		TCPSocket:      &appconfig.TCPSocketProbe{Port: t.LocalPort},
 		TimeoutSeconds: readiness.TimeoutSeconds,
 	}
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
 	r := newTunnelReadiness(time.Now, devicePortListening(conn, cfg.AppID, t.RemotePort), t.probeRelay)
-	return waitForAttachedReadinessWith(ctx, conn, cfg, probe, cloudAppTunnelHost, 0, tunnelReadinessProbe(r), timeoutOverride)
+	attempt := func(ctx context.Context) error {
+		err := r.attempt(ctx)
+		if errors.Is(err, errCloudRelayRefused) {
+			stop(err)
+		}
+		return err
+	}
+	err := waitForAttachedReadinessWith(ctx, conn, cfg, probe, cloudAppTunnelHost, 0, tunnelReadinessProbe(attempt), timeoutOverride)
+	if cause := context.Cause(ctx); errors.Is(cause, errCloudRelayRefused) {
+		return cause
+	}
+	return err
 }
 
 // tunnelReadinessProbe is makeReadinessProbe for a cloud app tunnel: it
-// reports the tunnel's local end and attempts through r. The readiness wait
+// reports the tunnel's local end and tries with attempt. The readiness wait
 // builds its probe twice, for the timed wait and the slow-start observation;
-// both share r, so neither the backoff nor the relay count starts over.
-func tunnelReadinessProbe(r *tunnelReadiness) readinessProbeFactory {
+// both share one tunnelReadiness, so neither the backoff nor the relay count
+// starts over.
+func tunnelReadinessProbe(attempt func(context.Context) error) readinessProbeFactory {
 	return func(hostname string, port int, _ bool) (string, func(context.Context) error, func()) {
-		return net.JoinHostPort(hostname, strconv.Itoa(port)), r.attempt, func() {}
+		return net.JoinHostPort(hostname, strconv.Itoa(port)), attempt, func() {}
 	}
 }
 
@@ -509,7 +533,23 @@ func devicePortListening(conn *grpcclient.AgentConnection, appID string, port in
 var (
 	errTunnelPortNotListening = errors.New("the app is not listening on the forwarded port yet")
 	errTunnelRelayDeferred    = errors.New("waiting before the next Wendy Cloud relay")
+	// errCloudRelayRefused wraps a relay failure that every later attempt
+	// would repeat (permanentRelayError).
+	errCloudRelayRefused = errors.New("Wendy Cloud refused the relay")
 )
+
+// permanentRelayError reports whether a failure to open a Wendy Cloud relay
+// would repeat on every later attempt: Cloud would not authorize it, or does
+// not offer the port's service. A relay to an app that is still starting does
+// not fail to open: the device joins it, then closes it when its dial to the
+// app fails, so the probe reads EOF.
+func permanentRelayError(err error) bool {
+	switch status.Code(err) {
+	case codes.PermissionDenied, codes.Unauthenticated, codes.NotFound, codes.InvalidArgument, codes.Unimplemented:
+		return true
+	}
+	return false
+}
 
 // tunnelReadiness decides, attempt by attempt, whether a readiness wait
 // through a cloud app tunnel opens a relay. One wait owns it and calls attempt
@@ -630,6 +670,10 @@ func (t *cloudAppTunnel) probeRelay(ctx context.Context, reply bool) error {
 	defer cancel()
 	c, err := t.relay(ctx)
 	if err != nil {
+		if permanentRelayError(err) {
+			// hookRoute.waitForReadiness reports it, with what is skipped.
+			return fmt.Errorf("%w: %w", errCloudRelayRefused, err)
+		}
 		if ctx.Err() == nil && t.relayFailed != nil {
 			t.relayFailed(err)
 		}

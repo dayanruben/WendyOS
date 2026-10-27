@@ -3467,6 +3467,11 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 	}
 	err := route.waitForReadiness(ctx, conn, appCfg, opts.readinessTimeout)
 	rp("  ↳ runcontainer: readiness wait")
+	if errors.Is(err, errCloudRelayRefused) {
+		// Not a readiness failure: Wendy Cloud would not forward the port,
+		// and waitForReadiness has said what is skipped.
+		return nil
+	}
 	if err != nil {
 		if readiness != nil && readiness.TCPSocket != nil && !opts.managedRobot {
 			class, outcome := ExecutionErrorClass(err), "failed"
