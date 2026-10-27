@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -420,12 +421,19 @@ func AddOrUpdateProfile(ctx context.Context, c SavedCredential) error {
 }
 
 func addOrUpdateProfile(ctx context.Context, nmcliPath string, c SavedCredential) error {
-	uuid, err := existingProfileUUID(ctx, nmcliPath, c.SSID)
+	existing, err := existingProfileUUID(ctx, nmcliPath, c.SSID)
 	if err != nil {
 		return err
 	}
-	if uuid != "" {
-		return modifyProfile(ctx, nmcliPath, uuid, c)
+	_, err = saveProfile(ctx, nmcliPath, existing, c)
+	return err
+}
+
+// saveProfile updates the profile existing, or adds one when existing is empty,
+// and returns the UUID of the saved profile.
+func saveProfile(ctx context.Context, nmcliPath, existing string, c SavedCredential) (string, error) {
+	if existing != "" {
+		return existing, modifyProfile(ctx, nmcliPath, existing, c)
 	}
 	return addProfile(ctx, nmcliPath, c)
 }
@@ -449,7 +457,13 @@ func existingProfileUUID(ctx context.Context, nmcliPath, ssid string) (string, e
 	return "", nil
 }
 
-func addProfile(ctx context.Context, nmcliPath string, c SavedCredential) error {
+// addedUUIDRe matches the UUID in nmcli's "Connection 'NAME' (UUID) successfully
+// added." line; the last match wins, since NAME may contain anything.
+var addedUUIDRe = regexp.MustCompile(`\(([0-9A-Fa-f-]{36})\) successfully added`)
+
+// addProfile creates a profile and returns its UUID, so the caller can act on
+// it without looking it up again.
+func addProfile(ctx context.Context, nmcliPath string, c SavedCredential) (string, error) {
 	args := []string{"connection", "add", "type", "wifi",
 		"con-name", c.SSID,
 		"ssid", c.SSID,
@@ -469,10 +483,21 @@ func addProfile(ctx context.Context, nmcliPath string, c SavedCredential) error 
 		}
 	}
 	cmd := nmcli.Command(ctx, nmcliPath, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("nmcli connection add %s: %s: %w", c.SSID, strings.TrimSpace(string(out)), err)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("nmcli connection add %s: %s: %w", c.SSID, strings.TrimSpace(string(out)), err)
 	}
-	return nil
+	if m := addedUUIDRe.FindAllStringSubmatch(string(out), -1); len(m) > 0 {
+		return m[len(m)-1][1], nil
+	}
+	id, err := existingProfileUUID(ctx, nmcliPath, c.SSID)
+	if err == nil && id == "" {
+		err = fmt.Errorf("no saved profile for SSID %q", c.SSID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("finding the added profile: %w", err)
+	}
+	return id, nil
 }
 
 func modifyProfile(ctx context.Context, nmcliPath, uuid string, c SavedCredential) error {
@@ -520,6 +545,10 @@ func activateProfile(ctx context.Context, nmcliPath, ssid string) error {
 	if uuid == "" {
 		return fmt.Errorf("no saved profile for SSID %q", ssid)
 	}
+	return upProfile(ctx, nmcliPath, ssid, uuid)
+}
+
+func upProfile(ctx context.Context, nmcliPath, ssid, uuid string) error {
 	cmd := nmcli.Command(ctx, nmcliPath, "connection", "up", uuid)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("nmcli connection up %s: %s: %w", ssid, strings.TrimSpace(string(out)), err)
@@ -581,11 +610,12 @@ func (n *NMCLINetworkManager) ConnectToWiFi(ctx context.Context, req *agentpb.Co
 			Hidden:   hidden,
 			Security: secHint,
 		}
-		if err := addOrUpdateProfile(ctx, n.nmcliPath, cred); err != nil {
+		uuid, err := saveProfile(ctx, n.nmcliPath, preExistingUUID, cred)
+		if err != nil {
 			return fmt.Errorf("preparing WiFi profile: %w", err)
 		}
-		if err := activateProfile(ctx, n.nmcliPath, ssid); err != nil {
-			n.cleanupTransientProfile(ctx, ssid, preExistingUUID)
+		if err := upProfile(ctx, n.nmcliPath, ssid, uuid); err != nil {
+			n.cleanupTransientProfile(ctx, ssid, preExistingUUID, uuid)
 			return err
 		}
 		n.logger.Info("Connected to WiFi via profile",
@@ -596,7 +626,7 @@ func (n *NMCLINetworkManager) ConnectToWiFi(ctx context.Context, req *agentpb.Co
 	}
 
 	if err := runNMCLIConnect(ctx, n.nmcliPath, ssid, req.GetPassword(), hidden); err != nil {
-		n.cleanupTransientProfile(ctx, ssid, preExistingUUID)
+		n.cleanupTransientProfile(ctx, ssid, preExistingUUID, "")
 		return err
 	}
 	n.logger.Info("Connected to WiFi", zap.String("ssid", ssid))
@@ -609,13 +639,17 @@ func (n *NMCLINetworkManager) ConnectToWiFi(ctx context.Context, req *agentpb.Co
 // the profile we now see was created during the failed attempt itself, so
 // it's safe to delete. Cleanup is best-effort — if it fails we just log,
 // since the original connect error is what the caller actually needs.
-func (n *NMCLINetworkManager) cleanupTransientProfile(ctx context.Context, ssid, preExistingUUID string) {
+// createdUUID names that profile when the caller knows it; "" looks it up.
+func (n *NMCLINetworkManager) cleanupTransientProfile(ctx context.Context, ssid, preExistingUUID, createdUUID string) {
 	if preExistingUUID != "" {
 		return
 	}
-	uuid, err := existingProfileUUID(ctx, n.nmcliPath, ssid)
-	if err != nil || uuid == "" {
-		return
+	uuid := createdUUID
+	if uuid == "" {
+		var err error
+		if uuid, err = existingProfileUUID(ctx, n.nmcliPath, ssid); err != nil || uuid == "" {
+			return
+		}
 	}
 	cmd := nmcli.Command(ctx, n.nmcliPath, "connection", "delete", uuid)
 	if out, err := cmd.CombinedOutput(); err != nil {
