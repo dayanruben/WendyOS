@@ -2160,8 +2160,8 @@ func (c *Client) applyNvidiaCDISpec(spec *localoci.Spec, cdiSpec *cdi.CDISpecifi
 	return fmt.Errorf("CDI spec %s has no applicable device: %w", specPath, allErr)
 }
 
-// refreshGPUDeviceNumbersForStart re-resolves every host device number pinned in
-// a GPU-entitled container's stored spec, persists the spec when any of them
+// refreshAcceleratorDeviceNumbersForStart re-resolves every host device number pinned in
+// a GPU- or NPU-entitled container's stored spec, persists the spec when any of them
 // have moved, and refuses the start when any of them are gone.
 //
 // Metadata-only annotation upgrades are best-effort. Once the stored bindings
@@ -2171,14 +2171,15 @@ func (c *Client) applyNvidiaCDISpec(spec *localoci.Spec, cdiSpec *cdi.CDISpecifi
 // The refusal half is not best-effort. A device that no longer exists cannot be
 // repaired, and starting the app regardless is what produces a crash loop whose
 // exit code names nothing — see ErrDeviceUnavailable.
-func (c *Client) refreshGPUDeviceNumbersForStart(ctx context.Context, container containerd.Container, appName string, labels map[string]string) error {
-	if !hasGPUEntitlement(parseEntitlementsFromAnnotations(labels)) {
+func (c *Client) refreshAcceleratorDeviceNumbersForStart(ctx context.Context, container containerd.Container, appName string, labels map[string]string) error {
+	entitlements := parseEntitlementsFromAnnotations(labels)
+	if !hasGPUEntitlement(entitlements) && !entitlementsContain(entitlements, appconfig.EntitlementNPU) {
 		return nil
 	}
 
 	info, err := container.Info(ctx)
 	if err != nil {
-		c.logger.Warn("Could not load container record to re-resolve GPU device numbers; starting with the stored spec",
+		c.logger.Warn("Could not load container record to re-resolve accelerator device numbers; starting with the stored spec",
 			zap.String("app_name", appName), zap.Error(err))
 		return nil
 	}
@@ -2188,7 +2189,7 @@ func (c *Client) refreshGPUDeviceNumbersForStart(ctx context.Context, container 
 
 	var spec localoci.Spec
 	if err := json.Unmarshal(info.Spec.GetValue(), &spec); err != nil {
-		c.logger.Warn("Could not decode stored spec to re-resolve GPU device numbers; starting with the stored spec",
+		c.logger.Warn("Could not decode stored spec to re-resolve accelerator device numbers; starting with the stored spec",
 			zap.String("app_name", appName), zap.Error(err))
 		return nil
 	}
@@ -2476,8 +2477,9 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	// writes an exact pair records the path it came from), so this covers both
 	// the GPU's own device entries and the bind-mounted, cgroup-only pins that
 	// AMD compute, i2c and serial use. Which containers are refreshed is still
-	// gated on the gpu entitlement here.
-	if devErr := c.refreshGPUDeviceNumbersForStart(ctx, container, appName, containerLabels); devErr != nil {
+	// gated on a GPU or NPU entitlement here. FastRPC misc minors also
+	// change across boots; NPU-only apps must refresh their scoped grants.
+	if devErr := c.refreshAcceleratorDeviceNumbersForStart(ctx, container, appName, containerLabels); devErr != nil {
 		// Preflight: the app declared hardware this host no longer has. Starting
 		// anyway produces a container that runs, fails inside the vendor runtime,
 		// and crash-loops with an exit code that names nothing — the failure mode
