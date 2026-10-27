@@ -35,7 +35,8 @@ and most recent rounds in `roughtime_observations` and counts the rounds in
 | `wendy data sources` | List camera, audio, ROS 2, application, and telemetry sources. |
 | `wendy data record` | Start one detached Episode. With no source flags, every healthy discovered source is selected. |
 | `wendy data stop` | Stop and seal the active Episode. |
-| `wendy data episodes` | List finalized Episodes. |
+| `wendy data status` | Show the Episodes still in progress: state, start time, duration, trigger, sources and size so far. |
+| `wendy data episodes` | List finalized Episodes, with any still in progress at the top. |
 | `wendy data inspect <episode>` | Print the manifest and verify every sealed payload checksum. |
 | `wendy data download <episode>` | Resume a per-file download, verify it, and publish the local directory atomically. |
 
@@ -49,6 +50,7 @@ monotonic ordering.
 ```sh
 wendy data sources
 wendy data record --name commissioning --source v4l2:/dev/video2
+wendy data status
 wendy data stop
 wendy data episodes
 wendy data inspect <episode-id>
@@ -102,8 +104,8 @@ wendy data sources --kind audio            # every audio source, nothing summari
 Every `data` subcommand whose payload is a protocol buffer message prints it as
 canonical protobuf JSON on one compact line, with protocol buffer field names
 exactly as the `.proto` declares them, and unpopulated fields omitted. That
-covers `sources`, `episodes`, `record`, `stop`, `campaign list` and
-`campaign trigger`.
+covers `sources`, `episodes`, `record`, `stop`, `status`, `campaign list`
+and `campaign trigger`.
 
 Some payloads are already a JSON document the device produced, and those bytes
 are written through untouched so they stay checkable against the device:
@@ -120,6 +122,53 @@ describes, so under `--json` it prints an object of its own: `episode`,
 Episode IDs are stable opaque identifiers. Their readable UTC prefix is only a
 convenience; canonical ordering comes from the Episode's `CLOCK_BOOTTIME`
 timestamps and boot ID.
+
+### Episodes in progress
+
+An Episode is not finalized until its seal ends, so before that it is listed
+apart from the finalized ones. That covers one started by `wendy data record`
+and one a campaign trigger started. It passes through up to three states:
+
+| State | Meaning |
+|---|---|
+| `recording` | Capturing. |
+| `draining` | Capture has stopped; it still accepts late application records for its drain. |
+| `sealing` | Its playable video and checksums are being written. |
+
+`wendy data episodes` lists these first. They add a `DURATION` column, measured
+on the device's `CLOCK_BOOTTIME` and frozen once capture stops, and a `TRIGGER`
+column, which reads `manual` or names the campaign. Their `SIZE` is what they
+hold on disk so far.
+
+```text
+EPISODE                            STATE      SIZE     NAME           DURATION  TRIGGER
+20261027T120641Z-9f2e4d6c8b0a1357  draining   2621440  door-watch     31s       campaign door-watch
+20261027T120501Z-0b7c9d1e2f3a4b5c  recording  3145728  commissioning  2m13s     manual
+20261027T115329Z-e4418826f638364e  complete   7245349  manual-test
+```
+
+`wendy data status` prints each of them in full, including the trigger reason
+and the sources, and prints `No recording in progress.` when there is none.
+
+```text
+Episode: 20261027T120501Z-0b7c9d1e2f3a4b5c (commissioning)
+State: recording
+Started: 2026-10-27T12:05:01Z (device clock)
+Duration: 2m13s
+Trigger: manual
+Sources: telemetry, v4l2:/dev/video0
+Size so far: 3145728 bytes
+```
+
+Under `--json`, `episodes` keeps finalized Episodes in `episodes` and lists the
+others in a separate `in_progress` array, so a script that downloads every entry
+of `episodes` keeps working. `status` prints the agent's response: every Episode
+in `in_progress`, and `active` for older clients.
+
+An agent that predates `in_progress` reports at most one Episode in progress,
+with no trigger, sources or size. The CLI still shows that one, estimates its
+duration from the device's start time and marks it with `~`, and says so in a
+note.
 
 ## Campaign commands
 

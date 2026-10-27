@@ -62,7 +62,7 @@ func encodeProtoJSON(out io.Writer, message proto.Message) error {
 
 func newDataCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "data", Short: "Record and retrieve synchronized device data"}
-	cmd.AddCommand(newDataExportStreamCmd(), newDataSourcesCmd(), newDataRecordCmd(), newDataStopCmd(), newDataEpisodesCmd(), newDataInspectCmd(), newDataDownloadCmd(), newDataCampaignCmd())
+	cmd.AddCommand(newDataExportStreamCmd(), newDataSourcesCmd(), newDataRecordCmd(), newDataStopCmd(), newDataStatusCmd(), newDataEpisodesCmd(), newDataInspectCmd(), newDataDownloadCmd(), newDataCampaignCmd())
 	return cmd
 }
 
@@ -415,7 +415,11 @@ func newDataRecordCmd() *cobra.Command {
 			if e2 != nil {
 				return e2
 			}
-			return printEpisode(cmd, e)
+			if e2 = printEpisode(cmd, e); e2 != nil || jsonOutput {
+				return e2
+			}
+			printRecordNextSteps(cmd.OutOrStdout())
+			return nil
 		})
 	}}
 	c.Flags().StringVar(&name, "name", "", "Human-readable episode name")
@@ -439,20 +443,9 @@ func newDataStopCmd() *cobra.Command {
 }
 
 func newDataEpisodesCmd() *cobra.Command {
-	return &cobra.Command{Use: "episodes", Short: "List finalized episodes", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	return &cobra.Command{Use: "episodes", Short: "List episodes, with recordings in progress first", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		return withDataClient(cmd.Context(), func(c agentpbv2.DataServiceClient) error {
-			r, e := c.Episodes(cmd.Context(), &agentpbv2.DataEpisodesRequest{})
-			if e != nil {
-				return e
-			}
-			if jsonOutput {
-				return encodeProtoJSON(cmd.OutOrStdout(), r)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "EPISODE\tSTATE\tSIZE\tNAME")
-			for _, x := range r.GetEpisodes() {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%d\t%s\n", x.GetId(), x.GetState(), x.GetSizeBytes(), x.GetName())
-			}
-			return nil
+			return runDataEpisodes(cmd.Context(), c, cmd.OutOrStdout(), cmd.ErrOrStderr(), jsonOutput, time.Now())
 		})
 	}}
 }

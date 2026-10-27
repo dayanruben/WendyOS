@@ -657,21 +657,35 @@ func (s *DataService) observeApplicationRecord(_ string, record data.Application
 }
 
 func (s *DataService) Status(context.Context, *agentpbv2.DataStatusRequest) (*agentpbv2.DataStatusResponse, error) {
-	m := s.manager.Status()
-	if m == nil {
-		return &agentpbv2.DataStatusResponse{}, nil
+	r := &agentpbv2.DataStatusResponse{ReportsInProgress: true}
+	for _, e := range s.manager.InProgress() {
+		r.InProgress = append(r.InProgress, inProgressEpisode(e))
 	}
-	return &agentpbv2.DataStatusResponse{Active: manifestEpisode(*m)}, nil
+	if m := s.manager.Status(); m != nil {
+		r.Active = manifestEpisode(*m)
+	}
+	return r, nil
 }
 
 func (s *DataService) Episodes(context.Context, *agentpbv2.DataEpisodesRequest) (*agentpbv2.DataEpisodesResponse, error) {
+	// In-progress episodes are read before the store. An episode that finishes
+	// its seal in between is then in both lists, and is dropped from the
+	// in-progress one below; read the other way round, it would be in neither.
+	open := s.manager.InProgress()
 	list, err := s.manager.List()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	r := &agentpbv2.DataEpisodesResponse{}
+	finalized := make(map[string]bool, len(list))
 	for _, e := range list {
 		r.Episodes = append(r.Episodes, infoEpisode(e))
+		finalized[e.ID] = true
+	}
+	for _, e := range open {
+		if !finalized[e.ID] {
+			r.InProgress = append(r.InProgress, inProgressEpisode(e))
+		}
 	}
 	return r, nil
 }
@@ -720,4 +734,8 @@ func manifestEpisode(m data.Manifest) *agentpbv2.DataEpisode {
 }
 func infoEpisode(e data.EpisodeInfo) *agentpbv2.DataEpisode {
 	return &agentpbv2.DataEpisode{Id: e.ID, Name: e.Name, State: e.State, StartedUnixNanos: e.StartedUnixNanos, SizeBytes: e.SizeBytes, BootId: e.BootID}
+}
+func inProgressEpisode(e data.InProgressEpisode) *agentpbv2.DataEpisode {
+	return &agentpbv2.DataEpisode{Id: e.ID, Name: e.Name, State: e.State, StartedUnixNanos: e.StartedUnixNanos, SizeBytes: e.SizeBytes, BootId: e.BootID,
+		TriggerReason: e.TriggerReason, CampaignName: e.CampaignName, Sources: e.Sources, DurationNanos: e.Duration.Nanoseconds()}
 }
