@@ -2526,8 +2526,10 @@ func resolveDeviceName(flagName string) (string, error) {
 // resolveProvisioningJSON runs EAB pre-enrollment per preOpts and returns the
 // marshaled acme-enrollment.json, or nil when enrollment is skipped or not
 // available. Full-OS images (disk/Orin/Thor) bake this; the ESP32 path uses
-// resolveLiteInstallEnrollment and enrolls over USB after reboot.
-func resolveProvisioningJSON(ctx context.Context, preOpts preEnrollOptions, deviceName string) ([]byte, error) {
+// resolveLiteInstallEnrollment and enrolls over USB after reboot. A blank
+// *deviceName is filled in when the device is pre-enrolled, so the caller
+// writes the name Cloud reserved.
+func resolveProvisioningJSON(ctx context.Context, preOpts preEnrollOptions, deviceName *string) ([]byte, error) {
 	if preOpts.mode == preEnrollSkip {
 		return nil, nil
 	}
