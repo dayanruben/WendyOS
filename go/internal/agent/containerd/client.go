@@ -1788,8 +1788,11 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 				}
 			}
 			// Task may be orphaned (shim crashed). Force-delete via the task
-			// service directly so the runtime clears the old task ID.
-			c.forceDeleteTask(ctx, containerName)
+			// service only when it is safe to use the legacy forced path.
+			if err := c.recoverReplacedTaskLookup(ctx, containerName, oldHadNPU, taskErr); err != nil {
+				oldNPUTaskRetained = oldHadNPU
+				return err
+			}
 		}
 		delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup)
 		if delErr != nil && errdefs.IsFailedPrecondition(delErr) {

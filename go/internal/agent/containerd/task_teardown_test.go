@@ -55,7 +55,10 @@ func newFakeTeardownTask() *fakeTeardownTask {
 }
 
 func (f *fakeTeardownTask) exit() {
-	f.exitOnce.Do(func() { close(f.waitCh) })
+	f.exitOnce.Do(func() {
+		f.waitCh <- *containerd.NewExitStatus(0, time.Now(), nil)
+		close(f.waitCh)
+	})
 }
 
 func (f *fakeTeardownTask) Kill(ctx context.Context, sig syscall.Signal, opts ...containerd.KillOpts) error {
@@ -251,6 +254,34 @@ func TestNPUWaitFailureRetainsTask(t *testing.T) {
 	}
 	if len(task.recordedKills()) != 0 || task.deleted {
 		t.Fatal("unobservable NPU task was killed or deleted")
+	}
+}
+
+func TestNPUAsyncWaitFailureRetainsTask(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		task := newFakeTeardownTask()
+		if !closed {
+			task.waitCh <- *containerd.NewExitStatus(255, time.Time{}, errors.New("wait RPC failed"))
+		}
+		close(task.waitCh)
+		if err := newTeardownTestClient().terminateNPUTask(context.Background(), task, "npu"); err == nil {
+			t.Fatal("unconfirmed exit was accepted")
+		}
+		if task.deleted {
+			t.Fatal("task deleted after failed exit observation")
+		}
+	}
+}
+
+func TestNPUTaskLookupNeverForcesRecovery(t *testing.T) {
+	// No runtime client is installed: any attempt to force-delete would
+	// panic. Exercise the exact fallback used by container replacement.
+	c := newTeardownTestClient()
+	if err := c.recoverReplacedTaskLookup(context.Background(), "npu", true, errors.New("shim unavailable")); err == nil {
+		t.Fatal("expected unobservable NPU owner to be retained")
+	}
+	if err := c.recoverReplacedTaskLookup(context.Background(), "npu", true, errdefs.ErrNotFound); err != nil {
+		t.Fatalf("absent task should allow non-forced metadata deletion: %v", err)
 	}
 }
 

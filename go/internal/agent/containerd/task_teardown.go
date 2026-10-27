@@ -67,7 +67,13 @@ func (c *Client) terminateNPUTask(ctx context.Context, task teardownTask, contai
 	timer := time.NewTimer(npuStopGracePeriod)
 	defer timer.Stop()
 	select {
-	case <-waitCh:
+	case exit, ok := <-waitCh:
+		if !ok {
+			return fmt.Errorf("NPU task %q exit observation ended without a result; refusing forced teardown", containerID)
+		}
+		if _, _, err := exit.Result(); err != nil {
+			return fmt.Errorf("cannot confirm NPU task %q exit; refusing forced teardown: %w", containerID, err)
+		}
 	case <-timer.C:
 		return fmt.Errorf("NPU task %q did not exit within %s; refusing SIGKILL and replacement", containerID, npuStopGracePeriod)
 	case <-ctx.Done():
@@ -79,6 +85,20 @@ func (c *Client) terminateNPUTask(ctx context.Context, task teardownTask, contai
 		return fmt.Errorf("deleting stopped NPU task %q without forced kill: %w", containerID, err)
 	}
 	c.logger.Info("NPU task exited without forced teardown", zap.String("container_id", containerID))
+	return nil
+}
+
+// A missing task can proceed to ordinary container metadata deletion, which
+// does not kill processes. Any other lookup failure leaves NPU ownership
+// unknown and must not enter the legacy forced runtime-recovery path.
+func (c *Client) recoverReplacedTaskLookup(ctx context.Context, containerID string, hadNPU bool, lookupErr error) error {
+	if hadNPU {
+		if !errdefs.IsNotFound(lookupErr) {
+			return fmt.Errorf("cannot observe NPU task %q; refusing forced teardown: %w", containerID, lookupErr)
+		}
+		return nil
+	}
+	c.forceDeleteTask(ctx, containerID)
 	return nil
 }
 
