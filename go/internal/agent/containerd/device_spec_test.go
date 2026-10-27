@@ -24,6 +24,54 @@ type deviceSpecStore struct {
 	masks     []string
 }
 
+// FastRPC bind mounts retain their paths while misc minors change after boot.
+func TestDeviceRefresh_NPUBindMountAfterDeviceRenumber(t *testing.T) {
+	major, minor, err := localoci.ResolveDeviceNode(os.DevNull, "c", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := localoci.DefaultSpec("/rootfs", nil)
+	spec.Mounts = append(spec.Mounts, localoci.Mount{Source: os.DevNull, Destination: "/dev/fastrpc-cdsp", Type: "bind", Options: []string{"bind", "rw"}})
+	localoci.RecordPinnedDevice(spec, os.DevNull, "c", 999, 999)
+	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, localoci.LinuxDeviceCgroup{Allow: true, Type: "c", Major: new(int64(999)), Minor: new(int64(999)), Access: "rw"})
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &deviceSpecStore{record: containers.Container{ID: "npu-app", Spec: &anypb.Any{TypeUrl: "test-spec", Value: raw}}}
+	remote, err := containerd.New("", containerd.WithServices(containerd.WithContainerStore(store)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctr, err := remote.LoadContainer(context.Background(), "npu-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{client: remote, logger: zap.NewNop()}
+	if err := client.refreshAcceleratorDeviceNumbersForStart(context.Background(), ctr, "npu-app", map[string]string{"sh.wendy/entitlement.npu": ""}); err != nil {
+		t.Fatal(err)
+	}
+	var saved localoci.Spec
+	if err := json.Unmarshal(store.record.Spec.GetValue(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, rule := range saved.Linux.Resources.Devices {
+		if rule.Allow && rule.Type == "c" && rule.Major != nil && rule.Minor != nil && *rule.Major == major && *rule.Minor == minor && rule.Access == "rw" {
+			found = true
+		}
+		if rule.Allow && rule.Type == "c" && rule.Major != nil && *rule.Major == 999 {
+			t.Fatal("stale NPU grant survived restart")
+		}
+	}
+	if !found {
+		t.Fatal("NPU-only container did not receive the current device grant")
+	}
+	if !reflect.DeepEqual(store.masks, []string{"spec"}) {
+		t.Fatalf("expected scoped spec update, got %v", store.masks)
+	}
+}
+
 func (s *deviceSpecStore) Get(context.Context, string) (containers.Container, error) {
 	return s.record, nil
 }
