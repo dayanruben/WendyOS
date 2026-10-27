@@ -9,10 +9,12 @@ import (
 	"strconv"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -22,12 +24,17 @@ func newCloudTunnelCmd() *cobra.Command {
 	var brokerURL string
 
 	cmd := &cobra.Command{
-		Use:   "tunnel <local-port>:<remote-port>[/udp]",
+		Use:   "tunnel [<local-port>:<remote-port>[/udp]]",
 		Short: "Forward a local TCP or UDP port to a port on a cloud-enrolled device",
-		Long:  "Listens on <local-port> and forwards each connection through the Wendy Cloud tunnel broker to <remote-port> on the target device.",
-		Args:  cobra.ExactArgs(1),
+		Long: "Listens on <local-port> and forwards each connection through the Wendy Cloud tunnel broker to <remote-port> on the target device.\n\n" +
+			"Without a port mapping, prompts for one interactively. Non-interactive and --json invocations require an explicit port mapping.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			localPort, remotePort, udp, err := parseTunnelArg(args[0])
+			arg, err := resolveCloudTunnelArg(cmd, args)
+			if err != nil {
+				return err
+			}
+			localPort, remotePort, udp, err := parseTunnelArg(arg)
 			if err != nil {
 				return err
 			}
@@ -40,6 +47,26 @@ func newCloudTunnelCmd() *cobra.Command {
 	cmd.Flags().StringVar(&brokerURL, "broker-url", os.Getenv("WENDY_BROKER_URL"), "Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)")
 
 	return cmd
+}
+
+func resolveCloudTunnelArg(cmd *cobra.Command, args []string) (string, error) {
+	if len(args) > 0 {
+		return args[0], nil
+	}
+	if jsonOutput || !isInteractiveTerminal() {
+		return "", fmt.Errorf("provide a port mapping: 'wendy cloud tunnel <local-port>:<remote-port>[/udp]'")
+	}
+	return tui.PromptText(
+		"Port mapping",
+		"local:remote or port (e.g. 8080:3000); add /udp for UDP",
+		func(value string) error {
+			_, _, _, err := parseTunnelArg(value)
+			return err
+		},
+		tea.WithContext(cmd.Context()),
+		tea.WithInput(cmd.InOrStdin()),
+		tea.WithOutput(cmd.OutOrStdout()),
+	)
 }
 
 // parseTunnelArg parses "localPort:remotePort" or "port", with an optional
