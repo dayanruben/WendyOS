@@ -42,6 +42,23 @@ func TestCLIUpdateDialogRequiresDecision(t *testing.T) {
 	}
 }
 
+// Bubble Tea keeps only the bottom lines of a view taller than the terminal.
+func TestCLIUpdateDialogKeepsVersionsInShortTerminals(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {80, 12}, {32, 15}} {
+		m := cliUpdateModel{current: "2026.09.29-120000", latest: "2026.10.05-134249"}
+		next, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		view := next.View()
+		if got := lipgloss.Height(view); got > size[1] {
+			t.Fatalf("%dx%d: dialog height %d", size[0], size[1], got)
+		}
+		for _, text := range []string{"UPDATE YOUR WENDY CLI", "Installed:", "Available:", "Download now", "Ask again later..."} {
+			if !strings.Contains(view, text) {
+				t.Fatalf("%dx%d: dialog missing %q: %s", size[0], size[1], text, view)
+			}
+		}
+	}
+}
+
 func TestCLIUpdateDialogFitsTerminalWidth(t *testing.T) {
 	for _, width := range []int{32, 60, 80, 120} {
 		m := cliUpdateModel{current: "2026.09.29-120000", latest: "2026.10.05-134249"}

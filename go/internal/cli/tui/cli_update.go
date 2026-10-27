@@ -54,9 +54,16 @@ func (m cliUpdateModel) View() string {
 	} else {
 		download, later = confirmActive.Render(download), confirmInactive.Render(later)
 	}
-	body := fmt.Sprintf("%s\n\nA new release is ready to download.\n\nInstalled: %s\nAvailable: %s\n\n%s\n%s\n\nAsk again later reminds you in 24 hours.\n\n%s", title, m.current, m.latest, download, later, confirmHint.Render("Arrow keys / Tab to choose. Enter to confirm."))
-	dialog := lipgloss.NewStyle().Width(width).Padding(1, 2).
-		Border(lipgloss.ThickBorder()).BorderForeground(ColorNotice).Render(body)
+	hint := confirmHint.Render("Arrow keys / Tab to choose. Enter to confirm.")
+	body := fmt.Sprintf("%s\n\nA new release is ready to download.\n\nInstalled: %s\nAvailable: %s\n\n%s\n%s\n\nAsk again later reminds you in 24 hours.\n\n%s", title, m.current, m.latest, download, later, hint)
+	style := lipgloss.NewStyle().Width(width).Padding(1, 2).
+		Border(lipgloss.ThickBorder()).BorderForeground(ColorNotice)
+	dialog := style.Render(body)
+	if m.height > 0 && lipgloss.Height(dialog) > m.height {
+		// Bubble Tea drops the top lines of a view taller than the terminal,
+		// so short terminals get a compact dialog that keeps the versions.
+		dialog = style.Padding(0, 2).Render(fmt.Sprintf("%s\nInstalled: %s\nAvailable: %s\n%s\n%s\n%s", title, m.current, m.latest, download, later, hint))
+	}
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog)
 }
 
