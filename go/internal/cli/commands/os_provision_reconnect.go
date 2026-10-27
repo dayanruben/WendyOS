@@ -75,6 +75,7 @@ type identifiedDrive struct {
 // The disk lookups behind the reconnect flow are package vars so tests can
 // fake them without real disks.
 var (
+	rescanPartitionTableFn = rescanPartitionTable
 	readDriveIdentityFn    = readDriveIdentity
 	listIdentifiedDrivesFn = listIdentifiedDrives
 	drivePresentFn         = drivePresent

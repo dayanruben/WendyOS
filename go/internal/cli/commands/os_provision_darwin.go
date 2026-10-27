@@ -73,6 +73,10 @@ func findConfigPartition(diskDev string) (string, error) {
 	return "", fmt.Errorf("config partition not found on %s (is the image fully written?)", diskDev)
 }
 
+// rescanPartitionTable is a no-op on macOS: the `diskutil list` in
+// readDriveIdentity already rescans the partition table.
+func rescanPartitionTable(_ drive) {}
+
 // readDriveIdentity fingerprints d from what diskutil reports without
 // elevation: the disk's size and media name, and the unique GUID of its config
 // partition ("Disk / Partition UUID"). diskutil does not report the GPT disk

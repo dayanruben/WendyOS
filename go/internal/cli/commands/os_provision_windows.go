@@ -167,6 +167,17 @@ func findConfigPartitionNumber(diskNum int) (int, error) {
 	return parseConfigPartition(out)
 }
 
+// rescanPartitionTable refreshes Windows' cached view of d: writeImageToDisk
+// cleared the disk before writing, and until Update-Disk runs Get-Disk can
+// still report the cleared disk, without the GUID of the image just written.
+func rescanPartitionTable(d drive) {
+	diskNum, err := parseDiskNumber(d.DevicePath)
+	if err != nil {
+		return
+	}
+	updateDisk(diskNum) //nolint:errcheck
+}
+
 // readDriveIdentity fingerprints d from Get-Disk: its size, GPT disk GUID,
 // serial number and friendly name. writeImageToDisk leaves a fixed disk
 // offline, where volume labels — and with them the config partition — cannot

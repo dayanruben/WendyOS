@@ -67,6 +67,15 @@ func findConfigPartition(diskDev string) (string, error) {
 	return "", fmt.Errorf("config partition not found on %s", diskDev)
 }
 
+// rescanPartitionTable makes the kernel re-read d's partition table and waits
+// for udev to catch up. lsblk reports udev's view, which right after an image
+// write can still describe the drive's previous contents (WDY-3974: an NVMe
+// that held Orin was fingerprinted with Orin's GUIDs after a Pi image landed).
+func rescanPartitionTable(d drive) {
+	exec.Command("sudo", "partprobe", d.DevicePath).Run()   //nolint:errcheck
+	exec.Command("udevadm", "settle", "--timeout=10").Run() //nolint:errcheck
+}
+
 // readDriveIdentity fingerprints d from lsblk: its size, GPT disk GUID,
 // serial and model, and the unique GUID of its config partition.
 func readDriveIdentity(d drive) (driveIdentity, error) {

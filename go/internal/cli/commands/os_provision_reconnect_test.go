@@ -286,6 +286,30 @@ func TestProvisionConfigWithRetry_DisconnectWithoutIdentityStops(t *testing.T) {
 	}
 }
 
+// The identity is read only after the partition table just written has been
+// re-read: before that, Linux reported the drive's previous (Orin) GUIDs, and
+// the reconnected Pi-imaged drive never matched them.
+func TestProvisionConfigWithRetry_RescansBeforeFingerprinting(t *testing.T) {
+	withStubbedProvisioning(t, func(drive, []wendyconf.WifiCredential, string, []byte) error {
+		return nil
+	}, true, nil)
+	var calls []string
+	rescanPartitionTableFn = func(d drive) { calls = append(calls, "rescan "+d.DevicePath) }
+	readDriveIdentityFn = func(d drive) (driveIdentity, error) {
+		calls = append(calls, "identity "+d.DevicePath)
+		return imagedID, nil
+	}
+
+	_, _ = captureCommandStdout(t, func() error {
+		provisionConfigWithRetry(context.Background(), drive{DevicePath: "/dev/sdc"}, nil, "brave-dolphin", nil, true)
+		return nil
+	})
+
+	if want := []string{"rescan /dev/sdc", "identity /dev/sdc"}; strings.Join(calls, ", ") != strings.Join(want, ", ") {
+		t.Errorf("calls = %v; want %v", calls, want)
+	}
+}
+
 // Non-interactive runs keep their behaviour: one attempt, the warning, and the
 // error when provisioning was requested. No identity is read.
 func TestProvisionConfigWithRetry_NonInteractiveDisconnect(t *testing.T) {

@@ -498,6 +498,7 @@ func withStubbedProvisioning(t *testing.T, provision func(drive, []wendyconf.Wif
 	origProvision := provisionConfigPartitionFn
 	origConfirm := confirmProvisioningRetry
 	origInteractive := isInteractiveTerminalFn
+	origRescan := rescanPartitionTableFn
 	origReadIdentity := readDriveIdentityFn
 	origListIdentified := listIdentifiedDrivesFn
 	origPresent := drivePresentFn
@@ -507,12 +508,14 @@ func withStubbedProvisioning(t *testing.T, provision func(drive, []wendyconf.Wif
 		provisionConfigPartitionFn = origProvision
 		confirmProvisioningRetry = origConfirm
 		isInteractiveTerminalFn = origInteractive
+		rescanPartitionTableFn = origRescan
 		readDriveIdentityFn = origReadIdentity
 		listIdentifiedDrivesFn = origListIdentified
 		drivePresentFn = origPresent
 		reconnectSleep = origSleep
 		reconnectTimeout = origTimeout
 	})
+	rescanPartitionTableFn = func(drive) {}
 	readDriveIdentityFn = func(drive) (driveIdentity, error) {
 		return driveIdentity{SizeBytes: 1 << 30, ConfigPartitionGUID: "stub-config-guid"}, nil
 	}

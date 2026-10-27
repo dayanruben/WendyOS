@@ -2617,6 +2617,9 @@ func provisionConfigWithRetry(ctx context.Context, d drive, creds []wendyconf.Wi
 	var id driveIdentity
 	var idErr error
 	if isInteractiveTerminal() {
+		// Right after the image write the OS can still describe the drive's
+		// previous partition table; fingerprint the one just written.
+		rescanPartitionTableFn(d)
 		id, idErr = readDriveIdentityFn(d)
 	}
 	// relocate is set once d has disconnected and cleared once it is found
