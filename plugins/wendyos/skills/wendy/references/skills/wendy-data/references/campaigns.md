@@ -181,3 +181,10 @@ enforced instead, and deployment warns. It is the smaller of 20% of the store's
 filesystem and `WENDY_DATA_MAX_BYTES`, default 50 GiB, while reserving
 `WENDY_DATA_RESERVE_BYTES`, default 5 GiB. Unuploaded episodes can be evicted as
 a last resort. `export.annotation: cvat` records labeling intent only.
+
+On WendyOS the store is `/var/lib/wendy/wendy-data/episodes`, on the `/data`
+partition; it stays on the root disk only where `/var/lib/wendy` is not a
+separate, larger filesystem. Do not tell users to set `WENDY_DATA_DIR` unless
+they want a custom location. A "Wendy Data can't record" error names the disk,
+its free space and the reserve; read the agent's `Wendy Data episode store` log
+line before changing anything.
