@@ -370,8 +370,12 @@ def run(config, detector):
                     # A source reset while inference ran invalidates the result.
                     if decoders.get(decoder.source_id) is not decoder or decoder.stream.stopped:
                         continue
-                emit({"type": "prediction", "source_id": decoder.source_id,
-                      "generation": decoder.generation, "detections": detections})
+                # Boxes are in pixels of this picture. Its size lets the agent
+                # place them on a picture shown at any other size.
+                prediction = {"type": "prediction", "source_id": decoder.source_id,
+                              "generation": decoder.generation, "detections": detections,
+                              "width": frame.width, "height": frame.height}
+                emit(prediction)
             stopped.wait(0.02)
     finally:
         with lock:

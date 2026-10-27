@@ -147,6 +147,13 @@ and downloads model files, requiring network access and storage outside the
 episode quota. Remote model code is disabled. Check `inference_status`, its
 per-camera states, and actual events after deployment.
 
+Each scored frame produces a `prediction` record for `events.jsonl`. Its
+`detections[].box` is `[x1, y1, x2, y2]` in pixels of the scored picture, and
+`detections[].box_norm` is the same corners clamped to the picture and
+normalised to `[0, 1]`. The record's `width` and `height` give the picture's
+size. Draw from `box_norm` when the picture is shown at another size. Older
+records have only `box` and no picture size.
+
 `notify` chooses one delivery condition:
 
 ```yaml
