@@ -42,10 +42,51 @@ func TestRunVerifiedReceiptAndServiceScope(t *testing.T) {
 	}
 }
 
+func TestRunReadinessDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		extra         map[string]any
+		wait, invalid bool
+	}{
+		{"omitted", nil, true, false},
+		{"deadline without flag", map[string]any{"readiness_timeout_seconds": 20}, true, false},
+		{"explicit opt out", map[string]any{"wait_ready": false}, false, false},
+		{"create only", map[string]any{"start": false}, false, false},
+		{"legacy create only", map[string]any{"deploy": true}, false, false},
+		{"docker requires opt out", map[string]any{"device": "docker"}, false, true},
+		{"podman requires opt out", map[string]any{"device": "podman"}, false, true},
+		{"docker opt out", map[string]any{"device": "docker", "wait_ready": false}, false, false},
+		{"podman opt out", map[string]any{"device": "podman", "wait_ready": false}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(&config.Config{}, nil)
+			called := false
+			s.runCommandFn = func(_ context.Context, argv []string, _ commandTarget, _ int) (string, bool, error) {
+				called = true
+				if tc.invalid || slices.Contains(argv, "--wait-ready") != tc.wait {
+					t.Fatalf("unexpected deployment flags: %v", argv)
+				}
+				return encodeRunReceipt([]byte(`{"status":"ready","app":"robot","readiness":"passed"}`), ""), false, nil
+			}
+			args := map[string]any{"project_path": runProject(t), "device": "vm:test"}
+			for key, value := range tc.extra {
+				args[key] = value
+			}
+			result, err := s.handleRun(context.Background(), callToolReq("run", args))
+			if err != nil || result.IsError != tc.invalid || called == tc.invalid {
+				t.Fatalf("run: %v %v (called=%v)", result, err, called)
+			}
+			if !tc.invalid && (structuredMap(t, result)["readiness"] == "passed") != tc.wait {
+				t.Fatalf("incorrect readiness: %v", result)
+			}
+		})
+	}
+}
+
 func TestRunReadinessValidationBeforeMutation(t *testing.T) {
 	for _, extra := range []map[string]any{
 		{"wait_ready": "true"}, {"include_output": 1}, {"service": "api,other"}, {"service": 1},
-		{"wait_ready": true, "start": false}, {"readiness_timeout_seconds": 10},
+		{"wait_ready": true, "start": false}, {"wait_ready": false, "readiness_timeout_seconds": 10},
 		{"wait_ready": true, "readiness_timeout_seconds": 301}, {"wait_ready": true, "device": "docker"},
 	} {
 		s := New(&config.Config{}, nil)
@@ -104,7 +145,7 @@ func TestRunOutputOptInAndUncheckedReadiness(t *testing.T) {
 		s.runCommandFn = func(context.Context, []string, commandTarget, int) (string, bool, error) {
 			return encodeRunReceipt([]byte(`{"status":"ready","app":"robot","readiness":"passed"}`), "build log"), false, nil
 		}
-		r, err := s.handleRun(context.Background(), callToolReq("run", map[string]any{"project_path": runProject(t), "device": "vm:test", "include_output": include}))
+		r, err := s.handleRun(context.Background(), callToolReq("run", map[string]any{"project_path": runProject(t), "device": "vm:test", "wait_ready": false, "include_output": include}))
 		out := structuredMap(t, r)
 		if err != nil || r.IsError || (out["output"] != nil) != include || out["readiness"] != "not_checked" {
 			t.Fatalf("output or unchecked readiness: %+v %v", out, err)
@@ -121,7 +162,7 @@ func TestRunCompactReceiptOverMCPProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := map[string]any{"project_path": runProject(t), "device": "vm:test", "wait_ready": true}
+	args := map[string]any{"project_path": runProject(t), "device": "vm:test"}
 	compact := callProtocolTool(t, srv, "run", args)
 	args["include_output"] = true
 	verbose := callProtocolTool(t, srv, "run", args)

@@ -17,11 +17,13 @@ and reuse the session's single device connection.
    `simulator` group and call `simulator_list`.
 3. Deploy with `run(project_path=<absolute path>)`. It reuses the connected
    target unless you pass `device`. `start=false` creates without starting.
-   By default, `run` deploys every service and reports `readiness: "not_checked"`.
+   By default, `run` deploys every service and waits for readiness when starting.
    Pass `service="api"` to deploy that service and its dependencies. On supported
    WendyOS targets, `wait_ready=true` waits for configured TCP readiness or
    process stability; `readiness_timeout_seconds=30` bounds that wait within
-   `timeout_seconds`. Local Docker/Podman do not support the wait.
+   `timeout_seconds`. Set `wait_ready=false` to skip the wait and report
+   `readiness: "not_checked"`; local Docker/Podman require this opt-out.
+   Create-only requests skip readiness unless an incompatible explicit wait is requested.
    Success returns a compact receipt. Read `build_log_uri` for the bounded log
    tail (last eight runs in this server session), or set `include_output=true`.
    Check `project_validate(project_path=...)` (`setup` group) first when the

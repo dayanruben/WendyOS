@@ -81,10 +81,10 @@ func copyRunReceipt(result map[string]any, receipt *runReceipt) {
 	}
 }
 
-func runBoolean(req mcpgo.CallToolRequest, name string) (bool, error) {
+func runBoolean(req mcpgo.CallToolRequest, name string, defaultValue bool) (bool, error) {
 	value, exists := req.GetArguments()[name]
 	if !exists {
-		return false, nil
+		return defaultValue, nil
 	}
 	flag, ok := value.(bool)
 	if !ok {

@@ -92,11 +92,13 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	} else {
 		start = !req.GetBool("deploy", false)
 	}
-	waitReady, err := runBoolean(req, "wait_ready")
+	// Started deployments wait by default; create-only requests have no running
+	// process to check. An explicit true still rejects a create-only request.
+	waitReady, err := runBoolean(req, "wait_ready", start)
 	if err != nil {
 		return errResult(errCodeInvalidArgument, err.Error()), nil
 	}
-	includeOutput, err := runBoolean(req, "include_output")
+	includeOutput, err := runBoolean(req, "include_output", false)
 	if err != nil {
 		return errResult(errCodeInvalidArgument, err.Error()), nil
 	}
@@ -127,7 +129,7 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 		selector = target.Selector
 	}
 	if waitReady && (selector == "docker" || selector == "podman") {
-		return errResult(errCodeUnsupported, "wait_ready requires a WendyOS target; local Docker/Podman deployments need application checks separately"), nil
+		return errResult(errCodeUnsupported, "wait_ready requires a WendyOS target; set wait_ready=false for local Docker/Podman and check application readiness separately"), nil
 	}
 	args := []string{"run", "--prefix", projectPath, "--device", selector, "--yes"}
 	if target.Transport == "cloud" && target.Selector == "" {
