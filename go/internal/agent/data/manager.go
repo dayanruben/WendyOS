@@ -95,7 +95,12 @@ type Manager struct {
 	// nothing of it and no new episode is ever started for it. Ordering is
 	// irrelevant, so a slice is enough; a campaign can have several sealing
 	// episodes at once only if its drain outlasts its next episode.
-	sealing      []*activeEpisode
+	sealing []*activeEpisode
+	// finalizing holds what InProgress reports about episodes that finalize
+	// has detached and is sealing with m.mu released. A view taken at
+	// detachment is kept rather than the episode, because the seal writes the
+	// episode's manifest without the lock.
+	finalizing   []InProgressEpisode
 	consensus    func(context.Context) (timesync.Consensus, error)
 	preRoll      []bufferedRecord
 	preRollBytes int
@@ -565,7 +570,7 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 	// present-in-the-plan, absent-in-the-episode rather than omitted, so a
 	// degraded episode never reads as one that was never asked for them.
 	for _, s := range opts.UnresolvedSources {
-		manifest.Sources = append(manifest.Sources, SourceStats{Source: s, DropAccounting: "source_absent_at_trigger"})
+		manifest.Sources = append(manifest.Sources, SourceStats{Source: s, DropAccounting: DropAccountingSourceAbsent})
 	}
 	for source, contents := range opts.Calibrations {
 		name := safeName(source) + ".calibration"
@@ -1537,11 +1542,15 @@ func (m *Manager) finalize(a *activeEpisode, state, reason string) (Manifest, er
 		return Manifest{}, ErrNoActiveEpisode
 	}
 	m.forgetLocked(a)
+	m.finalizing = append(m.finalizing, inProgressViewLocked(a, EpisodeStateSealing))
 	a.manifest.State, a.manifest.Interruption = state, reason
 	consensus := m.consensus
 	m.mu.Unlock()
 
 	if err := m.sealDetached(a, consensus); err != nil {
+		m.mu.Lock()
+		m.forgetFinalizingLocked(a.manifest.ID)
+		m.mu.Unlock()
 		m.Warnf("episode %s: seal failed, leaving %s for recovery on the next start: %v",
 			a.manifest.ID, filepath.Base(a.dir), err)
 		return Manifest{}, err
@@ -1602,6 +1611,9 @@ func (m *Manager) sealDetached(a *activeEpisode, consensus func(context.Context)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Under the same lock as the rename, so no caller sees the episode both
+	// sealing and published.
+	m.forgetFinalizingLocked(a.manifest.ID)
 	if err := writeManifest(a.dir, a.manifest); err != nil {
 		return err
 	}
@@ -1643,6 +1655,11 @@ const EpisodeStateDraining = "draining"
 func (m *Manager) Status() *Manifest {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.statusLocked()
+}
+
+// statusLocked is Status for a caller that holds m.mu.
+func (m *Manager) statusLocked() *Manifest {
 	if a := m.active[AdHocEpisodeKey]; a != nil {
 		v := snapshotManifest(a.manifest)
 		return &v
