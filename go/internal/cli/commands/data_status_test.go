@@ -370,9 +370,26 @@ func TestStatusJSONIsTheAgentResponse(t *testing.T) {
 
 func TestRecordNextStepsNamesStopAndStatus(t *testing.T) {
 	var out bytes.Buffer
-	printRecordNextSteps(&out)
+	printRecordNextSteps(&out, "")
 	got := out.String()
-	if strings.Count(got, "\n") != 1 || !strings.Contains(got, "wendy data stop") || !strings.Contains(got, "wendy data status") {
+	if strings.Count(got, "\n") != 1 || !strings.Contains(got, "wendy data stop") || !strings.Contains(got, "wendy data status") || strings.Contains(got, "--device") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// TestRecordNextStepsKeepTheDevice: a recording started with --device must be
+// stopped on that device. Without the flag, the copied `wendy data stop` would
+// go to the saved default device and stop whatever that one is recording.
+func TestRecordNextStepsKeepTheDevice(t *testing.T) {
+	for device, want := range map[string]string{
+		"robot-b.local":  "--device robot-b.local",
+		"workshop bench": "--device 'workshop bench'",
+	} {
+		var out bytes.Buffer
+		printRecordNextSteps(&out, device)
+		got := out.String()
+		if !strings.Contains(got, "wendy data stop "+want) || !strings.Contains(got, "wendy data status "+want) {
+			t.Fatalf("device %q: got %q, want both commands to carry %s", device, got, want)
+		}
 	}
 }

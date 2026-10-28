@@ -238,7 +238,14 @@ func writeDataStatus(out io.Writer, response *agentpbv2.DataStatusResponse, now 
 
 // printRecordNextSteps follows `wendy data record`: the episode keeps
 // recording on the device after the command returns, and nothing else on
-// screen says how to end it or check on it.
-func printRecordNextSteps(out io.Writer) {
-	fmt.Fprintf(out, "%s %s%s %s\n", tui.Dim("Stop it with"), tui.Command("wendy data stop"), tui.Dim("; check on it with"), tui.Command("wendy data status"))
+// screen says how to end it or check on it. device is the --device the episode
+// was started on. It is repeated in both commands, because without it a copied
+// `wendy data stop` goes to the saved default device and stops whatever that
+// one is recording.
+func printRecordNextSteps(out io.Writer, device string) {
+	target := ""
+	if device != "" {
+		target = " --device " + shellQuoteArg(device)
+	}
+	fmt.Fprintf(out, "%s %s%s %s\n", tui.Dim("Stop it with"), tui.Command("wendy data stop"+target), tui.Dim("; check on it with"), tui.Command("wendy data status"+target))
 }

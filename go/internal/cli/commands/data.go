@@ -418,7 +418,7 @@ func newDataRecordCmd() *cobra.Command {
 			if e2 = printEpisode(cmd, e); e2 != nil || jsonOutput {
 				return e2
 			}
-			printRecordNextSteps(cmd.OutOrStdout())
+			printRecordNextSteps(cmd.OutOrStdout(), deviceFlag)
 			return nil
 		})
 	}}
