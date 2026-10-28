@@ -543,7 +543,7 @@ by the agent from its environment file.
 
 On WendyOS the episode store is `/var/lib/wendy/wendy-data/episodes`, on the
 `/data` partition. Where `/var/lib/wendy` is not a separate filesystem larger
-than `/`, the store stays on the root disk at
+than the one holding `/var/lib/wendy-agent`, the store stays at
 `/var/lib/wendy-agent/data/episodes`. Campaign inference keeps its runtime and
 model files in an `inference` folder beside the store, except on a device that
 already ran campaign inference under an earlier agent: that device keeps using

@@ -26,13 +26,13 @@ import (
 // agent already downloaded it; see inferenceDir.
 const (
 	// DataDiskRoot is the default store on a device whose /var/lib/wendy is a
-	// separate filesystem larger than the root one, which is every WendyOS
-	// board with a /data partition.
+	// different filesystem from LegacyRoot's, and a larger one, which is every
+	// WendyOS board with a /data partition.
 	DataDiskRoot = "/var/lib/wendy/wendy-data/episodes"
 	// LegacyRoot is the store every earlier agent defaulted to, and the one
 	// this agent still uses where DataDiskRoot would gain nothing: a host
-	// without /var/lib/wendy, or one where it shares the root filesystem or is
-	// smaller than it.
+	// without /var/lib/wendy, or one where it shares LegacyRoot's filesystem
+	// (a host with a separate /var holds both) or is smaller than it.
 	LegacyRoot = "/var/lib/wendy-agent/data/episodes"
 )
 
@@ -112,11 +112,12 @@ type storeLayout struct {
 	// dataMount is the directory WendyOS bind-mounts from /data/wendy.
 	dataMount string
 	dataDisk  string
-	legacy    string
-	// system is the root filesystem the data mount must differ from.
-	system string
+	// legacy is LegacyRoot. Its filesystem is what the data mount must differ
+	// from: on WendyOS that is the root slot, and on a host with a separate
+	// /var it is /var, which holds the data mount too.
+	legacy string
 	// dataPartition is named in the advice of a space error, and only when
-	// it really is a separate filesystem from system.
+	// it really is a separate filesystem larger than the store's.
 	dataPartition string
 }
 
@@ -124,12 +125,11 @@ var defaultStoreLayout = storeLayout{
 	dataMount:     "/var/lib/wendy",
 	dataDisk:      DataDiskRoot,
 	legacy:        LegacyRoot,
-	system:        "/",
 	dataPartition: "/data",
 }
 
 // choose picks the default store. DataDiskRoot wins only when it is really on
-// a different filesystem from the root one, and a larger one; anything that
+// a different filesystem from LegacyRoot's, and a larger one; anything that
 // cannot be confirmed keeps LegacyRoot, which is what every earlier agent did.
 func (l storeLayout) choose() StoreLocation {
 	keep := func(why string) StoreLocation {
@@ -142,15 +142,15 @@ func (l storeLayout) choose() StoreLocation {
 	if err != nil {
 		return keep(fmt.Sprintf("could not inspect %s: %v", l.dataMount, err))
 	}
-	system, err := filesystemOf(l.system)
+	legacy, err := filesystemOf(nearestExisting(l.legacy))
 	if err != nil {
-		return keep(fmt.Sprintf("could not inspect the root filesystem: %v", err))
+		return keep(fmt.Sprintf("could not inspect the filesystem holding %s: %v", l.legacy, err))
 	}
-	if data.device == system.device {
-		return keep(l.dataMount + " is on the root filesystem")
+	if data.device == legacy.device {
+		return keep(fmt.Sprintf("%s is on the same filesystem as %s", l.dataMount, l.legacy))
 	}
-	if data.size <= system.size {
-		return keep(fmt.Sprintf("%s is on its own filesystem, but it (%s) is not larger than the root filesystem (%s)", l.dataMount, humanBytes(data.size), humanBytes(system.size)))
+	if data.size <= legacy.size {
+		return keep(fmt.Sprintf("%s is on its own filesystem, but it (%s) is not larger than the one holding %s (%s)", l.dataMount, humanBytes(data.size), l.legacy, humanBytes(legacy.size)))
 	}
 	if err := os.MkdirAll(l.dataDisk, 0o750); err != nil {
 		return keep(fmt.Sprintf("could not create %s: %v", l.dataDisk, err))
@@ -158,7 +158,7 @@ func (l storeLayout) choose() StoreLocation {
 	location := StoreLocation{
 		Path:        l.dataDisk,
 		CampaignDir: filepath.Join(filepath.Dir(l.legacy), "campaigns"),
-		Reason:      fmt.Sprintf("%s is on its own filesystem (%s), larger than the root filesystem (%s)", l.dataMount, humanBytes(data.size), humanBytes(system.size)),
+		Reason:      fmt.Sprintf("%s is on its own filesystem (%s), larger than the one holding %s (%s)", l.dataMount, humanBytes(data.size), l.legacy, humanBytes(legacy.size)),
 		LegacyPath:  l.legacy,
 	}
 	location.InferenceDir, location.InferenceReason = l.inferenceDir()
@@ -209,23 +209,20 @@ func holdsInferenceDownloads(dir string) bool {
 }
 
 // suggestDataPartition reports whether a space error for the store at root
-// should name the data partition: the store is on the root filesystem, and the
-// data partition is a separate one. Advice to move to a disk that is not there,
-// or that the store is already on, would only mislead.
+// should name the data partition: it is a separate filesystem from the
+// store's, and a larger one. Advice to move to a disk that is not there, that
+// the store is already on, or that is smaller (the WendyOS VM's 512 MiB /data
+// beside a 3 GiB slot) would only mislead.
 func (l storeLayout) suggestDataPartition(root string) bool {
 	store, err := filesystemOf(nearestExisting(root))
 	if err != nil {
-		return false
-	}
-	system, err := filesystemOf(l.system)
-	if err != nil || store.device != system.device {
 		return false
 	}
 	if info, err := os.Stat(l.dataPartition); err != nil || !info.IsDir() {
 		return false
 	}
 	data, err := filesystemOf(l.dataPartition)
-	return err == nil && data.device != system.device
+	return err == nil && data.device != store.device && data.size > store.size
 }
 
 // nearestExisting returns path, or its closest ancestor that exists, so a
@@ -281,8 +278,8 @@ type StoreSpaceError struct {
 	// Recording is the part of Used in episodes still recording, which
 	// eviction never touches.
 	Recording int64
-	// SuggestDataPartition adds "under /data" to the advice, set when the
-	// store is on the root filesystem and a separate data partition exists.
+	// SuggestDataPartition adds "under /data" to the advice, set when a data
+	// partition exists on a separate filesystem larger than the store's.
 	SuggestDataPartition bool
 }
 

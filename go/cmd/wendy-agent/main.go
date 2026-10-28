@@ -347,8 +347,9 @@ func main() {
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
 	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster, telemetryBuf)
 	// WENDY_DATA_DIR wins outright. Without it the store goes on the data
-	// partition when /var/lib/wendy is a separate, larger filesystem than /,
-	// and stays on the root disk otherwise; the log says which and why.
+	// partition when /var/lib/wendy is a separate, larger filesystem than the
+	// one holding /var/lib/wendy-agent, and stays there otherwise; the log says
+	// which and why.
 	dataRoot := os.Getenv("WENDY_DATA_DIR")
 	dataManager, err := agentdata.NewManager(dataRoot)
 	if err != nil {

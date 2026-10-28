@@ -124,9 +124,9 @@ host, host:port, or HTTPS URL without a path, then restart the agent.
 `WENDY_DATA_DIR` sets the root directory for the device-local Episode store.
 It is only needed for a custom location. Without it, the agent uses
 `/var/lib/wendy/wendy-data/episodes` when `/var/lib/wendy` is on a separate
-filesystem larger than `/`, which on WendyOS is the persistent `/data`
-partition, and `/var/lib/wendy-agent/data/episodes` on the root filesystem
-otherwise. It logs `Wendy Data episode store` once at startup with the path, the
+filesystem larger than the one holding `/var/lib/wendy-agent`, which on WendyOS
+is the persistent `/data` partition beside the root slot, and
+`/var/lib/wendy-agent/data/episodes` otherwise. It logs `Wendy Data episode store` once at startup with the path, the
 campaign plan directory, the inference folder and why it chose them.
 
 The campaign inference runtime and model files live beside the store, in

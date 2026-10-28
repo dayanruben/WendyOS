@@ -23,11 +23,10 @@ func testLayout(t *testing.T) storeLayout {
 	l := storeLayout{
 		dataMount:     filepath.Join(dir, "var/lib/wendy"),
 		legacy:        filepath.Join(dir, "var/lib/wendy-agent/data/episodes"),
-		system:        filepath.Join(dir, "root"),
 		dataPartition: filepath.Join(dir, "data"),
 	}
 	l.dataDisk = filepath.Join(l.dataMount, "wendy-data", "episodes")
-	for _, d := range []string{l.dataMount, l.system, l.dataPartition} {
+	for _, d := range []string{l.dataMount, l.dataPartition} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -77,7 +76,7 @@ func TestDefaultStoreMovesToSeparateLargerFilesystem(t *testing.T) {
 	if want := filepath.Join(filepath.Dir(l.legacy), "campaigns"); got.CampaignDir != want {
 		t.Fatalf("campaign plans = %s, want them left at %s", got.CampaignDir, want)
 	}
-	if want := "is on its own filesystem (433 GB), larger than the root filesystem (12 GB)"; !strings.Contains(got.Reason, want) {
+	if want := "is on its own filesystem (433 GB), larger than the one holding " + l.legacy + " (12 GB)"; !strings.Contains(got.Reason, want) {
 		t.Fatalf("reason %q does not say %q", got.Reason, want)
 	}
 	if info, err := os.Stat(l.dataDisk); err != nil || !info.IsDir() {
@@ -92,11 +91,21 @@ func TestDefaultStoreKeepsLegacyRootWhenDataDiskGainsNothing(t *testing.T) {
 		reason string
 	}{
 		{
-			name: "same filesystem as root",
+			name: "same filesystem as the old store",
 			setup: func(t *testing.T, l storeLayout) {
 				fakeFilesystems(t, fsIdentity{device: 1, size: meshRootBytes}, nil)
 			},
-			reason: "is on the root filesystem",
+			reason: "is on the same filesystem as",
+		},
+		{
+			// A host with a small / and a larger, separate /var: both stores
+			// would be on /var, so moving gains nothing and hides every episode.
+			name: "separate /var holds both stores",
+			setup: func(t *testing.T, l storeLayout) {
+				varDir := filepath.Dir(filepath.Dir(l.dataMount))
+				fakeFilesystems(t, fsIdentity{device: 1, size: 20_000_000_000}, map[string]fsIdentity{varDir: {device: 3, size: 100_000_000_000}})
+			},
+			reason: "is on the same filesystem as",
 		},
 		{
 			// A WendyOS VM: 3 GiB slots beside a 512 MiB /data.
@@ -104,7 +113,7 @@ func TestDefaultStoreKeepsLegacyRootWhenDataDiskGainsNothing(t *testing.T) {
 			setup: func(t *testing.T, l storeLayout) {
 				fakeFilesystems(t, fsIdentity{device: 1, size: 3 << 30}, map[string]fsIdentity{l.dataMount: {device: 2, size: 512 << 20}})
 			},
-			reason: "is on its own filesystem, but it (537 MB) is not larger than the root filesystem (3.2 GB)",
+			reason: "is on its own filesystem, but it (537 MB) is not larger than the one holding",
 		},
 		{
 			name: "data mount missing",
@@ -480,6 +489,31 @@ func TestSuggestDataPartition(t *testing.T) {
 	if l.suggestDataPartition(l.legacy) {
 		t.Fatal("advice named a /data that does not exist")
 	}
+}
+
+// TestSuggestDataPartitionOnlyWhenItIsLarger covers the hint on layouts where
+// /data is not simply a bigger disk beside the root slot.
+func TestSuggestDataPartitionOnlyWhenItIsLarger(t *testing.T) {
+	t.Run("smaller than the store's filesystem", func(t *testing.T) {
+		// A WendyOS VM: the store stays on the 3 GiB slot because /data is
+		// 512 MiB, so pointing at /data would send the user to a smaller disk.
+		l := testLayout(t)
+		data := fsIdentity{device: 2, size: 512 << 20}
+		fakeFilesystems(t, fsIdentity{device: 1, size: 3 << 30}, map[string]fsIdentity{l.dataMount: data, l.dataPartition: data})
+		if l.suggestDataPartition(l.legacy) {
+			t.Fatal("advice named a /data smaller than the disk the store is on")
+		}
+	})
+	t.Run("store on a separate small /var", func(t *testing.T) {
+		// The store is not on / at all, but /data is still the bigger disk.
+		l := testLayout(t)
+		varDir := filepath.Dir(filepath.Dir(l.dataMount))
+		fakeFilesystems(t, fsIdentity{device: 1, size: 4_000_000_000}, map[string]fsIdentity{
+			varDir: {device: 3, size: 8_000_000_000}, l.dataPartition: {device: 2, size: meshDataBytes}})
+		if !l.suggestDataPartition(l.legacy) {
+			t.Fatal("a store on a separate /var smaller than /data should be pointed at /data")
+		}
+	})
 }
 
 func TestHumanBytes(t *testing.T) {
