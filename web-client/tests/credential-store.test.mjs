@@ -135,7 +135,7 @@ test('redirect: tampering and swapping records fail after burning them',async()=
   assert.equal(await pending.take(handle(1)),undefined);
 });
 
-test('redirect: size, count, handle and collision bounds refuse without overwriting',async()=>{
+test('redirect: size, handle and collision bounds refuse without overwriting',async()=>{
   const db=new IDBFactory();
   const pending=pendingWorker(db).wendyPending;
   await assert.rejects(pending.put('bad',plaintext),/handle/);
@@ -144,9 +144,22 @@ test('redirect: size, count, handle and collision bounds refuse without overwrit
   await pending.put(handle(1),plaintext);
   await assert.rejects(pending.put(handle(1),new Uint8Array([1])));
   assert.deepEqual(await pending.take(handle(1)),plaintext);
-  await Promise.all(Array.from({length:32},(_,i)=>pending.put(handle(i),plaintext)));
-  await assert.rejects(pending.put(handle(33),plaintext),/Too many/);
-  assert.equal((await pendingDB(db,s=>s.getAllKeys())).length,32);
+});
+
+test('redirect: past 32 live attempts the oldest makes room instead of locking out the origin',async()=>{
+  const db=new IDBFactory();
+  let now=Date.now();
+  const pending=pendingWorker(db,{Date:{now:()=>now}}).wendyPending;
+  for (let i=0;i<32;i++) {await pending.put(handle(i),plaintext);now++;}
+  await pending.put(handle(32),plaintext);
+  const keys=await pendingDB(db,s=>s.getAllKeys());
+  assert.equal(keys.length,32);
+  assert.equal(keys.includes(handle(0)),false,'oldest attempt was evicted');
+  assert.equal(await pending.take(handle(0)),undefined);
+  // A refused collision rolls back with its eviction.
+  await assert.rejects(pending.put(handle(32),plaintext));
+  assert.deepEqual(await pending.take(handle(1)),plaintext,'collision evicted nothing');
+  assert.deepEqual(await pending.take(handle(32)),plaintext);
 });
 
 test('redirect: blocked storage rejects before a record can be used',async()=>{

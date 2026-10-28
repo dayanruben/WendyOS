@@ -270,16 +270,16 @@ self.wendyPending = (() => {
         tx.onerror = tx.onabort = () => reject(failure || tx.error || new Error("Pending sign-in storage was interrupted"));
         const store = tx.objectStore("pending");
         const now = Date.now();
-        let count = 0;
+        const kept = [];
         const cursor = store.openCursor();
         cursor.onsuccess = () => {
           const item = cursor.result;
           if (item) {
             if (!live(item.value, now)) item.delete();
-            else count++;
+            else kept.push({ handle: item.primaryKey, created: item.value.created });
             item.continue();
           } else {
-            try { operation(store, count, (value) => { result = value; }); }
+            try { operation(store, kept, (value) => { result = value; }); }
             catch (error) { failure = error; tx.abort(); }
           }
         };
@@ -303,15 +303,19 @@ self.wendyPending = (() => {
       const wrapped = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv, additionalData: aad(handle, created) }, wrappingKey, bytes,
       );
-      await transact((store, count) => {
-        if (count >= MAX_RECORDS) throw new Error("Too many pending sign-ins; cancel an attempt or wait ten minutes");
+      await transact((store, kept) => {
+        // The oldest attempts make room rather than locking out every tab: one
+        // whose tab closed at the IdP has no handle left to cancel it with.
+        kept.sort((a, b) => a.created - b.created);
+        for (const { handle } of kept.slice(0, Math.max(0, kept.length - MAX_RECORDS + 1)))
+          store.delete(handle);
         // add refuses accidental handle reuse instead of replacing an attempt.
         store.add({ created, wrappingKey, iv, wrapped }, handle);
       });
     },
     take: async (handle) => {
       checkHandle(handle);
-      const record = await transact((store, _count, done) => {
+      const record = await transact((store, _kept, done) => {
         const request = store.get(handle);
         request.onsuccess = () => {
           done(request.result);

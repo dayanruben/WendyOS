@@ -335,10 +335,12 @@ Cancel an abandoned handle before replacing it. The worker stores the PKCE
 verifier/state, expected issuer (empty for universal login), exact redirect,
 start time and complete environment settings in the separate
 `wendy-auth-pending` IndexedDB database. Records are AES-GCM wrapped under a
-non-extractable WebCrypto wrapping key, limited to 8 KiB and 32 live attempts
-per origin, and expire after ten minutes. Subsequent pending operations remove
-expired, future-dated or abandoned expired records. There is no credential
-schema upgrade, and pending attempts never appear as organization slots.
+non-extractable WebCrypto wrapping key, limited to 8 KiB, and expire after ten
+minutes. An origin keeps at most 32 live attempts; beyond that a new attempt
+replaces the oldest, whose callback then fails as missing and must start
+again. Subsequent pending operations remove expired, future-dated or abandoned
+expired records. There is no credential schema upgrade, and pending attempts
+never appear as organization slots.
 
 After navigation, start a new worker with the same `init` settings. Read the
 handle from sessionStorage and pass it to `auth-redirect-complete` along with
