@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -121,22 +120,28 @@ func buildSkillCatalogFromRoot(root string) (*skillCatalog, error) {
 	return catalog, nil
 }
 
-// .gitattributes keeps SKILL.md LF on checkout, but an older autocrlf clone, an
-// editor or a copied file can still leave CRLF delimiters in the working tree.
-var skillFrontmatterPattern = regexp.MustCompile(`(?s)\A---\r?\n(.*?)\r?\n---\r?\n`)
-
 // Decode the whole YAML mapping, not just name/description. The importer checks
 // that the catalog contains every frontmatter field from the returned SKILL.md.
 func skillFrontmatter(data []byte) (map[string]any, int, error) {
-	if !bytes.HasPrefix(data, []byte("---\n")) && !bytes.HasPrefix(data, []byte("---\r\n")) {
+	start := 4
+	if bytes.HasPrefix(data, []byte("---\r\n")) {
+		start = 5
+	} else if !bytes.HasPrefix(data, []byte("---\n")) {
 		return nil, 0, fmt.Errorf("missing YAML frontmatter")
 	}
-	match := skillFrontmatterPattern.FindSubmatchIndex(data)
-	if match == nil {
+	// Windows checkouts may embed CRLF. Keep offsets in the original bytes so
+	// callers can read the body without changing resource contents or digests.
+	end := bytes.Index(data[start:], []byte("\n---\n"))
+	delimiterLen := len("\n---\n")
+	if crlfEnd := bytes.Index(data[start:], []byte("\n---\r\n")); crlfEnd >= 0 && (end < 0 || crlfEnd < end) {
+		end = crlfEnd
+		delimiterLen = len("\n---\r\n")
+	}
+	if end < 0 {
 		return nil, 0, fmt.Errorf("unterminated YAML frontmatter")
 	}
 	var fm map[string]any
-	if err := yaml.Unmarshal(data[match[2]:match[3]], &fm); err != nil {
+	if err := yaml.Unmarshal(data[start:start+end], &fm); err != nil {
 		return nil, 0, err
 	}
 	for _, key := range []string{"name", "description"} {
@@ -153,7 +158,7 @@ func skillFrontmatter(data []byte) (map[string]any, int, error) {
 	if err := json.Unmarshal(raw, &fm); err != nil {
 		return nil, 0, err
 	}
-	return fm, match[1], nil
+	return fm, start + end + delimiterLen, nil
 }
 
 func registerSkillCatalog(srv *server.MCPServer, catalog *skillCatalog) error {
