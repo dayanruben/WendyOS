@@ -615,12 +615,22 @@ type downloadManifest struct {
 // destination as a side effect of creating the staging directory, the final
 // rename failed with ENOTEMPTY because the destination then held the staging
 // directory, and every re-run refused with "destination already exists".
-func downloadDestination(id, output string) (destination, stage string) {
+//
+// Without --output the episode ID names a new directory in the working
+// directory, so it must be a single local path element. A picked ID comes from
+// the device's episode list, and one such as "../x" or "/abs" would otherwise
+// place the download wherever the device chose.
+func downloadDestination(id, output string) (destination, stage string, err error) {
 	if output == "" {
+		if !filepath.IsLocal(id) || filepath.Base(id) != id {
+			return "", "", withNextSteps(
+				fmt.Errorf("episode ID %q is not a plain directory name", id),
+				"Choose the destination directory with --output.")
+		}
 		output = id
 	}
 	destination = filepath.Clean(output)
-	return destination, destination + ".partial"
+	return destination, destination + ".partial", nil
 }
 
 // absDisplayPath is how a data command names a local path it wrote. The
@@ -654,7 +664,10 @@ func newDataDownloadCmd() *cobra.Command {
 			return e
 		}
 		freeDestination := func(id string) (destination, stage string, err error) {
-			destination, stage = downloadDestination(id, output)
+			destination, stage, err = downloadDestination(id, output)
+			if err != nil {
+				return "", "", err
+			}
 			if _, e := os.Stat(destination); e == nil {
 				return "", "", fmt.Errorf("destination already exists: %s", absDisplayPath(destination))
 			}

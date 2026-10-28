@@ -260,6 +260,47 @@ func TestDataDownloadNamedEpisodeReportsAbsolutePath(t *testing.T) {
 	}
 }
 
+// TestDataDownloadRefusesPickedIDThatIsNotADirectoryName: a picked ID comes
+// from the device and, without -o, names the download directory. One that
+// would land outside the working directory is refused before anything is
+// fetched or written.
+func TestDataDownloadRefusesPickedIDThatIsNotADirectoryName(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(root, "work")
+	if err := os.Mkdir(cwd, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ name, id string }{
+		{"parent", filepath.Join("..", "escaped")},
+		{"absolute", filepath.Join(root, "escaped")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubEpisodeTerminal(t, true, false)
+			agent := &fakeEpisodeAgent{episodes: []*agentpbv2.DataEpisode{{Id: tc.id, State: "complete", StartedUnixNanos: 1}}, payload: []byte("x")}
+			serveEpisodeAgent(t, agent)
+			stubEpisodePicker(t, func(_ string, items []tui.PickerItem, _ []tui.PickerColumn) (string, error) {
+				return items[0].Value.(string), nil
+			})
+			t.Chdir(cwd)
+
+			_, _, err := runDataCommand(t, newDataDownloadCmd())
+			if err == nil || !strings.Contains(err.Error(), "not a plain directory name") {
+				t.Fatalf("error = %v, want the picked ID refused", err)
+			}
+			if n := agent.calls.Load(); n != 1 {
+				t.Errorf("made %d device calls, want only the episode list", n)
+			}
+			if entries, _ := os.ReadDir(root); len(entries) != 1 {
+				t.Errorf("%s holds %d entries, want only the working directory", root, len(entries))
+			}
+			if entries, _ := os.ReadDir(cwd); len(entries) != 0 {
+				t.Errorf("wrote %d entries to the working directory", len(entries))
+			}
+		})
+	}
+}
+
 // TestDataEpisodeCommandsRequireIDWithoutPicker: with no terminal, with
 // --json, or with --non-interactive, a missing ID is an error that says why
 // and where IDs come from, and nothing is asked of the device.
