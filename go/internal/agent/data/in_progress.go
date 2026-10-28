@@ -1,7 +1,11 @@
 package data
 
 import (
+	"errors"
+	"io/fs"
+	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -51,7 +55,7 @@ func inProgressViewLocked(a *activeEpisode, state string) InProgressEpisode {
 		dir: a.dir, requestBootNanos: mf.RequestBootNanos, captureStoppedNS: mf.CaptureStoppedEpisodeNS,
 	}
 	for _, s := range mf.Sources {
-		if s.DropAccounting == "source_absent_at_trigger" {
+		if s.DropAccounting == DropAccountingSourceAbsent {
 			continue
 		}
 		v.Sources = append(v.Sources, s.Source.ID)
@@ -68,6 +72,24 @@ func inProgressViewLocked(a *activeEpisode, state string) InProgressEpisode {
 // file system I/O, and m.mu is what every application record waits on.
 func (m *Manager) InProgress() []InProgressEpisode {
 	m.mu.Lock()
+	out := m.inProgressLocked()
+	m.mu.Unlock()
+	return measureInProgress(out)
+}
+
+// StatusAndInProgress returns what Status and InProgress return, read under one
+// acquisition of m.mu. Called one after the other, they can disagree: an
+// episode that starts or is published in between is in one answer and not the
+// other, and DataService.Status returns both in one response.
+func (m *Manager) StatusAndInProgress() (*Manifest, []InProgressEpisode) {
+	m.mu.Lock()
+	active, open := m.statusLocked(), m.inProgressLocked()
+	m.mu.Unlock()
+	return active, measureInProgress(open)
+}
+
+// inProgressLocked is the part of InProgress that needs m.mu. Callers hold it.
+func (m *Manager) inProgressLocked() []InProgressEpisode {
 	out := make([]InProgressEpisode, 0, len(m.active)+len(m.sealing)+len(m.finalizing))
 	for _, a := range m.active {
 		out = append(out, inProgressViewLocked(a, a.manifest.State))
@@ -75,13 +97,20 @@ func (m *Manager) InProgress() []InProgressEpisode {
 	for _, a := range m.sealing {
 		out = append(out, inProgressViewLocked(a, EpisodeStateDraining))
 	}
-	out = append(out, m.finalizing...)
-	m.mu.Unlock()
+	return append(out, m.finalizing...)
+}
 
+// measureInProgress fills in sizes and durations, and orders the list newest
+// first. It runs without m.mu.
+//
+// The order is by CLOCK_BOOTTIME at Start rather than by StartedUnixNanos. Every
+// in-progress episode is from this boot, and a wall clock that NTP steps back
+// between two triggers would list the newer episode below the older one.
+func measureInProgress(out []InProgressEpisode) []InProgressEpisode {
 	now, nowErr := readBootTime()
 	for i := range out {
 		v := &out[i]
-		v.SizeBytes = dirBytes(v.dir)
+		v.SizeBytes = inProgressBytes(v.dir)
 		switch {
 		case v.captureStoppedNS > 0:
 			v.Duration = time.Duration(v.captureStoppedNS)
@@ -89,8 +118,21 @@ func (m *Manager) InProgress() []InProgressEpisode {
 			v.Duration = time.Duration(now - v.requestBootNanos)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].StartedUnixNanos > out[j].StartedUnixNanos })
+	sort.Slice(out, func(i, j int) bool { return out[i].requestBootNanos > out[j].requestBootNanos })
 	return out
+}
+
+// inProgressBytes is what an episode directory holds. The seal renames it out
+// of ".partial" under m.mu, which the walk does not hold, so an episode
+// published since the snapshot has its bytes under the published name. The
+// existence check comes after the walk: a rename before or during the walk is
+// then always seen, and one after it left the walk complete.
+func inProgressBytes(dir string) int64 {
+	size := dirBytes(dir)
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		return dirBytes(strings.TrimSuffix(dir, ".partial"))
+	}
+	return size
 }
 
 // forgetFinalizingLocked drops the sealing view of episode id once its seal has

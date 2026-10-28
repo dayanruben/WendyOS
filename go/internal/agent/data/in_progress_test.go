@@ -112,6 +112,9 @@ func TestInProgressFollowsAnEpisodeUntilItIsPublished(t *testing.T) {
 	if status := m.Status(); status == nil || status.ID != adHoc.ID {
 		t.Fatalf("Status = %+v, want the ad-hoc episode", status)
 	}
+	if status, both := m.StatusAndInProgress(); status == nil || status.ID != adHoc.ID || len(both) != 2 || both[1].State != EpisodeStateSealing {
+		t.Fatalf("StatusAndInProgress = %+v, %+v", status, both)
+	}
 
 	close(release)
 	if err = <-stopped; err != nil {
@@ -134,6 +137,60 @@ func TestInProgressFollowsAnEpisodeUntilItIsPublished(t *testing.T) {
 	}
 	if open = m.InProgress(); len(open) != 0 {
 		t.Fatalf("nothing is open any more, got %+v", open)
+	}
+}
+
+// TestInProgressOrdersByBootTime: every in-progress episode is from this boot,
+// so "newest first" is decided on CLOCK_BOOTTIME. A wall clock that NTP stepped
+// back between two triggers must not list the newer episode below the older.
+func TestInProgressOrdersByBootTime(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	older, err := m.Start(StartOptions{Name: "door", Sources: []string{"telemetry"}, Trigger: EpisodeTrigger{CampaignName: "door"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := m.Start(StartOptions{Name: "manual-test", Sources: []string{"telemetry"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.active[AdHocEpisodeKey].manifest.StartedUnixNanos = older.StartedUnixNanos - time.Hour.Nanoseconds()
+	m.mu.Unlock()
+
+	if open := m.InProgress(); len(open) != 2 || open[0].ID != newer.ID || open[1].ID != older.ID {
+		t.Fatalf("want the later-started episode first despite its earlier wall clock: %+v", open)
+	}
+	for _, key := range []string{AdHocEpisodeKey, "door"} {
+		if _, err = m.Stop(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestInProgressSizeFollowsThePublishRename: sizes are measured without m.mu,
+// so a seal can publish the episode between the snapshot and the walk. Its
+// bytes are then under the published name, and a sealing episode must not
+// report 0 bytes for them.
+func TestInProgressSizeFollowsThePublishRename(t *testing.T) {
+	root := t.TempDir()
+	partial := filepath.Join(root, "ep.partial")
+	if err := os.Mkdir(partial, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(partial, "telemetry.wdr"), make([]byte, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := inProgressBytes(partial); got != 100 {
+		t.Fatalf("size before the rename = %d, want 100", got)
+	}
+	if err := os.Rename(partial, filepath.Join(root, "ep")); err != nil {
+		t.Fatal(err)
+	}
+	if got := inProgressBytes(partial); got != 100 {
+		t.Fatalf("size after the publish rename = %d, want 100", got)
 	}
 }
 

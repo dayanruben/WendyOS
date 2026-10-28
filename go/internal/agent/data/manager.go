@@ -570,7 +570,7 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 	// present-in-the-plan, absent-in-the-episode rather than omitted, so a
 	// degraded episode never reads as one that was never asked for them.
 	for _, s := range opts.UnresolvedSources {
-		manifest.Sources = append(manifest.Sources, SourceStats{Source: s, DropAccounting: "source_absent_at_trigger"})
+		manifest.Sources = append(manifest.Sources, SourceStats{Source: s, DropAccounting: DropAccountingSourceAbsent})
 	}
 	for source, contents := range opts.Calibrations {
 		name := safeName(source) + ".calibration"
@@ -1655,6 +1655,11 @@ const EpisodeStateDraining = "draining"
 func (m *Manager) Status() *Manifest {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.statusLocked()
+}
+
+// statusLocked is Status for a caller that holds m.mu.
+func (m *Manager) statusLocked() *Manifest {
 	if a := m.active[AdHocEpisodeKey]; a != nil {
 		v := snapshotManifest(a.manifest)
 		return &v

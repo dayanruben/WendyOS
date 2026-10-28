@@ -658,11 +658,12 @@ func (s *DataService) observeApplicationRecord(_ string, record data.Application
 
 func (s *DataService) Status(context.Context, *agentpbv2.DataStatusRequest) (*agentpbv2.DataStatusResponse, error) {
 	r := &agentpbv2.DataStatusResponse{ReportsInProgress: true}
-	for _, e := range s.manager.InProgress() {
+	active, open := s.manager.StatusAndInProgress()
+	for _, e := range open {
 		r.InProgress = append(r.InProgress, inProgressEpisode(e))
 	}
-	if m := s.manager.Status(); m != nil {
-		r.Active = manifestEpisode(*m)
+	if active != nil {
+		r.Active = manifestEpisode(*active)
 	}
 	return r, nil
 }
