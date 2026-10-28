@@ -83,7 +83,8 @@ argv refer to the connected remote host. The file cannot override the target.
 Use unique output directories for separate workflows. For ad hoc submission,
 `spec_path="/absolute/local/spec.json"` or inline `spec=...` remains available,
 with optional wait/artifact/report arguments. Prefer references over copying
-JSON through model context.
+JSON through model context. Step names must be unique; `runner` is reserved
+for the job supervisor and is rejected before submission.
 
 Waiting is bounded to 3600 seconds through host RPCs of at most 30 seconds.
 Set the client's tool timeout above the wait plus submission/collection time

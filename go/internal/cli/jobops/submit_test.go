@@ -6,11 +6,34 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/jobops"
 )
+
+func TestSubmitRejectsReservedStepNameBeforeCreatingJob(t *testing.T) {
+	working := t.TempDir()
+	spec := jobops.Spec{Name: "reserved-step", WorkingDirectory: working, Steps: []jobops.Step{{Name: "runner", Argv: []string{"python3", "-c", "print('must not run')"}, TimeoutSeconds: 2}}}
+	c := connection(t, &host{})
+	receipt, err := jobops.Submit(context.Background(), c, spec)
+	if err == nil {
+		state := waitForJob(t, receipt["job_path"].(string))
+		t.Fatalf("reserved step reached execution instead of validation: %+v", state)
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("want reserved-name error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(working, ".wendy")); !os.IsNotExist(err) {
+		t.Fatal("reserved step created job storage")
+	}
+	// The reservation applies only to steps, not the enclosing job name.
+	spec.Name, spec.Steps[0].Name = "runner", "train"
+	if err := jobops.ValidateSpec(spec); err != nil {
+		t.Fatalf("valid job name rejected: %v", err)
+	}
+}
 
 func waitForJob(t *testing.T, root string) map[string]any {
 	t.Helper()

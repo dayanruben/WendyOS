@@ -54,6 +54,9 @@ func ValidateSpec(spec Spec) error {
 	names := map[string]bool{}
 	size := 0
 	for _, step := range spec.Steps {
+		if step.Name == "runner" {
+			return fmt.Errorf("step name %q is reserved for the job supervisor", step.Name)
+		}
 		if !jobName.MatchString(step.Name) || names[step.Name] || len(step.Argv) == 0 || step.Argv[0] == "" || step.TimeoutSeconds < 1 || step.TimeoutSeconds > 86400 {
 			return fmt.Errorf("each step needs a unique name, argv and timeout_seconds in 1..86400")
 		}

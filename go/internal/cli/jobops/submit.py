@@ -108,6 +108,9 @@ def main():
     name = spec["name"]
     if not re.fullmatch("[a-z0-9][a-z0-9_-]{0,63}", name):
         raise ValueError("invalid job name")
+    # Step logs share the job directory with the supervisor's runner.log.
+    if any(step["name"] == "runner" for step in spec["steps"]):
+        raise ValueError('step name "runner" is reserved for the job supervisor')
     working = Path(spec["working_directory"]).resolve(strict=True)
     if not working.is_dir() or working == Path("/"):
         raise ValueError("working_directory must be an existing non-root directory")

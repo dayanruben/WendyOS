@@ -46,11 +46,15 @@ func TestV1CatalogDoesNotChangePermissionOrPreviousProfiles(t *testing.T) {
 }
 
 func TestV1DisconnectedStatusExplainsRequiredSetupWithoutInventingTools(t *testing.T) {
-	s := New(&config.Config{},nil)
-	if err:=s.SetToolProfile("workflow-v1");err!=nil{t.Fatal(err)}
-	out:=statusOf(t,s)
-	next:=out["suggested_next_step"].(string)
-	if !strings.Contains(next,"--device")||strings.Contains(next,"Call device_list")||out["connected"]!=false{t.Fatalf("V1 suggested hidden setup tools: %+v",out)}
+	s := New(&config.Config{}, nil)
+	if err := s.SetToolProfile("workflow-v1"); err != nil {
+		t.Fatal(err)
+	}
+	out := statusOf(t, s)
+	next := out["suggested_next_step"].(string)
+	if !strings.Contains(next, "--device") || strings.Contains(next, "Call device_list") || out["connected"] != false {
+		t.Fatalf("V1 suggested hidden setup tools: %+v", out)
+	}
 }
 
 func TestV1SummaryRequiresCompleteKnownOutcomesAndPreservesFullEvidence(t *testing.T) {
