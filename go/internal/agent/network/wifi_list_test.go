@@ -23,6 +23,9 @@ import (
 //   - busy: while it exists, the driver refuses scans. A refused scan ends at
 //     once and leaves current as it was.
 //   - hang: while it exists, a scan never ends.
+//   - slow: while it exists, a scan takes 1 s instead of 0.2 s.
+//   - stall: while it exists, NetworkManager doesn't answer: a list that
+//     doesn't scan never ends either.
 //   - status: printed by `device status`.
 //   - requests: one line per scan request, "rescan" for `device wifi
 //     rescan` and "scan" for `device wifi list --rescan yes`.
@@ -44,12 +47,19 @@ case "$*" in
 		exec sleep 10
 	fi
 	if [ ! -e busy ]; then
-		sleep 0.2
+		if [ -e slow ]; then
+			sleep 1
+		else
+			sleep 0.2
+		fi
 		cp air current
 	fi
 	cat current
 	;;
 *"device wifi list"*)
+	if [ -e stall ]; then
+		exec sleep 10
+	fi
 	cat current
 	;;
 esac
@@ -124,6 +134,18 @@ func (f *fakeWiFi) requireRequests(want ...string) {
 	f.t.Helper()
 	if got := f.requests(); !slices.Equal(got, want) {
 		f.t.Fatalf("scan requests = %q; want %q", got, want)
+	}
+}
+
+// waitForRequests waits until the scan requests made so far are want.
+func (f *fakeWiFi) waitForRequests(want ...string) {
+	f.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !slices.Equal(f.requests(), want) {
+		if time.Now().After(deadline) {
+			f.t.Fatalf("scan requests = %q; want %q", f.requests(), want)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -280,6 +302,76 @@ func TestListWiFiNetworksBoundsScanWait(t *testing.T) {
 	f.remove("hang")
 	f.requireList(oldSSIDs)
 	f.requireRequests("scan")
+}
+
+// TestListWiFiNetworksWaiterKeepsItsDeadline: a call that arrives during a
+// scan waits for it only as long as its own ctx allows.
+func TestListWiFiNetworksWaiterKeepsItsDeadline(t *testing.T) {
+	old := scanTimeout
+	scanTimeout = 2 * time.Second
+	t.Cleanup(func() { scanTimeout = old })
+
+	f := newFakeWiFi(t)
+	f.write("hang", "")
+	scanned := make(chan error, 1)
+	go func() {
+		_, err := listSSIDs(f.manager)
+		scanned <- err
+	}()
+	f.waitForRequests("scan")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := f.manager.ListWiFiNetworks(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v; want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("list took %v; want about its 100ms deadline, not scanTimeout (%v)", elapsed, scanTimeout)
+	}
+	if err := <-scanned; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestListWiFiNetworksScanOutlivesCaller: the call that started a scan going
+// away doesn't cut the scan short for the calls waiting on it.
+func TestListWiFiNetworksScanOutlivesCaller(t *testing.T) {
+	f := newFakeWiFi(t)
+	f.write("slow", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.manager.ListWiFiNetworks(ctx)
+		done <- err
+	}()
+	f.waitForRequests("scan")
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v; want context.Canceled", err)
+	}
+
+	f.requireList(scanSSIDs)
+	f.requireRequests("scan")
+}
+
+// TestListWiFiNetworksBoundsList: a list from a NetworkManager that stopped
+// answering doesn't hold the call either.
+func TestListWiFiNetworksBoundsList(t *testing.T) {
+	old := nmcliTimeout
+	nmcliTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { nmcliTimeout = old })
+
+	f := newFakeWiFi(t)
+	f.requireList(scanSSIDs)
+	f.write("stall", "")
+	start := time.Now()
+	if _, err := listSSIDs(f.manager); err == nil {
+		t.Fatal("list from a stalled NetworkManager succeeded")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("list took %v; want about nmcliTimeout (%v)", elapsed, nmcliTimeout)
+	}
 }
 
 // TestListWiFiNetworksSkipsScanWhileConnecting: no scan is asked for while
