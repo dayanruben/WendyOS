@@ -140,8 +140,13 @@ inference rebuilds its Python environment from the moved files without
 downloading them. An OS update starts the other root slot without the old
 folder, so the runtime it downloads then goes to the data partition.
 
-Campaign plans live beside the store in `campaigns/` when
-`WENDY_DATA_DIR` is set, and in `/var/lib/wendy-agent/data/campaigns` otherwise.
+Campaign plans live beside the store in `campaigns/`, so on WendyOS they
+survive an OS update together with the episodes they record. When the store
+moves to the data partition, the agent copies the plans an earlier agent
+deployed in `/var/lib/wendy-agent/data/campaigns` there once, so every deployed
+campaign stays armed, and leaves the originals in place. If they cannot be
+copied, that folder stays in use and the startup line says why.
+
 Point `WENDY_DATA_DIR` at a dedicated folder, never at a mount point such as
 `/data` itself:
 

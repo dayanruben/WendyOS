@@ -73,8 +73,8 @@ func TestDefaultStoreMovesToSeparateLargerFilesystem(t *testing.T) {
 	if got.Path != l.dataDisk {
 		t.Fatalf("store = %s, want the data disk %s (%s)", got.Path, l.dataDisk, got.Reason)
 	}
-	if want := filepath.Join(filepath.Dir(l.legacy), "campaigns"); got.CampaignDir != want {
-		t.Fatalf("campaign plans = %s, want them left at %s", got.CampaignDir, want)
+	if want := filepath.Join(filepath.Dir(l.dataDisk), "campaigns"); got.CampaignDir != want {
+		t.Fatalf("campaign plans = %s, want them beside the store at %s", got.CampaignDir, want)
 	}
 	if want := "is on its own filesystem (433 GB), larger than the one holding " + l.legacy + " (12 GB)"; !strings.Contains(got.Reason, want) {
 		t.Fatalf("reason %q does not say %q", got.Reason, want)
@@ -292,20 +292,44 @@ func TestUpdateKeepsTheInferenceCacheAnEarlierAgentDownloaded(t *testing.T) {
 	}
 }
 
+func writeCampaignPlan(t *testing.T, dir, name, state string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, name+".json")
+	contents := `{"name":"` + name + `","state":"` + state + `"}`
+	if err := os.WriteFile(path, []byte(contents), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	return contents
+}
+
+func deployedCampaigns(t *testing.T, m *Manager) map[string]string {
+	t.Helper()
+	deployed, err := m.Campaigns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, c := range deployed {
+		out[c.Name] = c.State
+	}
+	return out
+}
+
 // TestNewManagerDefaultStore drives the agent's path, NewManager(""), and
 // checks that a campaign an earlier agent deployed is still found once the
-// episodes have moved.
+// episodes have moved: its plan is copied beside the new store, where it
+// survives an OS update with the episodes it records, and the original is
+// left where it was.
 func TestNewManagerDefaultStore(t *testing.T) {
 	l := testLayout(t)
 	meshFilesystems(t, l)
 	useStoreLayout(t, l)
-	campaigns := filepath.Join(filepath.Dir(l.legacy), "campaigns")
-	if err := os.MkdirAll(campaigns, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(campaigns, "forklift.json"), []byte(`{"name":"forklift","state":"armed"}`), 0o640); err != nil {
-		t.Fatal(err)
-	}
+	earlier := filepath.Join(filepath.Dir(l.legacy), "campaigns")
+	moved := filepath.Join(filepath.Dir(l.dataDisk), "campaigns")
+	original := writeCampaignPlan(t, earlier, "forklift", "armed")
 
 	m, err := NewManager("")
 	if err != nil {
@@ -317,12 +341,89 @@ func TestNewManagerDefaultStore(t *testing.T) {
 	if got := m.InferenceDirectory(); got != filepath.Join(filepath.Dir(l.dataDisk), "inference") {
 		t.Fatalf("inference cache = %s, want it beside the store on the data disk", got)
 	}
-	deployed, err := m.Campaigns()
+	if got := m.StoreLocation(); got.CampaignDir != moved || !strings.Contains(got.CampaignReason, "copied 1 campaign plan from "+earlier) {
+		t.Fatalf("campaign plans = %s (%q), want them copied beside the store at %s", got.CampaignDir, got.CampaignReason, moved)
+	}
+	if got := deployedCampaigns(t, m); len(got) != 1 || got["forklift"] != "armed" {
+		t.Fatalf("campaigns after the store moved = %+v, want the one deployed before", got)
+	}
+	if b, err := os.ReadFile(filepath.Join(earlier, "forklift.json")); err != nil || string(b) != original {
+		t.Fatalf("the earlier agent's plan = %q, %v; want it left as it was", b, err)
+	}
+}
+
+// TestCampaignPlansAreCopiedOnlyOnce checks that a later start keeps what is
+// beside the store: a plan redeployed after the copy is not overwritten, and
+// one that appears in the earlier folder later (an older agent run again) is
+// not copied over.
+func TestCampaignPlansAreCopiedOnlyOnce(t *testing.T) {
+	l := testLayout(t)
+	meshFilesystems(t, l)
+	earlier := filepath.Join(filepath.Dir(l.legacy), "campaigns")
+	moved := filepath.Join(filepath.Dir(l.dataDisk), "campaigns")
+	writeCampaignPlan(t, earlier, "forklift", "armed")
+	if got := l.choose(); got.CampaignDir != moved {
+		t.Fatalf("campaign plans = %s, want %s", got.CampaignDir, moved)
+	}
+
+	writeCampaignPlan(t, moved, "forklift", "disarmed")
+	writeCampaignPlan(t, earlier, "dock", "armed")
+	got := l.choose()
+	if got.CampaignDir != moved || got.CampaignReason != "beside the episode store" {
+		t.Fatalf("campaign plans = %s (%q), want %s", got.CampaignDir, got.CampaignReason, moved)
+	}
+	b, err := os.ReadFile(filepath.Join(moved, "forklift.json"))
+	if err != nil || !strings.Contains(string(b), `"disarmed"`) {
+		t.Fatalf("the redeployed plan = %q, %v; want it kept", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(moved, "dock.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a plan was copied again on a later start: %v", err)
+	}
+}
+
+// TestCampaignPlansAfterAnOSUpdate is the other A/B slot: no earlier folder at
+// all, and the plans beside the store on the data disk are what is deployed.
+func TestCampaignPlansAfterAnOSUpdate(t *testing.T) {
+	l := testLayout(t)
+	meshFilesystems(t, l)
+	useStoreLayout(t, l)
+	writeCampaignPlan(t, filepath.Join(filepath.Dir(l.dataDisk), "campaigns"), "forklift", "armed")
+
+	m, err := NewManager("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(deployed) != 1 || deployed[0].Name != "forklift" {
-		t.Fatalf("campaigns after the store moved = %+v, want the one deployed before", deployed)
+	if got := deployedCampaigns(t, m); len(got) != 1 || got["forklift"] != "armed" {
+		t.Fatalf("campaigns after an OS update = %+v, want the one on the data disk", got)
+	}
+}
+
+// TestCampaignPlansStayWhenTheyCannotBeCopied keeps every deployed campaign
+// armed when the copy fails: the earlier folder stays in use, and nothing
+// half-copied is left beside the store.
+func TestCampaignPlansStayWhenTheyCannotBeCopied(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file without read permission")
+	}
+	l := testLayout(t)
+	meshFilesystems(t, l)
+	earlier := filepath.Join(filepath.Dir(l.legacy), "campaigns")
+	moved := filepath.Join(filepath.Dir(l.dataDisk), "campaigns")
+	writeCampaignPlan(t, earlier, "dock", "armed")
+	writeCampaignPlan(t, earlier, "forklift", "armed")
+	if err := os.Chmod(filepath.Join(earlier, "forklift.json"), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	got := l.choose()
+	if got.CampaignDir != earlier || !strings.Contains(got.CampaignReason, "could not copy them to "+moved) {
+		t.Fatalf("campaign plans = %s (%q), want the earlier folder %s kept in use", got.CampaignDir, got.CampaignReason, earlier)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(moved))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "campaigns") {
+			t.Fatalf("a failed copy left %s beside the store", e.Name())
+		}
 	}
 }
 

@@ -1,10 +1,13 @@
 package data
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 )
 
 // Where the episode store lives when WENDY_DATA_DIR does not say.
@@ -23,7 +26,8 @@ import (
 // /var/lib/wendy-agent/data.
 //
 // The inference cache does not follow the store on a device where an earlier
-// agent already downloaded it; see inferenceDir.
+// agent already downloaded it; see inferenceDir. Campaign plans do, copied
+// once from where an earlier agent deployed them; see campaignDir.
 const (
 	// DataDiskRoot is the default store on a device whose /var/lib/wendy is a
 	// different filesystem from LegacyRoot's, and a larger one, which is every
@@ -40,10 +44,10 @@ const (
 type StoreLocation struct {
 	// Path is the episode store.
 	Path string
-	// CampaignDir holds deployed campaign plans. It is beside Path except when
-	// the store moved to DataDiskRoot by default: plans are a few KB, and
-	// leaving them where earlier agents wrote them keeps every deployed
-	// campaign armed across the agent update.
+	// CampaignDir holds deployed campaign plans. It is beside Path, except
+	// when the store moved to DataDiskRoot by default and the plans an earlier
+	// agent deployed beside LegacyRoot could not be copied there: they stay in
+	// use where they are. See campaignDir.
 	CampaignDir string
 	// InferenceDir holds the campaign inference runtime and models: the
 	// pinned uv, its package cache, the managed Python, the virtual
@@ -52,8 +56,10 @@ type StoreLocation struct {
 	// agent already downloaded them beside LegacyRoot: they stay there.
 	InferenceDir string
 	// Reason is the clause the agent logs to say why Path was chosen, and
-	// InferenceReason the one for InferenceDir.
+	// CampaignReason and InferenceReason the ones for CampaignDir and
+	// InferenceDir.
 	Reason          string
+	CampaignReason  string
 	InferenceReason string
 	// LeftBehind and LeftBehindBytes describe the episodes still in LegacyRoot
 	// when the store moved to DataDiskRoot. Nothing moves or deletes them;
@@ -88,6 +94,7 @@ func explicitStoreLocation(root string) StoreLocation {
 // where every earlier agent kept them.
 func besideStore(l StoreLocation) StoreLocation {
 	l.CampaignDir = filepath.Join(filepath.Dir(l.Path), "campaigns")
+	l.CampaignReason = besideStoreReason
 	l.InferenceDir = filepath.Join(filepath.Dir(l.Path), "inference")
 	l.InferenceReason = besideStoreReason
 	return l
@@ -156,14 +163,88 @@ func (l storeLayout) choose() StoreLocation {
 		return keep(fmt.Sprintf("could not create %s: %v", l.dataDisk, err))
 	}
 	location := StoreLocation{
-		Path:        l.dataDisk,
-		CampaignDir: filepath.Join(filepath.Dir(l.legacy), "campaigns"),
-		Reason:      fmt.Sprintf("%s is on its own filesystem (%s), larger than the one holding %s (%s)", l.dataMount, humanBytes(data.size), l.legacy, humanBytes(legacy.size)),
-		LegacyPath:  l.legacy,
+		Path:       l.dataDisk,
+		Reason:     fmt.Sprintf("%s is on its own filesystem (%s), larger than the one holding %s (%s)", l.dataMount, humanBytes(data.size), l.legacy, humanBytes(legacy.size)),
+		LegacyPath: l.legacy,
 	}
+	location.CampaignDir, location.CampaignReason = l.campaignDir()
 	location.InferenceDir, location.InferenceReason = l.inferenceDir()
 	location.LeftBehind, location.LeftBehindBytes = countEpisodes(l.legacy)
 	return location
+}
+
+// campaignDir chooses where campaign plans live for a store that moved to the
+// data disk: beside it. /var/lib/wendy-agent is on the A/B root slot, which an
+// OS update replaces, and an episode on the data disk that outlives its plan
+// uploads as upload.when: always with no rate cap. The first time, the plans an
+// earlier agent deployed beside LegacyRoot are copied there, so every deployed
+// campaign stays armed across the agent update; the originals are left as they
+// were. Once the folder beside the store exists it is used as it is, so a later
+// redeploy is never overwritten by an older plan. If the copy fails, the
+// earlier folder stays in use and nothing half-copied is left behind.
+func (l storeLayout) campaignDir() (string, string) {
+	moved := filepath.Join(filepath.Dir(l.dataDisk), "campaigns")
+	earlier := filepath.Join(filepath.Dir(l.legacy), "campaigns")
+	if _, err := os.Stat(moved); err == nil {
+		return moved, besideStoreReason
+	}
+	copied, err := copyCampaignPlans(earlier, moved)
+	if err != nil {
+		return earlier, fmt.Sprintf("kept where an earlier agent deployed them: could not copy them to %s: %v", moved, err)
+	}
+	if copied == 0 {
+		return moved, besideStoreReason
+	}
+	noun, pronoun := "campaign plans", "them"
+	if copied == 1 {
+		noun, pronoun = "campaign plan", "it"
+	}
+	return moved, fmt.Sprintf("beside the episode store; copied %d %s from %s, where an earlier agent deployed %s, and left %s there", copied, noun, earlier, pronoun, pronoun)
+}
+
+// copyCampaignPlans copies the plans in from into a new folder at to, through
+// a staging folder renamed into place, so to either holds every plan or does
+// not exist. It returns how many it copied, and creates nothing when from
+// holds none. Hidden names are atomicfile's temporary files.
+func copyCampaignPlans(from, to string) (int, error) {
+	entries, err := os.ReadDir(from)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	staging := filepath.Join(filepath.Dir(to), ".campaigns-copying")
+	if err := os.RemoveAll(staging); err != nil {
+		return 0, err
+	}
+	copied := 0
+	for _, e := range entries {
+		name := e.Name()
+		if !e.Type().IsRegular() || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(from, name))
+		if err == nil {
+			err = os.MkdirAll(staging, 0o750)
+		}
+		if err == nil {
+			err = atomicfile.Write(filepath.Join(staging, name), b, 0o640)
+		}
+		if err != nil {
+			_ = os.RemoveAll(staging)
+			return 0, err
+		}
+		copied++
+	}
+	if copied == 0 {
+		return 0, nil
+	}
+	if err := os.Rename(staging, to); err != nil {
+		_ = os.RemoveAll(staging)
+		return 0, err
+	}
+	return copied, nil
 }
 
 // inferenceDir chooses the inference cache for a store that moved to the data
