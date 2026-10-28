@@ -17,4 +17,3 @@ scripts/test/plugin-launcher/* text eol=lf
 # Skill entrypoints are parsed and embedded byte-for-byte. Keep their YAML
 # frontmatter delimiters intact on Windows, including packaging sources.
 **/SKILL.md text eol=lf
-# Embedded UI bundle includes upstream shader strings with significant formatting.
