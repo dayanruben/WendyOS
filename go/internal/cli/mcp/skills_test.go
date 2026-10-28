@@ -279,16 +279,21 @@ func verifySkillImport(t *testing.T, exchange skillExchange) {
 }
 
 func TestSkillFrontmatterPreservesAllFields(t *testing.T) {
-	data := []byte("---\nname: example\ndescription: |\n  Multiple lines\n  preserved here.\nlicense: MIT\ndisable-model-invocation: true\nmetadata:\n  version: 2\nallowed-tools:\n  - resources/read\n---\n\nBody\n")
-	fm, offset, err := skillFrontmatter(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fm) != 6 || fm["license"] != "MIT" || fm["disable-model-invocation"] != true || fm["description"] != "Multiple lines\npreserved here.\n" || string(data[offset:]) != "\nBody\n" {
-		t.Fatalf("lost frontmatter: %+v", fm)
-	}
-	if fm["metadata"].(map[string]any)["version"] != float64(2) {
-		t.Fatal("lost nested metadata")
+	const doc = "---\nname: example\ndescription: |\n  Multiple lines\n  preserved here.\nlicense: MIT\ndisable-model-invocation: true\nmetadata:\n  version: 2\nallowed-tools:\n  - resources/read\n---\n\nBody\n"
+	// An older core.autocrlf=true clone, an editor or a copied file can leave
+	// CRLF in the working tree, and wendy mcp serve must still start.
+	for _, newline := range []string{"\n", "\r\n"} {
+		data := []byte(strings.ReplaceAll(doc, "\n", newline))
+		fm, offset, err := skillFrontmatter(data)
+		if err != nil {
+			t.Fatalf("%q: %v", newline, err)
+		}
+		if len(fm) != 6 || fm["license"] != "MIT" || fm["disable-model-invocation"] != true || fm["description"] != "Multiple lines\npreserved here.\n" || string(data[offset:]) != newline+"Body"+newline {
+			t.Fatalf("%q: lost frontmatter: %+v", newline, fm)
+		}
+		if fm["metadata"].(map[string]any)["version"] != float64(2) {
+			t.Fatalf("%q: lost nested metadata", newline)
+		}
 	}
 }
 
