@@ -91,7 +91,7 @@ wendy --json device pair --device <hostname> --sensorlink "<source>"
 wendy --json device pair --device <hostname> --forget "<source>"
 ```
 
-Name the source by its name, asset ID or principal URI. When none or several match, the error lists candidates; ask the user instead of guessing.
+Name the source by its name, asset ID or principal URI; `--forget` takes the pairing name `--list` shows. When none or several match, the error lists candidates; ask the user instead of guessing.
 
 ## Agent update
 
