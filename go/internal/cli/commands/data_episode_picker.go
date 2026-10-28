@@ -47,7 +47,8 @@ func dataDialOptions(nonInteractive bool) []resolveOption {
 // resolveEpisodeArg returns the episode named on the command line, or lets the
 // user choose one of the device's episodes. ok is false when the device holds
 // none: a plain message is printed in place of an empty picker, and the
-// command has nothing left to do.
+// command has nothing left to do. The device lists only sealed episodes, so the
+// message also covers a recording that is still running.
 func resolveEpisodeArg(ctx context.Context, client agentpbv2.DataServiceClient, args []string, out io.Writer, title string) (id string, ok bool, err error) {
 	if len(args) > 0 {
 		return args[0], true, nil
@@ -57,7 +58,7 @@ func resolveEpisodeArg(ctx context.Context, client agentpbv2.DataServiceClient, 
 		return "", false, err
 	}
 	if len(response.GetEpisodes()) == 0 {
-		_, err = fmt.Fprintln(out, "No episodes on this device yet. Record one with 'wendy data record'.")
+		_, err = fmt.Fprintln(out, "No finalized episodes on this device yet. Record one with 'wendy data record', or seal one in progress with 'wendy data stop'.")
 		return "", false, err
 	}
 	id, err = pickEpisodeFn(title, episodePickerItems(response.GetEpisodes()), episodePickerColumns())
@@ -66,9 +67,10 @@ func resolveEpisodeArg(ctx context.Context, client agentpbv2.DataServiceClient, 
 
 // episodePickerItems builds the rows newest first. The Linux agent already
 // lists episodes in that order, but the CLI does not rely on every agent doing
-// so. SortKey pins the order, because the picker otherwise sorts rows by name,
-// and DedupKey is the ID, because the picker merges rows that share a key and
-// recordings often share a name.
+// so. SortKey pins the order, because the picker otherwise sorts rows by Name.
+// The picker also merges rows that share a DedupKey, falling back to Name.
+// Both hold the ID, not the episode's name (Description), because recordings
+// often share a name.
 func episodePickerItems(episodes []*agentpbv2.DataEpisode) []tui.PickerItem {
 	sorted := slices.Clone(episodes)
 	sort.SliceStable(sorted, func(i, j int) bool {

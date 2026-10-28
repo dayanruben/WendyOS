@@ -57,13 +57,13 @@ wendy data download <episode-id> --output ./commissioning-episode
 
 With no episode ID in an interactive terminal, `inspect` and `download` list
 the device's Episodes newest first, with name, state, size and start time.
-Enter selects one; Escape or Ctrl-C cancels. With no Episodes on the device
-they say so instead. Non-interactive, `--non-interactive` and `--json` use
-requires the ID; `wendy data episodes` lists them.
+Enter selects one; Escape or Ctrl-C cancels. With no finalized Episodes on the
+device they say so instead. Non-interactive, `--non-interactive` and `--json`
+use requires the ID; `wendy data episodes` lists them.
 
 `download` reports the absolute path of the directory it wrote. Without
 `--output` that is a new directory named after the Episode ID in the current
-directory.
+directory. The `--json` result keeps `destination` as the path was given.
 
 `wendy data stop` seals an Episode that captures application records only after
 its post-seal drain has elapsed, so the command takes up to two seconds longer

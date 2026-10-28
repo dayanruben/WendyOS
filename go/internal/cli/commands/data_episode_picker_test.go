@@ -376,7 +376,7 @@ func TestDataEpisodeCommandsWithNoEpisodes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("error = %v, want a plain message", err)
 			}
-			if stdout != "No episodes on this device yet. Record one with 'wendy data record'.\n" {
+			if stdout != "No finalized episodes on this device yet. Record one with 'wendy data record', or seal one in progress with 'wendy data stop'.\n" {
 				t.Fatalf("stdout = %q", stdout)
 			}
 			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
