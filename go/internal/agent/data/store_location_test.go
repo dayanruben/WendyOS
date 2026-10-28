@@ -485,7 +485,7 @@ func TestLeftBehindEpisodesAreCountedAndLeftInPlace(t *testing.T) {
 		t.Fatalf("left behind = %d episodes, %d bytes; want 2 and 1500", got.LeftBehind, got.LeftBehindBytes)
 	}
 	want := "Wendy Data now stores episodes in " + l.dataDisk + ". 2 episodes (1.5 kB) recorded before that remain in " + l.legacy +
-		", no longer listed; nothing was moved or deleted. Move them into " + l.dataDisk +
+		", no longer listed or uploaded; nothing was moved or deleted. Move them into " + l.dataDisk +
 		" while the agent is stopped to list them again, or delete them to free the root disk."
 	if msg := got.LeftBehindMessage(); msg != want {
 		t.Fatalf("left-behind line:\n got %q\nwant %q", msg, want)
@@ -497,8 +497,55 @@ func TestLeftBehindEpisodesAreCountedAndLeftInPlace(t *testing.T) {
 	}
 
 	one := StoreLocation{Path: "/new", LegacyPath: "/old", LeftBehind: 1, LeftBehindBytes: 2_500_000_000}
-	if msg := one.LeftBehindMessage(); !strings.Contains(msg, " 1 episode (2.5 GB) recorded before that remains in /old, no longer listed;") || !strings.Contains(msg, "Move it into /new") {
+	if msg := one.LeftBehindMessage(); !strings.Contains(msg, " 1 episode (2.5 GB) recorded before that remains in /old, no longer listed or uploaded;") || !strings.Contains(msg, "Move it into /new") {
 		t.Fatalf("single episode line: %q", msg)
+	}
+}
+
+// TestLeftBehindEpisodesNotUploadedAreCounted checks that the left-behind line
+// says how many of those episodes never reached the cloud: the transfer worker
+// reads only the new store, so they stay unuploaded until someone moves them.
+func TestLeftBehindEpisodesNotUploadedAreCounted(t *testing.T) {
+	l := testLayout(t)
+	meshFilesystems(t, l)
+	for name, state := range map[string]string{
+		"20261025T180000Z-0000000000000001": "uploaded",
+		"20261025T180000Z-0000000000000002": "local",
+		"20261025T180000Z-0000000000000003": "pending",
+		"20261025T180000Z-0000000000000004": "uploading",
+		"20261025T180000Z-0000000000000005": "failed",
+	} {
+		dir := filepath.Join(l.legacy, name)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"upload":{"state":"`+state+`"}}`), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Mid-recording when the earlier agent stopped: no manifest, never uploaded
+	// by anyone, and not counted as waiting either.
+	if err := os.MkdirAll(filepath.Join(l.legacy, "20261026T090000Z-fedcba9876543210.partial"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	got := l.choose()
+	if got.LeftBehind != 6 || got.LeftBehindNotUploaded != 3 {
+		t.Fatalf("left behind = %d episodes, %d not uploaded; want 6 and 3", got.LeftBehind, got.LeftBehindNotUploaded)
+	}
+	msg := got.LeftBehindMessage()
+	if !strings.Contains(msg, "no longer listed or uploaded; nothing was moved or deleted. 3 of them have not been uploaded. Move them into "+l.dataDisk+
+		" while the agent is stopped to list and upload them, or delete them to free the root disk.") {
+		t.Fatalf("left-behind line: %q", msg)
+	}
+
+	one := StoreLocation{Path: "/new", LegacyPath: "/old", LeftBehind: 1, LeftBehindBytes: 1000, LeftBehindNotUploaded: 1}
+	if msg := one.LeftBehindMessage(); !strings.Contains(msg, "nothing was moved or deleted. It has not been uploaded. Move it into /new while the agent is stopped to list and upload it, or delete it") {
+		t.Fatalf("single episode line: %q", msg)
+	}
+	some := StoreLocation{Path: "/new", LegacyPath: "/old", LeftBehind: 3, LeftBehindBytes: 1000, LeftBehindNotUploaded: 1}
+	if msg := some.LeftBehindMessage(); !strings.Contains(msg, " 1 of them has not been uploaded. Move them into /new") {
+		t.Fatalf("one of several line: %q", msg)
 	}
 }
 

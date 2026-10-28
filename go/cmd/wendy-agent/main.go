@@ -364,7 +364,8 @@ func main() {
 		zap.String("campaignsReason", dataStore.CampaignReason),
 		zap.String("inferenceReason", dataStore.InferenceReason))
 	if msg := dataStore.LeftBehindMessage(); msg != "" {
-		logger.Warn(msg, zap.Int("episodes", dataStore.LeftBehind), zap.Int64("bytes", dataStore.LeftBehindBytes))
+		logger.Warn(msg, zap.Int("episodes", dataStore.LeftBehind), zap.Int64("bytes", dataStore.LeftBehindBytes),
+			zap.Int("notUploaded", dataStore.LeftBehindNotUploaded))
 	}
 	dataManager.SetConsensusProvider(func(ctx context.Context) (timesync.Consensus, error) {
 		return timesync.QueryConsensus(ctx, timesync.Servers)

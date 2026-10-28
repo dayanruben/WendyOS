@@ -155,9 +155,10 @@ WENDY_DATA_DIR=/data/wendy-data/episodes wendy-agent
 ```
 
 Episodes an earlier agent recorded in `/var/lib/wendy-agent/data/episodes` stay
-there when the default moves to the data partition. They are no longer listed,
-and the agent logs how many there are at each startup. Move them into the new
-store while the agent is stopped to list them again, or delete them.
+there when the default moves to the data partition. They are no longer listed
+or uploaded, and the agent logs at each startup how many there are and how many
+had not been uploaded. Move them into the new store while the agent is stopped
+to list them again and upload the rest, or delete them.
 
 The agent creates the directory on startup. Unprivileged developer agents that
 cannot create the default fall back to their platform user configuration

@@ -63,10 +63,12 @@ type StoreLocation struct {
 	InferenceReason string
 	// LeftBehind and LeftBehindBytes describe the episodes still in LegacyRoot
 	// when the store moved to DataDiskRoot. Nothing moves or deletes them;
-	// they are only no longer listed.
-	LeftBehind      int
-	LeftBehindBytes int64
-	LegacyPath      string
+	// they are no longer listed or uploaded. LeftBehindNotUploaded counts the
+	// ones whose upload was pending, in progress or failed.
+	LeftBehind            int
+	LeftBehindBytes       int64
+	LeftBehindNotUploaded int
+	LegacyPath            string
 }
 
 // LeftBehindMessage is the one log line about episodes an earlier agent
@@ -79,8 +81,22 @@ func (l StoreLocation) LeftBehindMessage() string {
 	if l.LeftBehind == 1 {
 		noun, verb, pronoun = "episode", "remains", "it"
 	}
-	return fmt.Sprintf("Wendy Data now stores episodes in %s. %d %s (%s) recorded before that %s in %s, no longer listed; nothing was moved or deleted. Move %s into %s while the agent is stopped to list %s again, or delete %s to free the root disk.",
-		l.Path, l.LeftBehind, noun, humanBytes(l.LeftBehindBytes), verb, l.LegacyPath, pronoun, l.Path, pronoun, pronoun)
+	msg := fmt.Sprintf("Wendy Data now stores episodes in %s. %d %s (%s) recorded before that %s in %s, no longer listed or uploaded; nothing was moved or deleted.",
+		l.Path, l.LeftBehind, noun, humanBytes(l.LeftBehindBytes), verb, l.LegacyPath)
+	switch {
+	case l.LeftBehindNotUploaded == 0:
+	case l.LeftBehind == 1:
+		msg += " It has not been uploaded."
+	case l.LeftBehindNotUploaded == 1:
+		msg += " 1 of them has not been uploaded."
+	default:
+		msg += fmt.Sprintf(" %d of them have not been uploaded.", l.LeftBehindNotUploaded)
+	}
+	then := "list " + pronoun + " again"
+	if l.LeftBehindNotUploaded > 0 {
+		then = "list and upload " + pronoun
+	}
+	return msg + fmt.Sprintf(" Move %s into %s while the agent is stopped to %s, or delete %s to free the root disk.", pronoun, l.Path, then, pronoun)
 }
 
 // explicitStoreLocation is the location of a store whose path was given, which
@@ -169,7 +185,7 @@ func (l storeLayout) choose() StoreLocation {
 	}
 	location.CampaignDir, location.CampaignReason = l.campaignDir()
 	location.InferenceDir, location.InferenceReason = l.inferenceDir()
-	location.LeftBehind, location.LeftBehindBytes = countEpisodes(l.legacy)
+	location.LeftBehind, location.LeftBehindBytes, location.LeftBehindNotUploaded = countEpisodes(l.legacy)
 	return location
 }
 
@@ -323,24 +339,30 @@ func nearestExisting(path string) string {
 }
 
 // countEpisodes counts the episode directories in a store and the bytes they
-// hold, including any an earlier agent left mid-recording. Hidden entries are
-// the store's own bookkeeping (the app-stream journal, event inboxes), not
-// episodes.
-func countEpisodes(root string) (int, int64) {
+// hold, including any an earlier agent left mid-recording, and how many of the
+// finished ones had not been uploaded: pending, in progress or failed, the
+// states evictionTier keeps longest. Hidden entries are the store's own
+// bookkeeping (the app-stream journal, event inboxes), not episodes.
+func countEpisodes(root string) (count int, size int64, notUploaded int) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0
 	}
-	var count int
-	var size int64
 	for _, e := range entries {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
+		dir := filepath.Join(root, e.Name())
 		count++
-		size += dirBytes(filepath.Join(root, e.Name()))
+		size += dirBytes(dir)
+		if strings.HasSuffix(e.Name(), ".partial") {
+			continue
+		}
+		if mf, err := readManifest(dir); err == nil && evictionTier(mf.Upload.State) > 0 {
+			notUploaded++
+		}
 	}
-	return count, size
+	return count, size, notUploaded
 }
 
 // StoreSpaceError is the episode store refusing a new episode for lack of
