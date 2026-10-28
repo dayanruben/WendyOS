@@ -384,6 +384,11 @@ go test -race ./go/internal/cli/browserauth
 node go/experiments/wasmgrpc/auth-worker.mjs
 node web-client/tests/credential-store.test.mjs
 node web-client/tests/wendy-web-bridge.test.mjs   # after npm run build:wasm
+# Optional: installed Playwright + browsers (PLAYWRIGHT_MODULE may name its path;
+# WEBKIT_EXECUTABLE may select an existing WebKit installation).
+node web-client/tests/redirect-navigation.mjs chromium
+node web-client/tests/redirect-navigation.mjs webkit
+node web-client/tests/redirect-navigation.mjs webkit --mobile
 GOOS=js GOARCH=wasm go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./go/cmd/wendy-web ./go/internal/cli/browserauth
 node --experimental-strip-types web-client/tests/telemetry.test.mjs
 node --experimental-strip-types --test web-client/tests/auth-proxy.test.mjs
@@ -403,3 +408,12 @@ The agent worker integration fixture lives in `go/experiments/wasmgrpc`.
 
 Browser UI automation has not been run. Optional WebMCP read-only workspace and
 navigation tools are feature-detected; credentials are never exposed to them.
+
+The redirect navigation probe serves the exact raw gzip bundle and synthetic
+OAuth pages through browser-local HTTPS routing. It tests full top-level
+navigation, destruction of the old document/worker, wrapped storage and the
+tab handle surviving, error completion and replay refusal at Dev/Production
+origins. It performs no real sign-in, token exchange or certificate issuance;
+those protocol and same-key checks run in the Go fixture. Physical iOS and a
+real federated account login remain separate integration QA. Embedding clients
+also need to verify their actual static-host delivery and published asset pin.
