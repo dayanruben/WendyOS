@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -39,6 +40,12 @@ func scriptPairHandler(client *pairTestClient) *sensorPairHandler {
 		panic("a scripted pair must never scan this computer's network")
 	}
 	return h
+}
+
+// unnamedEnrollmentSource is a Wendy Lite board that needs enrollment and
+// advertises no display name.
+func unnamedEnrollmentSource() *agentpbv2.DiscoveredSensorSource {
+	return &agentpbv2.DiscoveredSensorSource{Id: "4826", IpAddress: "192.0.2.26", Port: 5054, Caps: []string{"sensors"}, WendyLite: true}
 }
 
 func TestScriptedSensorPairMatchesByNameAssetIDOrPrincipal(t *testing.T) {
@@ -95,6 +102,7 @@ func TestScriptedSensorPairHumanOutput(t *testing.T) {
 func TestScriptedSensorPairNotFoundListsSources(t *testing.T) {
 	client := &pairTestClient{pairings: []*agentpbv2.SensorPairing{{SourceAssetId: 99, Name: "Offline sensor"}}}
 	h := scriptPairHandler(client)
+	client.sources = append(client.sources, unnamedEnrollmentSource())
 	var out bytes.Buffer
 	err := runSensorPair(context.Background(), h, "kitchen", true, &out)
 	if err == nil || client.adds != 0 || out.Len() != 0 {
@@ -107,6 +115,8 @@ func TestScriptedSensorPairNotFoundListsSources(t *testing.T) {
 		`"Offline sensor" (asset 99, paired, not found on the network)`,
 		`"wendy-4824" (192.0.2.24, needs enrollment)`,
 		`"lab-board" (192.0.2.25, enrolled, cannot be paired by this version)`,
+		// Without a display name, a source is named by its address.
+		`"192.0.2.26" (needs enrollment)`,
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("missing %q in:\n%v", want, err)
@@ -128,23 +138,23 @@ func TestScriptedSensorPairAmbiguousPairsNothing(t *testing.T) {
 	client.sources = append(client.sources, &agentpbv2.DiscoveredSensorSource{AssetId: 43, OrgId: 7, DisplayName: "camera", IsMtls: true, Caps: []string{"sensors"}, IpAddress: "192.0.2.43"})
 	// A source can also be named like another's asset ID.
 	client.sources = append(client.sources, &agentpbv2.DiscoveredSensorSource{AssetId: 44, OrgId: 7, DisplayName: "42", IsMtls: true, Caps: []string{"sensors"}, IpAddress: "192.0.2.44"})
-	for query, want := range map[string][]string{
-		"Camera": {`"Camera" matches 2 SensorLink sources, so none was paired`, `"Camera" (asset 42`, `"camera" (asset 43`},
-		"42":     {`"42" matches 2 SensorLink sources`, `"Camera" (asset 42`, `"42" (asset 44`},
-	} {
-		err := runSensorPair(context.Background(), h, query, true, &bytes.Buffer{})
-		if err == nil || client.adds != 0 {
-			t.Fatalf("%q: err=%v adds=%d", query, err, client.adds)
-		}
-		for _, w := range want {
-			if !strings.Contains(err.Error(), w) {
-				t.Errorf("%q: missing %q in:\n%v", query, w, err)
-			}
+	err := runSensorPair(context.Background(), h, "Camera", true, &bytes.Buffer{})
+	if err == nil || client.adds != 0 {
+		t.Fatalf("err=%v adds=%d", err, client.adds)
+	}
+	for _, w := range []string{`"Camera" matches 2 SensorLink sources, so none was paired`, `"Camera" (asset 42`, `"camera" (asset 43`} {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("missing %q in:\n%v", w, err)
 		}
 	}
-	// The exact identity still selects one.
-	if err := runSensorPair(context.Background(), h, "43", true, &bytes.Buffer{}); err != nil || client.adds != 1 || client.added.SourceAssetId != 43 {
-		t.Fatalf("asset ID did not resolve the ambiguity: %v %+v", err, client.added)
+	// The exact identity the error lists selects one, even when another
+	// source is named like it: asset 42 is not the source named "42".
+	for _, asset := range []int32{42, 43} {
+		client.adds = 0
+		query := strconv.Itoa(int(asset))
+		if err := runSensorPair(context.Background(), h, query, true, &bytes.Buffer{}); err != nil || client.adds != 1 || client.added.SourceAssetId != asset {
+			t.Fatalf("%q did not resolve the ambiguity: %v %+v", query, err, client.added)
+		}
 	}
 }
 
@@ -157,6 +167,13 @@ func TestScriptedSensorPairRefusesSourcesItCannotPair(t *testing.T) {
 	}{
 		{name: "needs enrollment", query: "wendy-4824", want: "wendy-4824 (192.0.2.24) needs enrollment before it can be paired", step: "Enroll it in the same organization"},
 		{name: "enrolled but unsupported", query: "lab-board", want: "lab-board (192.0.2.25) is enrolled, but this version cannot pair it yet"},
+		{
+			name: "needs enrollment, unnamed", query: "192.0.2.26",
+			setup: func(c *pairTestClient, _ *sensorPairHandler) {
+				c.sources = append(c.sources, unnamedEnrollmentSource())
+			},
+			want: "192.0.2.26 needs enrollment before it can be paired", step: "Enroll it in the same organization",
+		},
 		{
 			name: "already paired", query: "Camera",
 			setup: func(c *pairTestClient, _ *sensorPairHandler) {
@@ -325,8 +342,13 @@ func TestScriptedSensorForget(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
-		if result.Forgotten["source_asset_id"] != float64(tc.asset) || result.Forgotten["source_principal_uri"] != tc.principal || result.Forgotten["sensor_allowlist"] == nil {
+		// Asset 42 was connected when listed; once removed it has no link.
+		if result.Forgotten["source_asset_id"] != float64(tc.asset) || result.Forgotten["source_principal_uri"] != tc.principal ||
+			result.Forgotten["sensor_allowlist"] == nil || result.Forgotten["connected"] != false {
 			t.Fatalf("%q: forget JSON %s", tc.query, out.String())
+		}
+		if tc.asset == 42 && !client.pairings[0].Connected {
+			t.Fatalf("%q: forget changed the listed pairing", tc.query)
 		}
 	}
 
@@ -351,6 +373,13 @@ func TestScriptedSensorForget(t *testing.T) {
 		t.Fatalf("ambiguous: %v", err)
 	}
 
+	// An asset ID forgets its own pairing, not one named like it.
+	client.pairings = append(client.pairings, &agentpbv2.SensorPairing{SourceAssetId: 44, Name: "42"})
+	if err := runSensorForget(context.Background(), h, "42", true, &out); err != nil || client.removes != 1 || client.removed != 42 {
+		t.Fatalf("asset ID beside a pairing named like it: %v removes=%d asset=%d", err, client.removes, client.removed)
+	}
+	client.removes = 0
+
 	client.pairings = nil
 	if err := runSensorForget(context.Background(), h, "garage", true, &out); err == nil || !strings.Contains(err.Error(), "the device has none") {
 		t.Fatalf("no pairings: %v", err)
@@ -364,16 +393,16 @@ func TestScriptedSensorForget(t *testing.T) {
 
 func TestSensorPairFlagValidation(t *testing.T) {
 	for _, tc := range []struct {
-		name                                     string
-		pair, forget                             bool
-		source                                   string
-		list, usb, unitree, options, wantAccepts bool
+		name                                      string
+		pair, forget                              bool
+		source                                    string
+		list, arms, unitree, options, wantAccepts bool
 	}{
 		{name: "tabs", wantAccepts: true},
 		{name: "pair", pair: true, source: "cam", options: true, wantAccepts: true},
 		{name: "forget", forget: true, source: "cam", wantAccepts: true},
 		{name: "legacy list with options", list: true, options: true, wantAccepts: true},
-		{name: "pair with usb arms", pair: true, source: "cam", usb: true},
+		{name: "pair with usb arm flags", pair: true, source: "cam", arms: true},
 		{name: "pair with unitree", pair: true, source: "cam", unitree: true},
 		{name: "forget with unitree", forget: true, source: "cam", unitree: true},
 		{name: "pair and list", pair: true, source: "cam", list: true},
@@ -383,7 +412,7 @@ func TestSensorPairFlagValidation(t *testing.T) {
 		{name: "empty forget", forget: true},
 		{name: "forget with options", forget: true, source: "cam", options: true},
 	} {
-		err := validateSensorPairFlags(tc.pair, tc.forget, tc.source, tc.list, tc.usb, tc.unitree, tc.options)
+		err := validateSensorPairFlags(tc.pair, tc.forget, tc.source, tc.list, tc.arms, tc.unitree, tc.options)
 		if (err == nil) != tc.wantAccepts {
 			t.Errorf("%s: err = %v", tc.name, err)
 		}
@@ -412,6 +441,9 @@ func TestDevicePairCommandRejectsBeforeConnecting(t *testing.T) {
 		{"--forget", "cam", "--unitree"},
 		{"--forget", "cam", "--list"},
 		{"--sensorlink", "cam", "--bind", "usb-1"},
+		{"--sensorlink", "cam", "--arm-name", "Left"},
+		{"--sensorlink", "cam", "--allow-location-binding"},
+		{"--sensorlink", "cam", "--usb-arms", "--name", "Front"},
 		{},
 		{"--name", "Front"},
 		{"--unitree"},
@@ -420,8 +452,10 @@ func TestDevicePairCommandRejectsBeforeConnecting(t *testing.T) {
 		if err := cmd.ParseFlags(flags); err != nil {
 			t.Fatal(err)
 		}
-		if err := cmd.RunE(cmd, nil); err == nil {
-			t.Fatalf("accepted %v", flags)
+		// connectToAgent never returns a usage error, so each of these
+		// failed validation rather than the connection.
+		if err := cmd.RunE(cmd, nil); !IsUsageError(err) {
+			t.Fatalf("%v: want a usage error, got %v", flags, err)
 		}
 	}
 	// The no-terminal refusal names the scripted operations.

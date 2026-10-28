@@ -13,6 +13,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"google.golang.org/protobuf/proto"
 )
 
 // Scripted SensorLink operations: --list, --sensorlink <source> and
@@ -21,14 +22,15 @@ import (
 
 // validateSensorPairFlags checks the scripted SensorLink operations. pair is
 // whether --sensorlink was given and forget whether --forget was given
-// without --usb-arms; source is the value of the one given. options is
-// whether --name or --sensors was given; they configure a pair.
-func validateSensorPairFlags(pair, forget bool, source string, list, usb, unitree, options bool) error {
+// without --usb-arms; source is the value of the one given. arms is whether
+// --usb-arms or a USB arm option was given. options is whether --name or
+// --sensors was given; they configure a pair.
+func validateSensorPairFlags(pair, forget bool, source string, list, arms, unitree, options bool) error {
 	switch {
 	case !pair && !forget:
 		return nil
-	case pair && usb:
-		return usageErrorf("--sensorlink cannot be combined with --usb-arms")
+	case pair && arms:
+		return usageErrorf("--sensorlink cannot be combined with --usb-arms or USB arm options")
 	case unitree:
 		return usageErrorf("--sensorlink and SensorLink --forget cannot be combined with Unitree flags")
 	case pair && forget, list:
@@ -156,7 +158,10 @@ func runSensorForget(ctx context.Context, h *sensorPairHandler, query string, js
 		return err
 	}
 	if jsonOut {
-		raw, err := pairJSON.Marshal(row.pairing)
+		// The list was read before the removal; a removed pairing has no link.
+		forgotten := proto.Clone(row.pairing).(*agentpbv2.SensorPairing)
+		forgotten.Connected = false
+		raw, err := pairJSON.Marshal(forgotten)
 		if err != nil {
 			return err
 		}
@@ -169,33 +174,45 @@ func runSensorForget(ctx context.Context, h *sensorPairHandler, query string, js
 // sensorPairCandidates is every SensorLink source a scripted pair can name:
 // the SensorLink tab's rows (sources with an identity, and saved pairings
 // including offline ones), then the sources the tab lists as needing
-// enrollment, which have no identity yet.
+// enrollment, which have no identity yet. One without a display name is
+// named by its address, as the tab labels it.
 func sensorPairCandidates(devices []models.DiscoveredDevice, pairings []*agentpbv2.SensorPairing) []sensorPairRow {
 	rows := sensorPairRows(devices, pairings)
 	for i := range devices {
 		if d := &devices[i]; d.Sensorlink && !sensorSourcePairable(*d) {
-			rows = append(rows, sensorPairRow{name: d.DisplayName, source: d})
+			name := d.DisplayName
+			if name == "" {
+				name = d.Address()
+			}
+			rows = append(rows, sensorPairRow{name: name, source: d})
 		}
 	}
 	return rows
 }
 
-// matchingSensorPairRows returns the rows query names: by pairing or display
-// name ignoring case, by source asset ID, or by exact principal URI.
+// matchingSensorPairRows returns the rows query names. An exact source asset
+// ID or principal URI names its own row even when another row's name equals
+// it, so the identity an ambiguity error lists always selects one. Otherwise
+// query matches pairing or display names, ignoring case.
 func matchingSensorPairRows(rows []sensorPairRow, query string) []sensorPairRow {
 	if query == "" {
 		return nil
 	}
-	var matched []sensorPairRow
+	var byIdentity, byName []sensorPairRow
 	for _, row := range rows {
-		if (row.principal != "" && query == row.principal) ||
-			(row.assetID > 0 && query == strconv.Itoa(int(row.assetID))) ||
-			strings.EqualFold(query, row.name) ||
-			(row.source != nil && strings.EqualFold(query, row.source.DisplayName)) {
-			matched = append(matched, row)
+		switch {
+		case (row.principal != "" && query == row.principal) ||
+			(row.assetID > 0 && query == strconv.Itoa(int(row.assetID))):
+			byIdentity = append(byIdentity, row)
+		case strings.EqualFold(query, row.name) ||
+			(row.source != nil && strings.EqualFold(query, row.source.DisplayName)):
+			byName = append(byName, row)
 		}
 	}
-	return matched
+	if len(byIdentity) > 0 {
+		return byIdentity
+	}
+	return byName
 }
 
 // sensorPairRowList lists rows in an error, one per line, each with what a
@@ -212,7 +229,7 @@ func sensorPairRowList(rows []sensorPairRow, discovered bool) string {
 			details = append(details, "asset "+strconv.Itoa(int(row.assetID)))
 		}
 		if row.source != nil {
-			if address := row.source.Address(); address != "" {
+			if address := row.source.Address(); address != "" && address != row.name {
 				details = append(details, address)
 			}
 		}

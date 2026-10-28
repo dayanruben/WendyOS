@@ -221,14 +221,16 @@ func newDevicePairCmd() *cobra.Command {
 			pairSensor := cmd.Flags().Changed("sensorlink")
 			// Without --usb-arms, --forget removes a SensorLink pairing.
 			forgetSensor := !usbArms && cmd.Flags().Changed("forget")
-			if err := validateArmPairFlags(usbArms, listOnly, bindArm, forgetArm, armName, allowLocation, sensorOptions, jsonOutput); err != nil {
-				return err
-			}
+			armFlags := usbArms || bindArm != "" || armName != "" || allowLocation
 			sensorQuery := sensorSource
 			if forgetSensor {
 				sensorQuery = forgetArm
 			}
-			if err := validateSensorPairFlags(pairSensor, forgetSensor, sensorQuery, listOnly, usbArms, unitreeFlags, sensorOptions); err != nil {
+			// Before the USB checks, so a --sensorlink conflict is a usage error.
+			if err := validateSensorPairFlags(pairSensor, forgetSensor, sensorQuery, listOnly, armFlags, unitreeFlags, sensorOptions); err != nil {
+				return err
+			}
+			if err := validateArmPairFlags(usbArms, listOnly, bindArm, forgetArm, armName, allowLocation, sensorOptions, jsonOutput); err != nil {
 				return err
 			}
 			if usbArms && unitreeFlags {
