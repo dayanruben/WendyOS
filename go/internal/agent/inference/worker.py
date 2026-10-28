@@ -144,30 +144,55 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 class ModelUnavailable(Exception):
-    """The pinned model is not on this device and the Hub cannot be reached."""
+    """The pinned model does not load from this device and the Hub cannot be reached."""
 
 
 def hub_unreachable(exc):
     """Why the Hugging Face Hub cannot be reached, or None when it can.
 
-    The chain of exc does not always say: huggingface_hub 1.5 retries a failed
-    connection on the client it has just closed, so an offline Transformers
-    load ends in a RuntimeError. Then a connection to the Hub decides."""
+    A failed connection in the chain of exc says so. Anything else, such as a
+    read timeout, needs a connection to the Hub to decide: huggingface_hub 1.5
+    retries a failed connection on the client it has just closed, so an
+    offline Transformers load ends in a RuntimeError."""
     import httpx
     from urllib.parse import urlsplit
     from huggingface_hub import constants
     seen = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
-        if isinstance(exc, httpx.TransportError):
+        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
             return f"{type(exc).__name__}: {exc}"
         exc = exc.__cause__ or exc.__context__
     hub = urlsplit(constants.ENDPOINT)
     try:
-        socket.create_connection((hub.hostname, hub.port or 443), timeout=5).close()
+        addresses = socket.getaddrinfo(hub.hostname, hub.port or 443, type=socket.SOCK_STREAM)
     except OSError as error:
         return f"{hub.hostname}: {error}"
-    return None
+    # One address per family, IPv4 first, 5 s each. huggingface.co has a
+    # dozen, so trying them all in turn, as socket.create_connection does,
+    # takes a minute on a network that drops packets. IPv4 goes first because
+    # a broken IPv6 route is common and would otherwise use up the time.
+    first = {}
+    for info in addresses:
+        first.setdefault(info[0], info)
+    last = OSError("no address")
+    for family, kind, protocol, _, address in sorted(first.values(), key=lambda info: info[0] != socket.AF_INET):
+        try:
+            with socket.socket(family, kind, protocol) as connection:
+                connection.settimeout(5)
+                connection.connect(address)
+            return None
+        except OSError as error:
+            last = error
+    return f"{hub.hostname}: {last}"
+
+
+def revision_cached(config):
+    """Whether any file of the pinned revision is in the Hugging Face cache."""
+    from huggingface_hub import constants
+    from huggingface_hub.file_download import repo_folder_name
+    folder = repo_folder_name(repo_id=config["model"], repo_type="model")
+    return os.path.isdir(os.path.join(constants.HF_HUB_CACHE, folder, "snapshots", config["revision"]))
 
 
 def load_pinned(config, load):
@@ -177,13 +202,17 @@ def load_pinned(config, load):
 
     A commit names immutable files, so a cached copy needs no freshness check.
     Before, every start asked huggingface.co about the model, so a camera that
-    rebooted without internet stopped detecting, with the model on its disk."""
+    rebooted without internet stopped detecting, with the model on its disk.
+    The trade-off: an optional file the cache lacks, such as one a newer
+    transformers starts to read, is not fetched while the model loads without it."""
     name = config["model"] + "@" + config["revision"][:7]
+    local = None
     if COMMIT.fullmatch(config["revision"]):
         try:
             return load(True)
         except OSError as exc:
             # Hugging Face raises OSError for a file its cache lacks.
+            local = exc
             print(f"model {name} is not complete on this device ({type(exc).__name__}); "
                   "fetching it from Hugging Face", file=sys.stderr, flush=True)
     try:
@@ -192,7 +221,12 @@ def load_pinned(config, load):
         reason = hub_unreachable(exc)
         if reason is None:
             raise
-        raise ModelUnavailable(f"model {name} is not on this device and the network is "
+        where = "is not on this device"
+        if local is not None and revision_cached(config):
+            # Some of the model is here, so the local error says what to fix,
+            # such as a file that is missing or unreadable.
+            where = f"did not load from this device ({type(local).__name__}: {str(local)[:200]})"
+        raise ModelUnavailable(f"model {name} {where} and the network is "
                                f"unreachable ({reason[:200]})") from exc
 
 

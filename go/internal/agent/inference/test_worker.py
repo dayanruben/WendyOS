@@ -382,19 +382,117 @@ class OfflineStartTests(unittest.TestCase):
                                     r"the network is unreachable \(huggingface.co: .*name resolution\)$"):
             load_pinned(self.config, load)
 
-    def test_errors_while_the_hub_is_reachable_are_not_reworded(self):
+    def assert_not_reworded(self, error):
+        """With the Hub reachable, load_pinned raises error unchanged."""
+        import socket
         from unittest import mock
         from worker import load_pinned
 
         def load(local_files_only):
             if local_files_only:
                 raise FileNotFoundError("not cached")
-            raise RuntimeError("Cannot send a request, as the client has been closed.")
+            raise error
 
-        with mock.patch("socket.create_connection") as connect, \
-                self.assertRaisesRegex(RuntimeError, "client has been closed"):
+        with socket.create_server(("127.0.0.1", 0)) as hub, \
+                mock.patch("socket.getaddrinfo", return_value=[
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", hub.getsockname())]) as lookup, \
+                self.assertRaises(type(error)) as raised:
             load_pinned(self.config, load)
-        connect.assert_called_once_with(("huggingface.co", 443), timeout=5)
+        self.assertIs(raised.exception, error)
+        lookup.assert_called_once_with("huggingface.co", 443, type=socket.SOCK_STREAM)
+
+    def test_errors_while_the_hub_is_reachable_are_not_reworded(self):
+        self.assert_not_reworded(RuntimeError("Cannot send a request, as the client has been closed."))
+
+    def test_read_timeout_while_the_hub_is_reachable_is_not_reworded(self):
+        # A read timeout comes after a connection was made, so the Hub itself
+        # decides whether the network is down.
+        import httpx
+        self.assert_not_reworded(httpx.ReadTimeout("The read operation timed out"))
+
+    def probe_hub(self, reachable):
+        """Runs hub_unreachable against huggingface.co's dozen addresses, IPv6
+        first as DNS orders them. A connection to an address whose family is
+        not in reachable hangs until its timeout. Returns the reason and the
+        (address, timeout) of each connection attempt."""
+        import httpx  # imported here, before socket.socket is replaced
+        import socket
+        from unittest import mock
+        from worker import hub_unreachable
+
+        attempts = []
+
+        class Connection:
+            def __init__(self, family, kind, protocol):
+                self.family = family
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def connect(self, address):
+                attempts.append((address[0], self.timeout))
+                if self.family not in reachable:
+                    raise TimeoutError("timed out")
+
+        addresses = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (f"2001:db8::{i}", 443, 0, 0)) for i in range(8)]
+        addresses += [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"192.0.2.{i}", 443)) for i in range(4)]
+        with mock.patch("socket.getaddrinfo", return_value=addresses), mock.patch("socket.socket", Connection):
+            reason = hub_unreachable(RuntimeError("Cannot send a request, as the client has been closed."))
+        return reason, attempts
+
+    def test_hub_probe_tries_one_address_per_family(self):
+        import socket
+        reason, attempts = self.probe_hub(reachable=())
+        self.assertEqual(reason, "huggingface.co: timed out")
+        self.assertEqual(attempts, [("192.0.2.0", 5), ("2001:db8::0", 5)])
+        # A broken IPv6 route does not hide a working IPv4 one.
+        reason, attempts = self.probe_hub(reachable=(socket.AF_INET,))
+        self.assertIsNone(reason)
+        self.assertEqual(attempts, [("192.0.2.0", 5)])
+        # Nor does a missing IPv4 route hide a working IPv6 one.
+        reason, attempts = self.probe_hub(reachable=(socket.AF_INET6,))
+        self.assertIsNone(reason)
+        self.assertEqual(attempts, [("192.0.2.0", 5), ("2001:db8::0", 5)])
+
+    def test_model_that_does_not_load_from_the_device_names_the_local_error(self):
+        import pathlib
+        from worker import ModelUnavailable, load_pinned
+        snapshot = pathlib.Path(self.cache) / "models--webnn--yolo11n" / "snapshots" / self.REVISION
+        snapshot.mkdir(parents=True)
+
+        def load(local_files_only):
+            raise PermissionError(13, "Permission denied", str(snapshot / "onnx" / "yolo11n.onnx"))
+
+        with self.assertRaises(ModelUnavailable) as raised:
+            load_pinned(self.config, load)
+        self.assertRegex(str(raised.exception), r"^model webnn/yolo11n@9c5acfd did not load from this device "
+                         r"\(PermissionError: \[Errno 13\] Permission denied: '.*yolo11n.onnx'\) and the "
+                         r"network is unreachable \(huggingface.co: .*name resolution\)$")
+
+    def test_cached_transformers_model_starts_without_the_network(self):
+        import importlib.util
+        if any(importlib.util.find_spec(name) is None for name in ("torch", "transformers", "PIL")):
+            self.skipTest("requires the Transformers runtime dependencies")
+        import pathlib
+        from transformers import YolosConfig, YolosForObjectDetection, YolosImageProcessor
+        from worker import Detector
+
+        # A tiny model cached at the pinned commit. Like hustvl/yolos-tiny, it
+        # has no processor_config.json, which an online load asks the Hub about.
+        snapshot = pathlib.Path(self.cache) / "models--test--yolos" / "snapshots" / self.REVISION
+        YolosForObjectDetection(YolosConfig(
+            hidden_size=32, num_hidden_layers=1, num_attention_heads=2, intermediate_size=37, image_size=[64, 64],
+            num_detection_tokens=2, id2label={0: "person"}, label2id={"person": 0})).save_pretrained(snapshot)
+        YolosImageProcessor().save_pretrained(snapshot)
+        detector = Detector(dict(self.config, backend="transformers", model="test/yolos"))
+        self.assertEqual(detector.model.config.id2label, {0: "person"})
+        self.assertEqual(self.lookups, [])
 
     def test_unpinned_revision_keeps_asking_the_hub(self):
         from worker import load_pinned
