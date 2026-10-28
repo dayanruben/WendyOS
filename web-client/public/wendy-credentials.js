@@ -226,7 +226,7 @@ self.wendyCredentials = (() => {
 self.wendyPending = (() => {
   const LIFETIME = 10 * 60 * 1000;
   const MAX_RECORDS = 32;
-  const MAX_BYTES = 8192;
+  const MAX_BYTES = 8192; // browserauth.MaxRedirectRecord
   const validHandle = (handle) => /^[A-Za-z0-9_-]{43}$/.test(handle);
   const live = (record, now) =>
     Number.isSafeInteger(record?.created) &&

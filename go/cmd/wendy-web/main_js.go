@@ -647,13 +647,15 @@ func (authProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 type browserCredentialStore struct{}
 
 func storageCall(method string, args ...any) (js.Value, error) {
-	return browserStorageCall("wendyCredentials", method, args...)
+	return browserStorageCall("wendyCredentials", "credential storage", method, args...)
 }
 
-func browserStorageCall(name, method string, args ...any) (js.Value, error) {
+// label names the store in errors: a stale wendy-credentials.js can lack
+// wendyPending while saved credentials still work.
+func browserStorageCall(name, label, method string, args ...any) (js.Value, error) {
 	store := js.Global().Get(name)
 	if store.IsUndefined() || store.IsNull() {
-		return js.Undefined(), errors.New("Browser credential storage is unavailable")
+		return js.Undefined(), errors.New("Browser " + label + " is unavailable")
 	}
 	type result struct {
 		value js.Value
@@ -669,13 +671,10 @@ func browserStorageCall(name, method string, args ...any) (js.Value, error) {
 		return nil
 	})
 	failure := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		message := "Browser could not access saved credentials"
-		if name == "wendyPending" {
-			message = "Browser could not access pending sign-in storage"
-			if len(args) > 0 && args[0].Type() == js.TypeObject {
-				if cause := args[0].Get("message"); cause.Type() == js.TypeString {
-					message += ": " + cause.String()
-				}
+		message := "Browser could not access " + label
+		if len(args) > 0 && args[0].Type() == js.TypeObject {
+			if cause := args[0].Get("message"); cause.Type() == js.TypeString {
+				message += ": " + cause.String()
 			}
 		}
 		done <- result{err: errors.New(message)}
@@ -695,11 +694,11 @@ func (browserPendingStore) Put(handle string, record []byte) error {
 	buf := js.Global().Get("Uint8Array").New(len(record))
 	js.CopyBytesToJS(buf, record)
 	defer buf.Call("fill", 0)
-	_, err := browserStorageCall("wendyPending", "put", handle, buf)
+	_, err := browserStorageCall("wendyPending", "pending sign-in storage", "put", handle, buf)
 	return err
 }
 func (browserPendingStore) Take(handle string) ([]byte, error) {
-	value, err := browserStorageCall("wendyPending", "take", handle)
+	value, err := browserStorageCall("wendyPending", "pending sign-in storage", "take", handle)
 	if err != nil || value.IsUndefined() {
 		return nil, err
 	}
@@ -707,7 +706,7 @@ func (browserPendingStore) Take(handle string) ([]byte, error) {
 		return nil, errors.New("Invalid pending sign-in storage result")
 	}
 	defer value.Call("fill", 0)
-	if value.Length() > 8192 {
+	if value.Length() > browserauth.MaxRedirectRecord {
 		return nil, errors.New("Pending sign-in record is too large")
 	}
 	record := make([]byte, value.Length())
@@ -715,7 +714,7 @@ func (browserPendingStore) Take(handle string) ([]byte, error) {
 	return record, nil
 }
 func (browserPendingStore) Delete(handle string) error {
-	_, err := browserStorageCall("wendyPending", "delete", handle)
+	_, err := browserStorageCall("wendyPending", "pending sign-in storage", "delete", handle)
 	return err
 }
 

@@ -69,5 +69,12 @@ const refused=await blocked.call('auth-redirect-begin',{redirect:callback.redire
 assert.match(refused.error,/storage is blocked/);
 assert.equal(refused.result,undefined,'blocked storage cannot return a navigation URL');
 assert.equal(typeof (await blocked.call('auth-begin',{redirect:callback.redirect})).result,'string','legacy begin works without pending storage');
-console.log('PASS: WASM pin/loading, init, unsigned credential/sign refusal, redirect begin/resume/error/replay/cancel/state/storage refusal, legacy begin');
+assert.match((await blocked.call('auth-restore',{tenant:'tenant-a'})).error,/could not access credential storage: Browser storage is blocked/,'credential failures carry their cause');
+// A cached wendy-credentials.js from before redirects has no wendyPending.
+const stale=startWorker('?sha256='+pin);
+assert.ok((await stale.next(m=>m.fatal||m.ready)).ready);
+await stale.call('init',settings);
+vm.runInContext('delete globalThis.wendyPending',stale.scope);
+assert.equal((await stale.call('auth-redirect-begin',{redirect:callback.redirect})).error,'Could not save pending sign-in: Browser pending sign-in storage is unavailable');
+console.log('PASS: WASM pin/loading, init, unsigned credential/sign refusal, redirect begin/resume/error/replay/cancel/state/storage refusal, store-specific storage errors, legacy begin');
 process.exit(0);

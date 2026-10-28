@@ -327,6 +327,9 @@ rejected, compared without case. The callback must return from that same realm;
 
 For same-tab sign-in, call `auth-redirect-begin`, save only `pending` in
 **tab-scoped sessionStorage**, and navigate to `url` only after both succeed.
+Pass `redirect: location.origin + "/auth/callback"`: the callback compares it
+exactly, so a host with upper-case letters or a default port such as `:443` is
+refused at begin, as with `auth-begin`.
 If sessionStorage fails, call `auth-redirect-cancel` and stay on the page.
 Cancel an abandoned handle before replacing it. The worker stores the PKCE
 verifier/state, expected issuer (empty for universal login), exact redirect,

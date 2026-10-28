@@ -10,11 +10,16 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 )
 
 const RedirectLifetime = 10 * time.Minute
-const maxRedirectRecord = 8192
+
+// MaxRedirectRecord bounds one stored transaction. MAX_BYTES in
+// web-client/public/wendy-credentials.js must match it.
+const MaxRedirectRecord = 8192
 
 // PendingStore owns private PKCE transactions, separately from saved sessions.
 // Put must persist before returning. Take must atomically delete before returning
@@ -54,9 +59,29 @@ type redirectTransaction struct {
 	RequireHostedMCPPolicy bool      `json:"require_hosted_mcp_policy"`
 }
 
+// validRedirect accepts only the form the callback page reports back,
+// location.origin + location.pathname, because CompleteRedirect compares the
+// two exactly. A form the browser would rewrite fails here, before the login.
 func validRedirect(raw string) bool {
 	u, err := url.Parse(raw)
-	return err == nil && len(raw) <= 2048 && u.Host != "" && u.User == nil && u.Path == "/auth/callback" && u.RawPath == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && u.Opaque == "" && (u.Scheme == "https" || u.Scheme == "http" && u.Host == "localhost:5173")
+	return err == nil && len(raw) <= 2048 && canonicalHost(u.Scheme, u.Host) && raw == u.Scheme+"://"+u.Host+u.Path && u.User == nil && u.Path == "/auth/callback" && u.RawPath == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && u.Opaque == "" && (u.Scheme == "https" || u.Scheme == "http" && u.Host == "localhost:5173")
+}
+
+// canonicalHost rejects what location.origin would not reproduce: upper-case
+// or non-ASCII names, IP literals in brackets, and empty, zero-padded or
+// default ports.
+func canonicalHost(scheme, host string) bool {
+	name, port, hasPort := strings.Cut(host, ":")
+	if name == "" || strings.ContainsFunc(name, func(c rune) bool {
+		return !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_')
+	}) {
+		return false
+	}
+	if !hasPort {
+		return true
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && port[0] != '0' && n <= 65535 && !(scheme == "https" && n == 443)
 }
 
 func validPendingSecret(raw string) bool {
@@ -82,7 +107,7 @@ func (s *Session) BeginRedirect(ctx context.Context, email, issuer, redirect str
 		return RedirectStart{}, err
 	}
 	defer clear(record)
-	if len(record) > maxRedirectRecord {
+	if len(record) > MaxRedirectRecord {
 		return RedirectStart{}, errors.New("Pending sign-in is too large")
 	}
 	handle := random()
@@ -114,7 +139,7 @@ func (s *Session) CompleteRedirect(ctx context.Context, callback RedirectCallbac
 	var pending redirectTransaction
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if len(raw) > maxRedirectRecord || decoder.Decode(&pending) != nil || decoder.Decode(new(any)) != io.EOF || pending.Version != 1 || !validPendingSecret(pending.Verifier) || !validPendingSecret(pending.State) {
+	if len(raw) > MaxRedirectRecord || decoder.Decode(&pending) != nil || decoder.Decode(new(any)) != io.EOF || pending.Version != 1 || !validPendingSecret(pending.Verifier) || !validPendingSecret(pending.State) {
 		return Profile{}, errors.New("Invalid pending sign-in record; start sign-in again")
 	}
 	if err := s.settings().Validate(); err != nil {

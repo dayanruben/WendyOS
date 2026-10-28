@@ -167,7 +167,7 @@ func TestRedirectRejectsAndBurnsBeforeNetwork(t *testing.T) {
 			case "trailing":
 				raw = append(raw, []byte(" {}")...)
 			case "oversized":
-				raw = append(raw, []byte(strings.Repeat(" ", maxRedirectRecord))...)
+				raw = append(raw, []byte(strings.Repeat(" ", MaxRedirectRecord))...)
 			}
 			store.records[c.Pending] = raw
 			original := c.Pending
@@ -249,6 +249,35 @@ func TestRedirectStorageFailureAndCancelIsolation(t *testing.T) {
 	}
 	if len(store.records) != 1 {
 		t.Fatal("failed storage changed records")
+	}
+}
+
+// The callback reports location.origin + location.pathname, so a redirect the
+// browser would rewrite fails at begin rather than after the IdP round trip.
+func TestRedirectBeginRequiresBrowserCanonicalForm(t *testing.T) {
+	s, store, _, _ := redirectSetup(t)
+	for _, redirect := range []string{
+		"https://Console.Example/auth/callback",
+		"https://console.example:443/auth/callback",
+		"HTTPS://console.example/auth/callback",
+		"https://console.example:/auth/callback",
+		"https://console.example:08443/auth/callback",
+		"https://console.example:65536/auth/callback",
+		"https://%63onsole.example/auth/callback",
+		"https://[::1]/auth/callback",
+		"https://bücher.example/auth/callback",
+	} {
+		if start, err := s.BeginRedirect(context.Background(), "", "", redirect); err == nil || start.Pending != "" {
+			t.Errorf("accepted %s", redirect)
+		}
+	}
+	if len(store.records) != 1 {
+		t.Fatal("refused redirect stored a transaction")
+	}
+	for _, redirect := range []string{"https://console.example/auth/callback", "https://console.example:8443/auth/callback", "https://my-console_1.example./auth/callback"} {
+		if !validRedirect(redirect) {
+			t.Errorf("refused %s", redirect)
+		}
 	}
 }
 
