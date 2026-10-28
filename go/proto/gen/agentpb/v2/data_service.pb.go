@@ -893,9 +893,12 @@ type DataEpisodesResponse struct {
 	Episodes []*DataEpisode `protobuf:"bytes,1,rep,name=episodes,proto3" json:"episodes,omitempty"`
 	// The same list as DataStatusResponse.in_progress, without any episode that
 	// finalized while this response was built. Empty from older agents.
-	InProgress    []*DataEpisode `protobuf:"bytes,2,rep,name=in_progress,json=inProgress,proto3" json:"in_progress,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	InProgress []*DataEpisode `protobuf:"bytes,2,rep,name=in_progress,json=inProgress,proto3" json:"in_progress,omitempty"`
+	// True from agents that fill in_progress, so an empty in_progress means
+	// nothing is in progress and a client need not also ask Status.
+	ReportsInProgress bool `protobuf:"varint,3,opt,name=reports_in_progress,json=reportsInProgress,proto3" json:"reports_in_progress,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *DataEpisodesResponse) Reset() {
@@ -940,6 +943,13 @@ func (x *DataEpisodesResponse) GetInProgress() []*DataEpisode {
 		return x.InProgress
 	}
 	return nil
+}
+
+func (x *DataEpisodesResponse) GetReportsInProgress() bool {
+	if x != nil {
+		return x.ReportsInProgress
+	}
+	return false
 }
 
 type DataInspectResponse struct {
@@ -1654,11 +1664,12 @@ const file_wendy_agent_services_v2_data_service_proto_rawDesc = "" +
 	"\x06active\x18\x01 \x01(\v2$.wendy.agent.services.v2.DataEpisodeR\x06active\x12E\n" +
 	"\vin_progress\x18\x02 \x03(\v2$.wendy.agent.services.v2.DataEpisodeR\n" +
 	"inProgress\x12.\n" +
-	"\x13reports_in_progress\x18\x03 \x01(\bR\x11reportsInProgress\"\x9f\x01\n" +
+	"\x13reports_in_progress\x18\x03 \x01(\bR\x11reportsInProgress\"\xcf\x01\n" +
 	"\x14DataEpisodesResponse\x12@\n" +
 	"\bepisodes\x18\x01 \x03(\v2$.wendy.agent.services.v2.DataEpisodeR\bepisodes\x12E\n" +
 	"\vin_progress\x18\x02 \x03(\v2$.wendy.agent.services.v2.DataEpisodeR\n" +
-	"inProgress\"k\n" +
+	"inProgress\x12.\n" +
+	"\x13reports_in_progress\x18\x03 \x01(\bR\x11reportsInProgress\"k\n" +
 	"\x13DataInspectResponse\x12#\n" +
 	"\rmanifest_json\x18\x01 \x01(\fR\fmanifestJson\x12/\n" +
 	"\x13verification_errors\x18\x02 \x03(\tR\x12verificationErrors\"\x91\x01\n" +

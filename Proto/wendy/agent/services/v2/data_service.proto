@@ -134,6 +134,9 @@ message DataEpisodesResponse {
   // The same list as DataStatusResponse.in_progress, without any episode that
   // finalized while this response was built. Empty from older agents.
   repeated DataEpisode in_progress = 2;
+  // True from agents that fill in_progress, so an empty in_progress means
+  // nothing is in progress and a client need not also ask Status.
+  bool reports_in_progress = 3;
 }
 message DataInspectResponse { bytes manifest_json = 1; repeated string verification_errors = 2; }
 // One chunk of one file of an episode.

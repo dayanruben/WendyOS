@@ -677,7 +677,7 @@ func (s *DataService) Episodes(context.Context, *agentpbv2.DataEpisodesRequest) 
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	r := &agentpbv2.DataEpisodesResponse{}
+	r := &agentpbv2.DataEpisodesResponse{ReportsInProgress: true}
 	finalized := make(map[string]bool, len(list))
 	for _, e := range list {
 		r.Episodes = append(r.Episodes, infoEpisode(e))

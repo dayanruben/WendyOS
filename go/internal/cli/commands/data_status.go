@@ -91,12 +91,12 @@ func inProgressFromStatus(response *agentpbv2.DataStatusResponse) (episodes []*a
 }
 
 // addInProgressFromStatus covers agents whose Episodes response predates
-// in_progress. When the response lists nothing in progress, it asks Status,
-// which every agent with a DataService has served, though an older one reports
-// only one episode there. It returns a note for the reader when the result may
-// be incomplete, and "" otherwise.
+// in_progress. When the response neither says it reports in progress nor lists
+// anything there, it asks Status, which every agent with a DataService has
+// served, though an older one reports only one episode there. It returns a note
+// for the reader when the result may be incomplete, and "" otherwise.
 func addInProgressFromStatus(ctx context.Context, client agentpbv2.DataServiceClient, response *agentpbv2.DataEpisodesResponse) string {
-	if len(response.GetInProgress()) > 0 {
+	if response.GetReportsInProgress() || len(response.GetInProgress()) > 0 {
 		return ""
 	}
 	statusResponse, err := client.Status(ctx, &agentpbv2.DataStatusRequest{})

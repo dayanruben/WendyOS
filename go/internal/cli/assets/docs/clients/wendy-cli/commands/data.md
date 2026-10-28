@@ -162,8 +162,10 @@ Size so far: 3145728 bytes
 
 Under `--json`, `episodes` keeps finalized Episodes in `episodes` and lists the
 others in a separate `in_progress` array, so a script that downloads every entry
-of `episodes` keeps working. `status` prints the agent's response: every Episode
-in `in_progress`, and `active` for older clients.
+of `episodes` keeps working. Both commands' responses set `reports_in_progress`
+when the agent fills `in_progress`, so an empty `in_progress` then means nothing
+is in progress. `status` prints the agent's response: every Episode in
+`in_progress`, and `active` for older clients.
 
 An agent that predates `in_progress` reports at most one Episode in progress,
 with no trigger, sources or size. The CLI still shows that one, estimates its

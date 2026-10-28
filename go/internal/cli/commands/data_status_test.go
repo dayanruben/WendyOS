@@ -112,12 +112,17 @@ func TestEpisodesListsRecordingsInProgressFirst(t *testing.T) {
 
 func TestEpisodesWithNothingInProgressKeepsFourColumns(t *testing.T) {
 	client := &statusDataClient{
-		episodes: &agentpbv2.DataEpisodesResponse{Episodes: []*agentpbv2.DataEpisode{finalizedEpisode()}},
-		status:   &agentpbv2.DataStatusResponse{ReportsInProgress: true},
+		episodes: &agentpbv2.DataEpisodesResponse{Episodes: []*agentpbv2.DataEpisode{finalizedEpisode()}, ReportsInProgress: true},
+		// Never reached: a current agent's Episodes already says nothing is in
+		// progress, so a failing Status must not add a note or a round trip.
+		statusErr: status.Error(codes.Unavailable, "connection reset"),
 	}
 	var out bytes.Buffer
 	if err := runDataEpisodes(context.Background(), client, &out, &out, false, statusTestNow); err != nil {
 		t.Fatal(err)
+	}
+	if client.statusCalls != 0 {
+		t.Fatalf("Status was called %d times although Episodes reports in progress", client.statusCalls)
 	}
 	if got := tableRows(t, out.String()); len(got) != 2 || strings.Join(got[0], " ") != "EPISODE STATE SIZE NAME" {
 		t.Fatalf("unexpected table:\n%s", out.String())
@@ -188,9 +193,10 @@ func TestEpisodesFallbackSkipsAnEpisodeAlreadyFinalized(t *testing.T) {
 	}
 }
 
-// TestEpisodesJSONOnlyAddsAField pins --json compatibility: a response with
-// nothing in progress encodes exactly as before, and in-progress episodes go
-// in a new in_progress array, never into episodes, which scripts download.
+// TestEpisodesJSONOnlyAddsAField pins --json compatibility: with nothing in
+// progress, episodes encodes exactly as before beside the reports_in_progress
+// flag, and in-progress episodes go in a new in_progress array, never into
+// episodes, which scripts download.
 func TestEpisodesJSONOnlyAddsAField(t *testing.T) {
 	before := &agentpbv2.DataEpisodesResponse{Episodes: []*agentpbv2.DataEpisode{finalizedEpisode()}}
 	var legacy bytes.Buffer
@@ -198,16 +204,20 @@ func TestEpisodesJSONOnlyAddsAField(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idle := &statusDataClient{
-		episodes: &agentpbv2.DataEpisodesResponse{Episodes: []*agentpbv2.DataEpisode{finalizedEpisode()}},
-		status:   &agentpbv2.DataStatusResponse{ReportsInProgress: true},
-	}
+	idle := &statusDataClient{episodes: &agentpbv2.DataEpisodesResponse{Episodes: []*agentpbv2.DataEpisode{finalizedEpisode()}, ReportsInProgress: true}}
 	var out, errOut bytes.Buffer
 	if err := runDataEpisodes(context.Background(), idle, &out, &errOut, true, statusTestNow); err != nil {
 		t.Fatal(err)
 	}
-	if out.String() != legacy.String() {
-		t.Fatalf("--json with nothing in progress changed:\n got %s\nwant %s", out.String(), legacy.String())
+	var legacyFields, idleFields map[string]json.RawMessage
+	if err := json.Unmarshal(legacy.Bytes(), &legacyFields); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out.Bytes(), &idleFields); err != nil {
+		t.Fatalf("--json is not one JSON document: %v\n%s", err, out.String())
+	}
+	if len(idleFields) != 2 || string(idleFields["episodes"]) != string(legacyFields["episodes"]) || string(idleFields["reports_in_progress"]) != "true" {
+		t.Fatalf("--json with nothing in progress changed beyond the flag:\n got %s\nwant %s plus reports_in_progress", out.String(), legacy.String())
 	}
 
 	busy := &statusDataClient{episodes: &agentpbv2.DataEpisodesResponse{

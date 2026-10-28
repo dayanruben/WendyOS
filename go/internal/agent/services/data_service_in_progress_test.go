@@ -64,6 +64,9 @@ func TestStatusAndEpisodesReportTheRecordingInProgress(t *testing.T) {
 	if len(episodes.GetEpisodes()) != 0 {
 		t.Fatalf("episodes must stay finalized-only: %v", episodes.GetEpisodes())
 	}
+	if !episodes.GetReportsInProgress() {
+		t.Fatal("Episodes reports_in_progress is false, so a client would ask Status as well")
+	}
 	if len(episodes.GetInProgress()) != 1 || episodes.GetInProgress()[0].GetId() != started.GetId() {
 		t.Fatalf("Episodes in_progress = %v", episodes.GetInProgress())
 	}
@@ -85,7 +88,7 @@ func TestStatusAndEpisodesReportTheRecordingInProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(episodes.GetInProgress()) != 0 || len(episodes.GetEpisodes()) != 1 || episodes.GetEpisodes()[0].GetState() != "complete" {
+	if len(episodes.GetInProgress()) != 0 || !episodes.GetReportsInProgress() || len(episodes.GetEpisodes()) != 1 || episodes.GetEpisodes()[0].GetState() != "complete" {
 		t.Fatalf("after Stop: %v", episodes)
 	}
 	// A finalized entry carries none of the in-progress fields; they are
