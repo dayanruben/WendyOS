@@ -37,8 +37,8 @@ and most recent rounds in `roughtime_observations` and counts the rounds in
 | `wendy data stop` | Stop and seal the active Episode. |
 | `wendy data status` | Show the Episodes still in progress: state, start time, duration, trigger, sources and size so far. |
 | `wendy data episodes` | List finalized Episodes, with any still in progress at the top. |
-| `wendy data inspect <episode>` | Print the manifest and verify every sealed payload checksum. |
-| `wendy data download <episode>` | Resume a per-file download, verify it, and publish the local directory atomically. |
+| `wendy data inspect [episode]` | Print the manifest and verify every sealed payload checksum. |
+| `wendy data download [episode]` | Resume a per-file download, verify it, and publish the local directory atomically. |
 
 Use repeatable `--source` flags to narrow recording or `--exclude-source` to
 remove a default source. `record` also accepts `--name`, repeatable
@@ -56,6 +56,16 @@ wendy data episodes
 wendy data inspect <episode-id>
 wendy data download <episode-id> --output ./commissioning-episode
 ```
+
+With no episode ID in an interactive terminal, `inspect` and `download` list
+the device's Episodes newest first, with name, state, size and start time.
+Enter selects one; Escape or Ctrl-C cancels. With no finalized Episodes on the
+device they say so instead. Non-interactive, `--non-interactive` and `--json`
+use requires the ID; `wendy data episodes` lists them.
+
+`download` reports the absolute path of the directory it wrote. Without
+`--output` that is a new directory named after the Episode ID in the current
+directory. The `--json` result keeps `destination` as the path was given.
 
 `wendy data stop` seals an Episode that captures application records only after
 its post-seal drain has elapsed, so the command takes up to two seconds longer

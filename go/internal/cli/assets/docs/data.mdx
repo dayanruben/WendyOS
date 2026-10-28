@@ -69,9 +69,10 @@ wendy data download <episode-id> --device workshop.local --output ./commissionin
 ```
 
 `inspect` verifies the sealed files' checksums. `download` resumes interrupted
-transfers, verifies each file, and saves the episode locally. Camera episodes
-include a browser-playable MP4 when the captured stream can be remuxed; the
-manifest explains when that file could not be created.
+transfers, verifies each file, and saves the episode locally. In a terminal,
+leave out the episode ID to choose from the device's episodes instead. Camera
+episodes include a browser-playable MP4 when the captured stream can be
+remuxed; the manifest explains when that file could not be created.
 
 Use the source IDs returned by `sources` to add a camera or microphone. Repeat
 `--source` for multiple sources. With no source flags, `record` selects every
