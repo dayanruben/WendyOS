@@ -56,9 +56,10 @@ wendy data sources --device workshop.local
 wendy data record --device workshop.local --name commissioning --source telemetry
 ```
 
-The recording runs on the device after the command returns. Stop it when you
-have captured enough data, then inspect and download the episode ID from the
-output:
+The recording runs on the device after the command returns.
+`wendy data status --device workshop.local` shows how long it has been running
+and how much it has written. Stop it when you have captured enough data, then
+inspect and download the episode ID from the output:
 
 ```sh
 wendy data stop --device workshop.local
