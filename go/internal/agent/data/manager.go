@@ -21,8 +21,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 )
 
-const DefaultRoot = "/var/lib/wendy-agent/data/episodes"
-
 const (
 	preRollWindow = 5 * time.Minute
 	preRollLimit  = 50 << 20
@@ -132,6 +130,9 @@ type Manager struct {
 	// eviction tests drive a store small enough to evict deterministically.
 	maxQuota int64
 	reserve  int64
+	// location records where the store is, why, and where campaign plans
+	// live; see StoreLocation.
+	location StoreLocation
 }
 
 // SetQuota overrides the episode store bounds. maxQuota caps the store (the
@@ -349,10 +350,14 @@ func (a *activeEpisode) noteTelemetryDropLocked() {
 // for the slowest server in the pool, so an unreachable server costs this long.
 const consensusQueryTimeout = 5 * time.Second
 
+// NewManager opens the episode store at root, or at the default chosen by
+// defaultStoreLayout when root is empty; StoreLocation reports which and why.
 func NewManager(root string) (*Manager, error) {
 	implicitRoot := root == ""
-	if root == "" {
-		root = DefaultRoot
+	location := explicitStoreLocation(root)
+	if implicitRoot {
+		location = defaultStoreLayout.choose()
+		root = location.Path
 	}
 	if err := os.MkdirAll(root, 0o750); err != nil {
 		if !implicitRoot || !errors.Is(err, os.ErrPermission) {
@@ -366,9 +371,11 @@ func NewManager(root string) (*Manager, error) {
 		if fallbackErr = os.MkdirAll(root, 0o750); fallbackErr != nil {
 			return nil, errors.Join(err, fallbackErr)
 		}
+		location = besideStore(StoreLocation{Path: root,
+			Reason: fmt.Sprintf("%s; %s is not writable by this user, so the store is in the user's config directory", location.Reason, location.Path)})
 	}
 	m := &Manager{root: root, downloads: make(map[string]int), active: make(map[string]*activeEpisode),
-		maxQuota: DefaultMaxQuotaBytes, reserve: DefaultReserveBytes}
+		maxQuota: DefaultMaxQuotaBytes, reserve: DefaultReserveBytes, location: location}
 	m.recordings = &recordingStore{root: filepath.Join(root, ".recordings"), journals: map[string]*recordingJournal{}}
 	if err := m.restoreStreamPreRoll(); err != nil {
 		return nil, err
@@ -1034,7 +1041,7 @@ func appendRoughtimeEvidence(dir string, c timesync.Consensus) (retErr error) {
 func (m *Manager) enforceQuotaLocked(scan storeScan) error {
 	total, free, err := diskSpace(m.root)
 	if err != nil {
-		return fmt.Errorf("data filesystem quota: %w", err)
+		return errStoreUnreadable(m.root, err)
 	}
 	quota := total / 5
 	if quota > m.maxQuota {
@@ -1043,7 +1050,7 @@ func (m *Manager) enforceQuotaLocked(scan storeScan) error {
 	reserve := m.reserve
 	used := scan.used
 	for _, name := range scan.readFailures {
-		m.warnf("episode %s has an unreadable manifest; its bytes count against the data quota but it can never be uploaded or evicted by state", name)
+		m.warnf("Wendy Data can't read the manifest of episode %s; its bytes count toward the store's limit, but it can never be uploaded or removed to make room", name)
 	}
 	candidates := make([]evictionCandidate, 0, len(scan.candidates))
 	for _, c := range scan.candidates {
@@ -1065,11 +1072,11 @@ func (m *Manager) enforceQuotaLocked(scan storeScan) error {
 		}
 		switch {
 		case c.quarantined:
-			m.warnf("evicting quarantined episode %s, which recovery could not read, to preserve the data quota", c.id)
+			m.warnf("Wendy Data is removing quarantined episode %s, which recovery could not read, to make room for a new recording", c.id)
 		case c.tier == 2:
-			m.warnf("evicting episode %s (campaign %s) before its upload completed to preserve the data quota", c.id, c.campaign)
+			m.warnf("Wendy Data is removing episode %s (campaign %s) before its upload finished, to make room for a new recording", c.id, c.campaign)
 		case c.tier == 1:
-			m.warnf("evicting episode %s (campaign %s), which failed to upload and was never retried, to preserve the data quota", c.id, c.campaign)
+			m.warnf("Wendy Data is removing episode %s (campaign %s), whose upload failed and was never retried, to make room for a new recording", c.id, c.campaign)
 		}
 		if err := os.RemoveAll(c.path); err != nil {
 			return fmt.Errorf("evicting %s: %w", filepath.Base(c.path), err)
@@ -1078,10 +1085,8 @@ func (m *Manager) enforceQuotaLocked(scan storeScan) error {
 		free += c.size
 	}
 	if used > quota || free < reserve {
-		if scan.partialBytes > 0 {
-			return fmt.Errorf("data store holds %d bytes (%d of them in episodes still recording) against a %d byte quota and cannot preserve %d bytes free", used, scan.partialBytes, quota, reserve)
-		}
-		return fmt.Errorf("data store holds %d bytes against a %d byte quota and cannot preserve %d bytes free", used, quota, reserve)
+		return &StoreSpaceError{Path: m.root, Free: free, Reserve: reserve, Used: used, Quota: quota, MaxQuota: m.maxQuota,
+			Recording: scan.partialBytes, SuggestDataPartition: defaultStoreLayout.suggestDataPartition(m.root)}
 	}
 	return nil
 }
