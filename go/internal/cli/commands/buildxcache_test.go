@@ -252,6 +252,62 @@ func TestEnsureCleanDockerConfigNeverLeavesDanglingLinks(t *testing.T) {
 	}
 }
 
+// Parallel service builds call ensureCleanDockerConfig at once, after the
+// build lock is released, and each build's buildx writes through the links
+// straight away. A build must never remove a link another build just made:
+// buildx would then create a real buildx directory in the gap, which every
+// later run accepts, and the build's builder registrations would no longer
+// be the account's own.
+func TestEnsureCleanDockerConfigConcurrentBuildsKeepTheLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses the host docker config unchanged")
+	}
+	for iteration := range 50 {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("DOCKER_CONFIG", filepath.Join(home, ".docker"))
+
+		var builds sync.WaitGroup
+		errs := make([]error, 8)
+		for i := range errs {
+			builds.Add(1)
+			go func() {
+				defer builds.Done()
+				dir, err := ensureCleanDockerConfig()
+				if err == nil {
+					err = os.MkdirAll(filepath.Join(dir, "buildx", "instances"), 0o755)
+				}
+				errs[i] = err
+			}()
+		}
+		builds.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("iteration %d, build %d: %v", iteration, i, err)
+			}
+		}
+		dir := filepath.Join(home, ".cache", "wendy", "docker-config")
+		for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
+			info, err := os.Lstat(filepath.Join(dir, subdir))
+			if err != nil {
+				t.Fatalf("iteration %d: %s: %v", iteration, subdir, err)
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("iteration %d: %s is a %v, not a link", iteration, subdir, info.Mode())
+			}
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if strings.Contains(e.Name(), ".link-") {
+				t.Fatalf("iteration %d: leftover temporary link %q", iteration, e.Name())
+			}
+		}
+	}
+}
+
 func TestAppleContainerBuildRequestsPlainProgress(t *testing.T) {
 	// Apple Container builds must also request --progress=plain so their output
 	// renders through the shared build progress UI (default --progress auto emits

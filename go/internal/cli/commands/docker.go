@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1980,6 +1981,10 @@ func buildxCacheSubdir(cacheKey string) string {
 // build paths point DOCKER_CONFIG at.
 const cleanDockerConfigContents = `{"auths":{}}`
 
+// cleanDockerConfigLinkSeq names ensureCleanDockerConfig's temporary links, so
+// concurrent builds in one process never pick the same name.
+var cleanDockerConfigLinkSeq atomic.Uint64
+
 // ensureCleanDockerConfig materializes a Docker config directory without a
 // credsStore credential helper and returns its path. It returns "" on Windows,
 // where the host's own config is used unchanged.
@@ -2055,11 +2060,25 @@ func ensureCleanDockerConfig() (string, error) {
 		if _, err := os.Stat(dst); err == nil {
 			continue
 		}
-		// dst is missing, or a link to nothing because src could not be
-		// created: drop the dangling link so docker can make a real directory.
-		_ = os.Remove(dst)
-		if _, err := os.Stat(src); err == nil {
-			_ = os.Symlink(src, dst)
+		if _, err := os.Stat(src); err != nil {
+			// src could not be created: drop a dangling link so docker can
+			// make a real directory. Only a link is removed, never what a
+			// concurrent build's buildx made here.
+			if info, err := os.Lstat(dst); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				_ = os.Remove(dst)
+			}
+			continue
+		}
+		// dst is missing or a dangling link. Make the link at a temporary name
+		// and rename it over dst: the rename swaps a dangling link atomically
+		// and fails on a directory, so a good link that a concurrent build
+		// just made is never removed, and buildx can't create a real
+		// directory in a gap between a remove and a symlink.
+		tmp := fmt.Sprintf("%s.link-%d-%d", dst, os.Getpid(), cleanDockerConfigLinkSeq.Add(1))
+		if err := os.Symlink(src, tmp); err == nil {
+			if err := os.Rename(tmp, dst); err != nil {
+				_ = os.Remove(tmp)
+			}
 		}
 	}
 
