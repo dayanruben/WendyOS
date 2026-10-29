@@ -449,6 +449,6 @@ func warnLegacyMicrophoneIDs(ctx context.Context, out io.Writer, client agentpbv
 			continue
 		}
 		fmt.Fprintf(out, "Warning: %s is an old-style microphone ID, a number that can change after a reboot or a replug. "+
-			"The device still accepts it for now. Use the stable ID from `wendy data sources --kind audio` instead.\n", id)
+			"If it still names a microphone, the device accepts it for now. Use the stable ID from `wendy data sources --kind audio` instead.\n", id)
 	}
 }
