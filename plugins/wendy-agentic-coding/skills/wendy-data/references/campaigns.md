@@ -154,6 +154,22 @@ and downloads model files, requiring network access and storage outside the
 episode quota. Remote model code is disabled. Check `inference_status`, its
 per-camera states, and actual events after deployment.
 
+`accelerator` chooses the hardware: `auto` (the default), `cpu`, or `tensorrt`.
+On a Jetson, `auto` runs a `yolo_onnx` model through TensorRT on the GPU, and
+every other device or backend runs on the CPU. The first TensorRT start builds
+an engine in the background, which takes minutes and about 2.2 GB of memory;
+`auto` keeps detecting on the CPU meanwhile and switches once the engine
+matches the CPU's detections. Under `auto` the build first waits a random
+delay of up to 20 minutes, and every build waits for free memory and for 2
+idle CPUs, so `engine.state` may read `scheduled`, `waiting_for_memory` or
+`waiting_for_cpu` for a while. A busy CPU delays the build by at most 30
+minutes (`engine.build_by`); then it builds at the lowest priority.
+`waiting_for_cpu` is not degraded. `tensorrt` never runs on the CPU and requires
+`backend: yolo_onnx`. Check `inference_status.accelerator`: `active` is what
+runs, `engine.state` is the build, and `degraded: true` with a `reason` means a
+usable GPU is not being used. Do not promise GPU speed until `active` is
+`tensorrt`.
+
 `notify` chooses one delivery condition:
 
 ```yaml

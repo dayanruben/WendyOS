@@ -410,6 +410,12 @@ func (c Campaign) planDigestInput() map[string]any {
 		if i.ModelFile != "" {
 			plan["inference"].(map[string]any)["model_file"] = i.ModelFile
 		}
+		// Only when set, so campaigns that predate accelerators keep their
+		// revisions. An explicit auto is a different revision from an absent
+		// field, as an explicit transformers backend is.
+		if i.Accelerator != "" {
+			plan["inference"].(map[string]any)["accelerator"] = i.Accelerator
+		}
 	}
 	return plan
 }

@@ -376,6 +376,7 @@ disabled.
 | `backend` | no | `transformers` by default, or `yolo_onnx` for a compatible YOLO ONNX detection export. |
 | `model` | yes | `owner/repository` or `https://huggingface.co/owner/repository`; the repository containing the checkpoint or ONNX export. |
 | `model_file` | for `yolo_onnx` | Relative `.onnx` file path inside the pinned repository. Not accepted with `transformers`. |
+| `accelerator` | no | `auto` by default, `cpu`, or `tensorrt`. Chooses the hardware that runs the model; see below. `tensorrt` requires `backend: yolo_onnx`. |
 | `revision` | yes | Lowercase, 40-character Hugging Face commit SHA. Branch names are rejected. |
 | `labels` | yes | 1–32 unique, nonempty model labels, each at most 128 bytes. |
 | `threshold` | yes | Detection confidence in `(0, 1]`. |
@@ -392,10 +393,89 @@ Inference requires a camera source and a trigger matching its event in
 errors. Temporary camera loss retains presence/cooldown state so reconnecting
 does not produce a duplicate detection.
 
+#### Accelerators
+
+With `accelerator: auto`, a `yolo_onnx` model runs on an NVIDIA Jetson's GPU
+through TensorRT when the device reports an NVIDIA GPU with CUDA and has the
+TensorRT libraries; every other device, and the `transformers` backend, runs
+on the CPU. `cpu` never uses an accelerator. `tensorrt` requires TensorRT and
+never scores on the CPU: if TensorRT is unavailable the campaign reports
+`error` with the reason and retries.
+
+- **First use.** The agent downloads NVIDIA's Python bindings for the device's
+  TensorRT version once (about 0.85 MB, pinned by SHA-256) and caches them in
+  its inference directory. The TensorRT and CUDA libraries come from the
+  WendyOS image.
+- **The engine.** The device builds a TensorRT engine for the model in the
+  background, at FP16; for `yolo11n` on a Jetson Orin Nano this took 11 to 14
+  minutes and about 2.2 GB of memory. Under `auto` the model keeps detecting
+  on the CPU meanwhile. The engine is cached and reused across restarts and
+  reboots, with no network, until the model, TensorRT version or GPU changes.
+- **When a build starts.** Under `auto`, the first build waits a random delay
+  of up to 20 minutes (`engine.state: scheduled`, with `not_before`), so that
+  devices updated together do not all build at once. Every build then waits
+  until 3 GiB of memory is available (`waiting_for_memory`), and until at
+  least 2 CPUs are idle (`waiting_for_cpu`), checking again every 2 minutes.
+  The campaign's own CPU inference counts as idle, since the engine replaces
+  it. The wait for memory has no limit, and the campaign reports itself
+  degraded while it lasts. The wait for the CPU lasts at most 30 minutes
+  (until `engine.build_by`) and is not degraded: after it, the build starts
+  anyway at the lowest priority (nice 19 and the idle I/O class,
+  `engine.low_priority: true`), so a device kept busy by continuous camera
+  capture still gets its engine. Either wait shows `waiting_since` and
+  `elapsed_seconds`. A `tensorrt` campaign scores nothing until its engine is
+  ready, so it skips the delay.
+- **Memory before the engine.** The model process loads TensorRT and CUDA
+  only when an engine is about to load. Until then, through the delay and the
+  waits, it uses about as much memory as one with no TensorRT; a short-lived
+  child process reads what the engine cache needs from TensorRT and the GPU.
+- **The switch.** Before replacing the CPU, the engine must find the same
+  detections as the CPU on the same camera frames: same labels, IoU of at
+  least 0.8, and scores within 0.05.
+- **Fallback.** If the bindings cannot be fetched, the build fails, the engine
+  disagrees with the CPU, or the accelerated path needs more than 1.5 GiB of
+  memory (TensorRT's libraries, the CUDA context and the engine together), an
+  `auto` campaign stays on the CPU. It is never silent: on a device with a
+  usable GPU, `inference_status.accelerator.degraded` is `true` with a
+  `reason`, and the agent logs a warning. A failed build is not retried for
+  24 hours unless the model changes.
+- **A worker that keeps crashing.** If the model process exits three times
+  within 10 minutes while it has TensorRT, without being asked to and without
+  reporting an error of its own, the model gets no TensorRT for an hour: an
+  `auto` campaign detects on the CPU, degraded, and a `tensorrt` campaign
+  reports `error`. Either way the reason carries the end of the last
+  process's stderr. Whenever the model process exits, `inference_status.error`
+  and the agent log say why, with the end of its stderr.
+
+`inference_status.accelerator` reports what actually runs: `active` (`cpu` or
+`tensorrt`), `degraded` and `reason`, `runtime` and `precision`,
+`gpu_memory_mib` (what the accelerated path took, measured as described
+under Fallback), and `engine` with its `state` (`checking`, `scheduled` with
+`not_before`, `waiting_for_memory` with `waiting_since`, `waiting_for_cpu`
+with `waiting_since` and `build_by`, `queued`, `building` with `started_at`,
+`verifying`, `ready` or `failed` with an `error`) and any `warnings` TensorRT
+printed while loading it. A build or a wait also reports `elapsed_seconds`,
+and a build that stopped waiting for idle CPUs reports `low_priority: true`.
+`inference_status.stats` reports `fps`, inference latency (`infer_ms_p50`,
+`infer_ms_p95`) and `frames_scored`, the frames the model process has scored
+since it started. Each `prediction` record carries `accelerator`, `precision`,
+`infer_ms` and `model_sha256`, because FP16 TensorRT scores differ slightly
+from FP32 CPU scores.
+
+The agent keeps what TensorRT needs in its inference directory: `accel/` holds
+the bindings, `engines/` the built engines (about 9 MB each for `yolo11n`),
+and `cuda-cache/` CUDA's cache of GPU code it compiled, which spares the next
+start compiling it again (about 172 MB with TensorRT on an Orin Nano, and
+never more than 512 MiB).
+
 See [the all-camera people example](https://github.com/wendylabsinc/WendyOS/tree/main/Examples/WendyDataPeople)
 for a complete campaign. Campaign revision hashing now uses revision schema 2,
 which includes inference and notification settings. Existing plans receive new
-revision hashes when redeployed; the YAML `version` remains `1`.
+revision hashes when redeployed; the YAML `version` remains `1`. An absent
+`accelerator` is left out of the hash, so campaigns deployed before the field
+existed keep their revisions and are not re-armed by an agent update. Writing
+`accelerator: auto` explicitly is a new revision, as an explicit
+`backend: transformers` is, although it behaves the same as leaving it out.
 
 ### Notifications
 
