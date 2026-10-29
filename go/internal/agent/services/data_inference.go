@@ -365,6 +365,7 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 			j.sourceState(result.SourceID, "detecting")
 			attributes := map[string]any{"campaign": j.campaign.Name, "source_id": result.SourceID, "model_version": j.campaign.Inference.Revision, "detections": detections,
 				"input_reference_status": "encoded_stream_decode_does_not_preserve_sample_ids", "runtime_results_dropped": result.DroppedResults}
+			addPicture(attributes, detections, result.Width, result.Height)
 			// What scored the frame: FP16 TensorRT scores differ slightly from
 			// FP32 CPU scores, so a dataset has to be able to tell them apart.
 			j.predictionProvenance(attributes, result)
