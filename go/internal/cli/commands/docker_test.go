@@ -653,10 +653,6 @@ func (s *signalingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestBootstrapOCIBuilderTimesOut proves bootstrapOCIBuilder bounds the
-// `docker buildx inspect --bootstrap` call: a helper process that outlives a
-// deliberately shrunk ociBuilderBootstrapTimeout must be killed, and the
-// returned error must say so, well within the test's own budget.
 // The builder container lives on the Docker daemon, shared by every account
 // using it, but buildx registers builders per user. Another account's running
 // container must not take the fast path: this user's `--builder` would fail
@@ -693,6 +689,10 @@ func TestOCIBuilderFastPathNeedsThisUsersRegistration(t *testing.T) {
 	}
 }
 
+// TestBootstrapOCIBuilderTimesOut proves bootstrapOCIBuilder bounds the
+// `docker buildx inspect --bootstrap` call: a helper process that outlives a
+// deliberately shrunk ociBuilderBootstrapTimeout must be killed, and the
+// returned error must say so, well within the test's own budget.
 func TestBootstrapOCIBuilderTimesOut(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "helper.log")
 	oldExec := imageBuilderCommandContext
