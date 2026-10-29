@@ -32,8 +32,8 @@ and most recent rounds in `roughtime_observations` and counts the rounds in
 
 | Command | Description |
 |---|---|
-| `wendy data sources` | List camera, audio, ROS 2, application, and telemetry sources. |
-| `wendy data record` | Start one detached Episode. With no source flags, every healthy discovered source is selected. |
+| `wendy data sources` | List camera, microphone, ROS 2, application, and telemetry sources, and mark the ones `record` records by default. |
+| `wendy data record` | Start one detached Episode. With no source flags, every source `sources` marks with `*` is selected. |
 | `wendy data stop` | Stop and seal the active Episode. |
 | `wendy data status` | Show the Episodes still in progress: state, start time, duration, trigger, sources and size so far. |
 | `wendy data episodes` | List finalized Episodes, with any still in progress at the top. |
@@ -75,39 +75,96 @@ the samples the Episode just produced into that Episode. Campaigns set it with
 second default whenever it includes the applications source, which it does
 unless `--source` or `--exclude-source` leaves it out.
 
-`sources` prints an aligned table whose `DETAIL` column carries the device's own
-description of each source, truncated to keep the table readable. A single kind
-can dominate a board: an NVIDIA Jetson exposes 20 internal audio-DMA routing
-channels alongside its real microphone, so when more than six sources share a
-kind the first six are listed and the remainder are counted in a note. Nothing
-is hidden from `--json`.
+`sources` prints one section per kind (cameras, microphones, ROS 2, then
+everything else), each row a friendly name, a status and the source ID to pass
+to `--source`. A `*` marks the sources `wendy data record` records when it is
+given no `--source`: every source whose status is not a reason it is unusable.
+The ID is the last column, so a long ROS 2 topic or microphone ID makes one
+line longer rather than the whole table wider. The clock domain and the
+device's raw description are in `--json`.
 
 ```text
-SOURCE            KIND         CLOCK                       STATUS   DETAIL
-applications      application  CLOCK_BOOTTIME              healthy
-audio:16777217    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  C920 [HD Pro Webcam C920], device 0: USB Audi...
-audio:16777729    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  APE [NVIDIA Jetson Orin Nano APE], device 0: ...
-audio:16777730    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  APE [NVIDIA Jetson Orin Nano APE], device 1: ...
-audio:16777731    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  APE [NVIDIA Jetson Orin Nano APE], device 2: ...
-audio:16777732    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  APE [NVIDIA Jetson Orin Nano APE], device 3: ...
-audio:16777733    audio        ALSA_CAPTURE/AGENT_RECEIPT  healthy  APE [NVIDIA Jetson Orin Nano APE], device 4: ...
-telemetry         telemetry    CLOCK_BOOTTIME              healthy
-v4l2:/dev/video0  camera       V4L2_BUFFER_TIMESTAMP       healthy  HD Pro Webcam C920: HD Pro Webc VIDEO_TRANSPO...
+  CAMERAS                          STATUS     ID
+* HD Pro Webcam C920               connected  v4l2:/dev/video0
 
-... 15 more audio sources not listed (--kind audio to list all, --json for everything)
+  MICROPHONES                      STATUS     ID
+* Built-in Audio                   detected   audio:alsa_input.platform-sound.analog-stereo
+* C920 PRO HD Webcam               detected   audio:alsa_input.usb-046d_HD_Pro_Webcam_C920_C2DD0F9F-02.analog-stereo
+
+  ROS 2                            STATUS     ID
+* Domain 0 (Fast DDS), all topics  reachable  ros2:rmw_fastrtps_cpp:domain-0
+
+  OTHER                            STATUS     ID
+* Application records              built in   applications
+* Device telemetry                 built in   telemetry
+
+* recorded by `wendy data record` when no --source is given
+2 ROS 2 housekeeping topics hidden (/parameter_events, /rosout); they are still recorded with their domain. --all lists them.
+
+Record some: wendy data record --source <ID> [--source <ID> ...]
+More:        wendy data sources --json
 ```
+
+The status says what the agent actually checked, which differs by kind:
+
+| Status | Source | What was checked |
+|---|---|---|
+| `connected` | Local camera (USB, CSI, or a ROS 2 image topic's loopback) | The camera answered a capture query when it was listed. Nothing tests that it delivers a picture. |
+| `online` | Network camera | It answered the last discovery probe and has a stored login. The login itself is not tried. |
+| `detected` | Microphone | PipeWire, or ALSA where no PipeWire session runs, lists it as a capture device. Nothing tests that it hears anything. |
+| `reachable` | ROS 2 domain | `ros2 topic list` answered on the domain. Recording the domain records all of its topics. |
+| `listed` | ROS 2 topic | `ros2 topic list` lists the topic. |
+| `built in` | Application records, telemetry | Nothing; they need no hardware. |
+
+A source that is not usable shows why instead, for example `no login stored`
+or `camera offline` for a network camera, `silent audio-hub channel` for an
+NVIDIA Jetson audio-DMA endpoint that records digital silence, or
+`topic listing failed` for a ROS 2 domain. It has no `*`: `record` leaves it out
+unless `--source` names it. In `--json`, `healthy` is the same verdict and
+`unusable_reason` carries the reason. An agent that predates these fields is
+shown by its raw description, with `healthy` or `unhealthy` as its status.
+
+Every ROS 2 node publishes `/parameter_events` and `/rosout` for the
+middleware's own bookkeeping. The table hides those two topics; they are still
+recorded with their domain. `--all` lists them, and lists every source of a
+kind that has more than six. An NVIDIA Jetson without PipeWire exposes 20
+internal audio-DMA channels beside its real microphone, so without `--all` the
+first six sources of a kind are listed and the rest are counted in a note.
+`--json` always carries every source.
 
 Narrow the table with `--kind`, which is repeatable or comma-separated and
 matches case-insensitively. A kind named there is never summarised, because
 asking for a kind is asking to see all of it. Without `--kind`, `--json` stays
 the full unfiltered response the device sent, so existing scripts keep working;
-with `--kind` it carries the filtered set.
+with `--kind` it carries the filtered set. New fields are only ever added to it.
 
 ```sh
 wendy data sources --kind camera
 wendy data sources --kind camera,telemetry
-wendy data sources --kind audio            # every audio source, nothing summarised
+wendy data sources --kind audio            # every microphone, nothing summarised
+wendy data sources --all                   # housekeeping topics too
 ```
+
+### Microphone IDs
+
+A microphone's ID is stable across reboots and replugs. On a device running
+PipeWire it is `audio:` followed by the PipeWire node name, which WirePlumber
+derives from the USB vendor, product and serial number, or the board's device
+path, and the active profile. Without PipeWire it is `audio:alsa:<card>:<device>`,
+using the kernel's card ID, for example `audio:alsa:C920:0`. A paired
+sensor-link microphone is `audio:sensor-link:<pairing>:<sensor>`. Characters a
+shell or YAML would act on become underscores.
+
+Earlier agents listed microphones as `audio:<number>`. That number is
+session-local: PipeWire reuses object numbers as devices come and go, and the
+ALSA fallback encoded a card index the kernel assigns in probe order, so the
+same microphone could get a different number after a reboot or a replug. The
+old form is deprecated but still accepted, for now, by `record --source`,
+`--exclude-source`, `--calibration` and campaign `audio:` selectors: it
+resolves to the microphone that number names at that moment, `record` prints a
+warning, `campaign deploy` returns one naming the stable ID, and the agent log
+records each use. New Episodes record the stable ID. A number that no longer
+names a microphone is refused with a pointer to `wendy data sources --kind audio`.
 
 ### The `--json` dialect
 
@@ -235,7 +292,7 @@ Each `sources` item selects exactly one source:
 | Source | Description |
 |---|---|
 | `camera: <selector>` | A stable source ID, `/dev/videoN` path, or unambiguous name fragment. `front` and `default` select the only healthy camera when exactly one exists. `camera: "*"` selects every healthy camera, including cameras discovered after deployment. Quote the wildcard in YAML. |
-| `audio: <selector>` | A stable audio source ID or unambiguous name fragment from `wendy data sources --kind audio`. The selector must resolve to a healthy capture source at deployment. |
+| `audio: <selector>` | A microphone ID or unambiguous name fragment from `wendy data sources --kind audio`, for example `audio:alsa_input.usb-046d_HD_Pro_Webcam_C920_C2DD0F9F-02.analog-stereo` or `C920`. The selector must resolve to a usable capture source at deployment. The old `audio:<number>` form still resolves, with a deployment warning naming the stable ID to use instead; see [Microphone IDs](#microphone-ids). |
 | `ros2: <topic>` | A ROS 2 topic name such as `/lidar/points`. Selects that topic on every healthy ROS 2 graph publishing it. A full per-topic source ID such as `ros2:rmw_cyclonedds_cpp:domain-42:/lidar/points` selects that one source. A domain-level source ID such as `ros2:rmw_cyclonedds_cpp:domain-42` selects all topics in that domain. Missing topics warn at deployment; a triggered episode records available sources and reports missing sources in its manifest. Requested topics remain in the manifest. |
 | `telemetry: true` | Records uptime, system load, and total/free RAM once per second on Linux. Other sensor measurements need ROS 2 or application streams. |
 
