@@ -298,6 +298,10 @@ func (s *ProvisioningServiceV2) cloudUnprovision(ctx context.Context, req *agent
 	}
 	if err != nil {
 		svc.mu.Unlock()
+		// The CLI reuses one revocation proof across its retries, so a stale
+		// or too-new proof is refused every time; the journal says why.
+		svc.logger.Warn("Cloud reset refused: revocation evidence not verified; keys retained",
+			zap.Error(err), zap.Time("earliest", window.Earliest), zap.Time("latest", window.Latest))
 		return nil, status.Error(codes.FailedPrecondition, "authenticated installed-leaf revocation evidence required; keys retained")
 	}
 	var deleted cloudpbv2.DeletedAsset
