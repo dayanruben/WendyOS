@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import types
 import unittest
@@ -248,6 +249,35 @@ class BuilderTests(unittest.TestCase):
         code, messages = self.finish(child)
         self.assertEqual(code, 0)
         self.assertEqual(messages, [{"state": "done", "cached": True}])
+
+    def run_builder(self, timeout, behaviour="ok"):
+        class Cpu:
+            runtime, precision, name = "ORT", "fp32", "cpu"
+        plan = {"requested": "auto", "candidates": ["tensorrt", "cpu"],
+                "tensorrt": {"bindings": self.job["bindings"], "engine_dir": str(self.engines), "workspace_mib": 1024,
+                             "build_min_available_mib": 0, "gpu_budget_mib": 1536, "build_timeout_seconds": timeout}}
+        model = {"path": str(self.model), "sha256": self.fields["model_sha256"], "input_shape": [1, 3, 8, 8],
+                 "output_shape": [1, 5, 4], "threshold": 0.5, "decode": None}
+        subject = accelerator.Accelerator(plan, Cpu(), model, lambda _: None)
+        with mock.patch.dict(os.environ, {"FAKE_TENSORRT_BUILD": behaviour}):
+            return subject.run_builder(dict(self.job, discard_plan_sha256=None, lowest_priority=False), timeout)
+
+    def test_build_timeout_does_not_count_the_wait_for_the_lock(self):
+        # Another campaign's build holds the lock for longer than the timeout.
+        # The queued build waits for it and then builds; it is not killed
+        # while queued and reported as a build that took too long.
+        self.engines.mkdir()
+        lock = os.open(self.engines / ".build.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        release = threading.Timer(2.5, os.close, args=(lock,))
+        release.start()
+        self.addCleanup(release.cancel)
+        self.assertEqual(self.run_builder(1), ("done", ""))
+
+    def test_build_timeout_still_bounds_the_build(self):
+        outcome, detail = self.run_builder(1, behaviour="hang")
+        self.assertEqual(outcome, "failed")
+        self.assertIn("took longer than", detail)
 
     def test_tensorrt_output_never_reaches_the_builder_channel(self):
         code, messages = self.finish(self.builder())

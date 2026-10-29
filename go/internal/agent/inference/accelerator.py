@@ -1181,6 +1181,7 @@ class Accelerator:
         child = subprocess.Popen([sys.executable, "-u", os.path.abspath(__file__), "--build-engine"],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, close_fds=True)
         last = {}
+        building = threading.Event()
 
         def read():
             for line in child.stdout:
@@ -1191,6 +1192,7 @@ class Accelerator:
                 last.clear()
                 last.update(message)
                 if message.get("state") == "building":
+                    building.set()
                     self.update(engine=dict({"state": "building", "started_at": message.get("started_at") or utc_now(),
                                              "started": time.monotonic()}, **self.priority(job)))
                 elif message.get("state") == "queued":
@@ -1203,11 +1205,20 @@ class Accelerator:
             child.stdin.close()
         except OSError:
             pass
-        deadline = time.monotonic() + timeout
+        # The timeout counts the build, not the wait for the build lock: a
+        # child queued behind another campaign's build (11-14 minutes on an
+        # Orin) used to time out there and be tombstoned for a build that
+        # never started. The wait is bounded by that other build's own
+        # timeout.
+        deadline = None
         while child.poll() is None:
-            if self.stopped.is_set() or time.monotonic() > deadline:
+            if deadline is None and building.is_set():
+                deadline = time.monotonic() + timeout
+            if self.stopped.is_set() or (deadline is not None and time.monotonic() > deadline):
                 child.kill()
                 child.wait()
+                reader.join(timeout=5)
+                child.stdout.close()
                 if self.stopped.is_set():
                     return "stopped", ""
                 return "failed", f"the build took longer than {timeout // 60} minutes"
