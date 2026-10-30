@@ -17,6 +17,9 @@ wendy install
 # Install nightly firmware
 wendy install --nightly
 
+# Download a matching driver and push it after the flashed device boots
+wendy install --device-type dragonwing-iq-9075 --device-name iq9-mesh --nightly --driver intel-be202
+
 # Linux: non-interactive with all flags
 wendy install --device-type raspberry-pi-5 --version 0.10.4 --drive /dev/disk4 --force
 

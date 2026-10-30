@@ -257,6 +257,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | `--wifi` | — | Pre-configure one WiFi network; repeatable |
 | `--no-wifi` | false | Skip WiFi setup entirely |
 | `--device-name` | interactive | Set device name on first boot (lowercase letters, digits, hyphens; must start with a letter, 3–55 chars) |
+| `--driver` | — | Repeatable driver name. Download before flashing and upload after first boot. Requires `--device-type` and `--device-name`; keep the device connected over USB or LAN. |
 | `--pre-enroll` | auto | Pre-enroll with Wendy Cloud. For WendyOS/Jetson targets, embeds a certificate during imaging. For Linux Desktop / Headless Mac, mints a short-lived token printed with the `agent.sh` one-liner. |
 | `--cloud-grpc` | auto | Cloud gRPC endpoint of the auth session to use for pre-enrollment (applies to both drive imaging and Linux Desktop / Headless Mac); defaults to the session set via `wendy auth use`. |
 | `--storage` | auto | Storage variant: `nvme`/`sd` for raw imaging; AGX Orin recovery requires `nvme` or `emmc` non-interactively |
