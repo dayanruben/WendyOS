@@ -49,10 +49,12 @@ wendy os install --device-type dragonwing-iq-9075 --device-name iq9-mesh \
 ```
 
 This downloads and checks the add-ons before flashing, pins them to the selected
-image's kernel, then waits up to ten minutes after flashing for `iq9-mesh.local`.
-Keep the USB network cable connected and follow the board's power-cycle instructions.
-The CLI checks the hostname, board type and running kernel before uploading the
-drivers. Driver installation needs no internet connection on the device.
+image's kernel, then waits up to ten minutes after flashing for the device's hostname,
+`wendyos-iq9-mesh.local`. If this computer cannot resolve that name, the CLI also tries
+the device's USB-C link. Keep the USB network cable connected and follow the board's
+power-cycle instructions. The CLI checks the hostname, board type and running kernel
+before uploading the drivers. Driver installation needs no internet connection on the
+device.
 
 `--driver` requires `--device-type` and `--device-name` so the CLI can reconnect to
 the intended device. It cannot be used with positional image/drive arguments.

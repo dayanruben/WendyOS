@@ -37,7 +37,7 @@ func prepareDriverUpload(ctx context.Context, conn *grpcclient.AgentConnection, 
 		return spec, "", noop, nil
 	}
 	cliLogln("Device reports no WiFi or routable network address; downloading driver to upload...")
-	path, err := downloadDriver(ctx, spec)
+	path, err := downloadDriver(ctx, spec, "")
 	if err != nil {
 		return nil, "", noop, err
 	}
@@ -48,7 +48,8 @@ func prepareDriverUpload(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 // downloadDriver checks the published digest before any bytes reach the device.
 // The agent still verifies the digest, signature, and embedded kernel itself.
-func downloadDriver(ctx context.Context, spec *agentpbv2.DriverSpec) (string, error) {
+// dir is passed to os.CreateTemp; "" uses the default temp directory.
+func downloadDriver(ctx context.Context, spec *agentpbv2.DriverSpec, dir string) (string, error) {
 	digest, err := hex.DecodeString(spec.GetSha256())
 	if err != nil || len(digest) != sha256.Size {
 		return "", fmt.Errorf("driver %q has no valid SHA-256 in the manifest", spec.GetName())
@@ -66,7 +67,7 @@ func downloadDriver(ctx context.Context, spec *agentpbv2.DriverSpec) (string, er
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("downloading driver %s: HTTP %d", spec.GetName(), resp.StatusCode)
 	}
-	f, err := os.CreateTemp("", "wendy-driver-*.raw")
+	f, err := os.CreateTemp(dir, "wendy-driver-*.raw")
 	if err != nil {
 		return "", err
 	}

@@ -4,9 +4,13 @@ package commands
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
-	"strings"
+	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -74,7 +78,7 @@ func prepareOSInstallDrivers(ctx context.Context, deviceType, version string, ni
 			return nil, err
 		}
 		cliLogln("Downloading %s for installation after first boot...", name)
-		path, err := downloadDriver(ctx, spec)
+		path, err := cachedInstallDriver(ctx, spec)
 		if err != nil {
 			p.close()
 			return nil, err
@@ -83,6 +87,34 @@ func prepareOSInstallDrivers(ctx context.Context, deviceType, version string, ni
 		p.drivers = append(p.drivers, preparedInstallDriver{spec: spec, path: path})
 	}
 	return p, nil
+}
+
+// cachedInstallDriver keeps the verified image in the OS cache, named by its
+// digest. A sudo re-exec or Windows UAC relaunch replaces this process after
+// the download and skips close, so the elevated run reuses and removes it.
+func cachedInstallDriver(ctx context.Context, spec *agentpbv2.DriverSpec) (string, error) {
+	digest, err := hex.DecodeString(spec.GetSha256())
+	if err != nil || len(digest) != sha256.Size {
+		return "", fmt.Errorf("driver %q has no valid SHA-256 in the manifest", spec.GetName())
+	}
+	dir, err := osCacheDir()
+	if err != nil {
+		return "", err
+	}
+	want := hex.EncodeToString(digest)
+	path := filepath.Join(dir, "driver-"+want+".raw")
+	if got, err := sha256File(path); err == nil && got == want {
+		return path, nil
+	}
+	tmp, err := downloadDriver(ctx, spec, dir)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return path, nil
 }
 
 func (p *osInstallDrivers) close() {
@@ -94,54 +126,90 @@ func (p *osInstallDrivers) close() {
 	}
 }
 
-var connectInstallDriverDevice = connectWithAutoTLS
+// installDriverBootWait bounds the wait for first boot. Each upload afterwards
+// has its own driverStageTimeout, so a slow boot cannot starve the uploads.
+const installDriverBootWait = 10 * time.Minute
 
-// Only dial the name provisioned by this install, never a default or the first
-// discovered board. A matching hostname, board and kernel must precede writes.
+// installedDeviceHostname is the hostname WendyOS derives from a provisioned
+// device name (generate-hostname.sh; see maxDeviceNameLen).
+func installedDeviceHostname(name string) string {
+	return "wendyos-" + name
+}
+
+var dialInstallDriverDevice = connectWithAutoTLS
+
+// connectInstallDriverDevice dials the flashed device by its mDNS name, then
+// over the USB-C well-known addresses when this host cannot resolve it. The
+// USB path only returns a device reporting the same hostname.
+func connectInstallDriverDevice(ctx context.Context, host string) (*grpcclient.AgentConnection, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	conn, err := dialInstallDriverDevice(dialCtx, net.JoinHostPort(host+".local", strconv.Itoa(defaultAgentPort)))
+	cancel()
+	if err == nil {
+		return conn, nil
+	}
+	if usbConn, ok := usbDirectFallback(ctx, host); ok {
+		return usbConn, nil
+	}
+	return nil, err
+}
+
 func (p *osInstallDrivers) installAfterBoot(ctx context.Context, name string) error {
 	if p == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	host := installedDeviceHostname(name)
+	conn, err := p.waitForDevice(ctx, host)
+	if err != nil {
+		return fmt.Errorf("OS written, but drivers were not installed on %s: %w; install the requested drivers with --device %s.local using the same catalog", host, err, host)
+	}
+	defer conn.Close()
+	for _, d := range p.drivers {
+		installCtx, cancel := context.WithTimeout(ctx, driverStageTimeout)
+		err := installDriver(installCtx, conn, d.spec, d.path)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("OS written, but installing driver %s after first boot failed: %w", d.spec.GetName(), err)
+		}
+	}
+	cliLogln("Requested drivers installed on %s.", host)
+	return nil
+}
+
+// Only dial the hostname provisioned by this install, never a default or the
+// first discovered board. A matching hostname, board and kernel must precede
+// writes.
+func (p *osInstallDrivers) waitForDevice(ctx context.Context, host string) (*grpcclient.AgentConnection, error) {
+	ctx, cancel := context.WithTimeout(ctx, installDriverBootWait)
 	defer cancel()
-	address := name + ".local:50051"
-	cliLogln("Waiting for %s to boot. Keep its USB network cable connected; driver installation will continue automatically.", name)
+	cliLogln("Waiting for %s to boot. Keep its USB network cable connected; driver installation will continue automatically.", host)
 	var lastErr error
 	for {
-		probeCtx, stopProbe := context.WithTimeout(ctx, 10*time.Second)
-		conn, err := connectInstallDriverDevice(probeCtx, address)
+		conn, err := connectInstallDriverDevice(ctx, host)
 		if err == nil {
-			err = p.checkDevice(probeCtx, conn, name)
-		}
-		stopProbe()
-		if err == nil {
-			defer conn.Close()
-			for _, d := range p.drivers {
-				if err := installDriver(ctx, conn, d.spec, d.path); err != nil {
-					return fmt.Errorf("OS written, but installing driver %s after first boot failed: %w", d.spec.GetName(), err)
-				}
+			checkCtx, stopCheck := context.WithTimeout(ctx, 10*time.Second)
+			err = p.checkDevice(checkCtx, conn, host)
+			stopCheck()
+			if err == nil {
+				return conn, nil
 			}
-			cliLogln("Requested drivers installed on %s.", name)
-			return nil
-		}
-		if conn != nil {
 			_ = conn.Close()
 		}
 		lastErr = err
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("OS written, but drivers were not installed on %s: %w (last check: %v); install the requested drivers with --device %s using the same catalog", name, ctx.Err(), lastErr, name)
+			return nil, fmt.Errorf("%w (last check: %v)", ctx.Err(), lastErr)
 		case <-time.After(2 * time.Second):
 		}
 	}
 }
 
-func (p *osInstallDrivers) checkDevice(ctx context.Context, conn *grpcclient.AgentConnection, name string) error {
+func (p *osInstallDrivers) checkDevice(ctx context.Context, conn *grpcclient.AgentConnection, host string) error {
 	v, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
 		return err
 	}
-	if strings.TrimSuffix(v.GetHostname(), ".local") != name || v.GetDeviceType() != p.deviceType {
+	if normalizeMDNSHost(v.GetHostname()) != host || v.GetDeviceType() != p.deviceType {
 		return fmt.Errorf("device identity does not match the requested hostname and board")
 	}
 	dl, err := conn.DriverService.ListDrivers(ctx, &agentpbv2.ListDriversRequest{})
