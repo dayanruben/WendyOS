@@ -79,6 +79,8 @@ func newOSInstallCmd() *cobra.Command {
 		Short: "Install WendyOS or Wendy Lite firmware on a device",
 		Long: `Interactively select a supported device, download the latest OS image or firmware, and write it to the target.
 
+Connected devices in supported USB flashing modes are offered first.
+
 When called with positional arguments, skips interactive prompts:
   wendy os install <image-path> <drive-id> --force
 
