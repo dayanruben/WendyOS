@@ -48,10 +48,14 @@ func TestDetectedInstallItemsRequireAvailableFirmware(t *testing.T) {
 	if got := detectedInstallItems(items, devices); len(got) != 0 {
 		t.Fatalf("offered unavailable firmware: %+v", got)
 	}
-	items = append(items, tui.PickerItem{Name: "Thor", Value: thorDeviceType})
+	items = append(items, tui.PickerItem{Name: "Thor", Description: "(0.20.1)", Value: thorDeviceType})
 	got := detectedInstallItems(items, devices)
 	if len(got) != 1 || got[0].Value != thorDeviceType {
 		t.Fatalf("detected = %+v", got)
+	}
+	// The detected tab must still say which version will be installed.
+	if want := "1 connected in USB recovery mode (0.20.1)"; got[0].Description != want {
+		t.Fatalf("description = %q, want %q", got[0].Description, want)
 	}
 }
 

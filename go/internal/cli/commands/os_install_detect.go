@@ -77,10 +77,15 @@ func detectedInstallItems(items []tui.PickerItem, devices []installUSBDevice) []
 		key, _ := item.Value.(string)
 		if count := counts[key]; count > 0 {
 			item.Section = "USB flashing devices"
-			item.Description = fmt.Sprintf("%d connected in USB recovery mode", count)
+			description := fmt.Sprintf("%d connected in USB recovery mode", count)
 			if key == esp32S31TargetValue {
-				item.Description = fmt.Sprintf("%d connected in ROM download mode; select board model next", count)
+				description = fmt.Sprintf("%d connected in ROM download mode; select board model next", count)
 			}
+			// Keep the version the manual tab shows, such as "(0.20.1)".
+			if item.Description != "" {
+				description += " " + item.Description
+			}
+			item.Description = description
 			detected = append(detected, item)
 		}
 	}
