@@ -3,19 +3,30 @@
 package commands
 
 import (
-	"errors"
 	"strings"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/qdl"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/winusb"
 )
 
 func scanInstallUSBDevices() ([]installUSBDevice, error) {
+	// qdl.List applies the same EDL interface check as Dragonwing flashing,
+	// so a 05c6:9008 devnode is offered only when the flasher would find it.
+	edl, err := qdl.List()
+	if err != nil {
+		return nil, err
+	}
 	var devices []installUSBDevice
-	var scanErr error
-	for _, vendor := range []uint16{rcm.VendorNVIDIA, 0x05c6, 0x303a} {
+	for range edl {
+		devices = append(devices, installUSBDevice{vendor: qdl.VendorQualcomm, product: qdl.ProductEDL})
+	}
+	for _, vendor := range []uint16{rcm.VendorNVIDIA, espressifVendor} {
 		found, err := winusb.ListVendor(vendor)
-		scanErr = errors.Join(scanErr, err)
+		if err != nil {
+			// A SetupAPI failure repeats for every vendor; report it once.
+			return devices, err
+		}
 		for _, d := range found {
 			// Composite interface devnodes repeat the parent's VID/PID. Count
 			// only the physical USB device, as libusb does on macOS/Linux.
@@ -28,5 +39,5 @@ func scanInstallUSBDevices() ([]installUSBDevice, error) {
 			}
 		}
 	}
-	return devices, scanErr
+	return devices, nil
 }

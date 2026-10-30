@@ -5,11 +5,18 @@ package commands
 import (
 	"fmt"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/qdl"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
-const detectedEDLValue = "detected_qualcomm_edl"
+const (
+	detectedEDLValue = "detected_qualcomm_edl"
+
+	espressifVendor     = 0x303a
+	esp32S31ROMProduct  = 0x0020 // ROM download mode over USB OTG
+	esp32S31TargetValue = "wlite_target_esp32s31"
+)
 
 // installUSBDevice contains descriptors only. The initial scan must not claim
 // interfaces, reset running boards, or require permission to open a device.
@@ -32,13 +39,13 @@ func installUSBTarget(d installUSBDevice) string {
 		case r.IsOrinNano():
 			return orinNanoDeviceType
 		}
-	case 0x05c6:
-		if d.product == 0x9008 {
+	case uint16(qdl.VendorQualcomm):
+		if d.product == uint16(qdl.ProductEDL) {
 			return detectedEDLValue
 		}
-	case 0x303a:
-		if d.product == 0x0020 {
-			return "wlite_target_esp32s31"
+	case espressifVendor:
+		if d.product == esp32S31ROMProduct {
+			return esp32S31TargetValue
 		}
 	}
 	return ""
@@ -71,7 +78,7 @@ func detectedInstallItems(items []tui.PickerItem, devices []installUSBDevice) []
 		if count := counts[key]; count > 0 {
 			item.Section = "USB flashing devices"
 			item.Description = fmt.Sprintf("%d connected in USB recovery mode", count)
-			if key == "wlite_target_esp32s31" {
+			if key == esp32S31TargetValue {
 				item.Description = fmt.Sprintf("%d connected in ROM download mode; select board model next", count)
 			}
 			detected = append(detected, item)
