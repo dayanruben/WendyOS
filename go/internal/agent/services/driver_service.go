@@ -290,9 +290,12 @@ func (s *DriverService) finalize(ctx context.Context, spec DriverInstallSpec, tm
 		return false, fmt.Errorf("sha256 mismatch: expected %s, got %s", spec.SHA256, got)
 	}
 	// SECURITY: with no signing key embedded the verifier is a no-op, so sha256
-	// proves integrity but not origin. Accepted only for the mTLS RPC pre-GA (that
-	// caller already has a root shell on the same server); the unauthenticated
-	// seed sets requireSignature and is refused below.
+	// proves integrity but not origin. The RPC accepts that pre-GA on every
+	// listener serving it: the mTLS server and the admin socket, and before
+	// enrollment the unauthenticated setup listener, which already deploys
+	// privileged-equivalent containers (the build entitlement). The
+	// config-partition seed has no operator in the loop, so it sets
+	// requireSignature and is refused below.
 	if !s.verifier.Enabled() {
 		if s.requireSignature {
 			return false, fmt.Errorf("driver %q cannot be authenticated (no signing key embedded); refusing install from an unauthenticated source", spec.Name)

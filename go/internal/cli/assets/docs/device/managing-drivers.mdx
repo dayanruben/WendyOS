@@ -183,5 +183,6 @@ authenticated mTLS listener. The local admin socket also supports driver managem
 
 Older agents may expose drivers only after enrollment or lack driver support entirely.
 If `wendy device drivers` reports that the service is unavailable on a Linux device,
-update the device's agent. OS updates treat an unavailable driver service as having no
-add-ons.
+update the device's agent. Before an OS update, an unavailable driver service means the
+installed add-ons cannot be read, so the update asks before continuing and stops when
+it cannot ask. Pass `--no-drivers` to update anyway.
